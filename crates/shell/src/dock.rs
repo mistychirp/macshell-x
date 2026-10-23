@@ -97,10 +97,12 @@ pub fn view(items: &[Item]) -> Element<'_> {
         .padding([PADDING, PADDING_X])
         .width(Length::Fill)
         .height(Length::Fill)
+        // Kept faint: the compositor provides the material (blur or glass) underneath, and
+        // glass draws its own rim highlight.
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.12))),
+            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.04))),
             border: Border {
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.22),
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.14),
                 width: 1.0,
                 radius: RADIUS.into(),
             },

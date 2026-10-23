@@ -1,5 +1,5 @@
 // Liquid glass for the dock. Needs the macshell niri fork (compositor/niri, branch `macshell`);
-// stock niri rejects the `glass` option. Include it from your niri config:
+// stock niri rejects the `glass` options. Include it from your niri config:
 //   include "~/Projects/macshell-x/contrib/niri-glass.kdl"
 
 layer-rule {
@@ -10,7 +10,24 @@ layer-rule {
 
     background-effect {
         glass true
-        // Glass refracts; blur on top of it washes the refraction out.
+        // Clear glass. Set to true for a light frost under the refraction (strength comes from
+        // the global `blur` settings below).
         blur false
+    }
+}
+
+// The values below are the defaults; tweak them live, niri reloads on save.
+// Note: you can only have one top-level `blur` section. If your config already has one, move
+// the `glass` block into it instead.
+blur {
+    glass {
+        // Width of the curved rim, in logical pixels.
+        bezel 20
+        // How far the rim bends the background at its outer edge. Negative flips the direction.
+        refraction 16
+        // Strength of the specular highlight along the rim.
+        highlight 0.35
+        // Tint over the glass, e.g. "#ffffff10" for a faint white.
+        tint "#ffffff00"
     }
 }

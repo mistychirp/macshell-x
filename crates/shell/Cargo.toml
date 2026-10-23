@@ -14,7 +14,7 @@ iced_layershell = "0.19.1"
 iced_runtime = "0.14"
 # Without an explicit backend, iced falls back to a renderer that draws nothing.
 # `wgpu-bare` is what actually selects the GPU renderer; `wgpu` alone leaves tiny-skia in charge.
-iced_renderer = { version = "0.14", features = ["wgpu", "wgpu-bare", "tiny-skia", "wayland"] }
+iced_renderer = { version = "0.14", features = ["wgpu", "wgpu-bare", "tiny-skia", "wayland", "web-colors"] }
 iced_widget = { version = "0.14", features = ["image", "svg"] }
 # Not used directly: enables the PNG codec for iced's images, which `iced` itself would do.
 image = { version = "0.25", default-features = false, features = ["png"] }
