@@ -5,6 +5,8 @@ use std::{env, fs, io};
 
 use serde::Deserialize;
 
+use crate::material::Style;
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -16,6 +18,8 @@ pub struct Config {
 pub struct DockConfig {
     /// Desktop entry ids (or app ids) kept in the dock even when they aren't running.
     pub pinned: Vec<String>,
+    /// Glass style behind the dock, when the compositor offers glass.
+    pub glass: Style,
 }
 
 impl Config {

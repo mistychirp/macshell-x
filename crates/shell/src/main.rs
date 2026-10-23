@@ -1,8 +1,9 @@
 mod app;
 mod apps;
-mod blur;
 mod config;
 mod dock;
+mod glass_protocol;
+mod material;
 mod menubar;
 mod niri;
 

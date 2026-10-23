@@ -24,20 +24,26 @@ cargo run
 [dock]
 # Desktop entry ids (the .desktop file name without the extension), in dock order.
 pinned = ["org.kde.dolphin", "vivaldi-stable", "Alacritty"]
+# Glass behind the dock: "clear" (refraction only, the default) or "frosted" (over a blur).
+glass = "clear"
 ```
 
-The dock asks niri for blur behind its pill itself (`ext-background-effect-v1`, niri 26.04+), so
-it needs no config. For other surfaces, you can force blur from your niri config:
+The shell chooses the material behind its surfaces itself, so it needs no compositor rules:
 
-```kdl
-include "~/Projects/macshell-x/contrib/niri.kdl"
-```
+- **Liquid glass** on the macshell niri fork, through our `macshell-glass-v1` protocol
+  ([protocols/macshell-glass-v1.xml](protocols/macshell-glass-v1.xml)).
+- **Blur** on stock niri 26.04+ and other compositors with `ext-background-effect-v1`.
+- **Nothing** elsewhere; the dock then keeps a faint fill and border.
 
 ## Compositor
 
 The niri fork is a git submodule at `compositor/niri`. It tracks the `macshell` branch of
 [mistychirp/niri](https://github.com/mistychirp/niri), which is based on `v26.04`. So far it adds
-a `glass` option to `background-effect`; see [contrib/niri-glass.kdl](contrib/niri-glass.kdl).
+liquid glass: the `macshell-glass-v1` protocol, a `glass` option for `background-effect` rules,
+and glass settings in the `blur` section. See [contrib/niri-glass.kdl](contrib/niri-glass.kdl)
+for tuning it.
+
+The fork keeps a copy of the protocol XML in `resources/`; keep it in sync with `protocols/`.
 
 ```sh
 git clone --recurse-submodules https://github.com/mistychirp/macshell-x.git

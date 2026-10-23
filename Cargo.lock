@@ -1965,6 +1965,7 @@ dependencies = [
  "toml",
  "wayland-client",
  "wayland-protocols",
+ "wayland-scanner",
 ]
 
 [[package]]

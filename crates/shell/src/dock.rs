@@ -8,7 +8,7 @@ use iced_widget::{Space, column, container, image, mouse_area, row, svg, text};
 
 use crate::app::{Element, Message};
 use crate::apps::{App, AppIndex};
-use crate::blur::{self, Rect};
+use crate::material::{self, Shape};
 use crate::niri::{self, WindowInfo};
 
 const ICON_SIZE: f32 = 48.0;
@@ -47,8 +47,12 @@ pub fn size(item_count: usize) -> (u32, u32) {
     (width as u32, HEIGHT)
 }
 
-pub fn blur_region((width, height): (u32, u32)) -> Vec<Rect> {
-    blur::rounded_rect(width as i32, height as i32, RADIUS as i32)
+pub fn material_shapes((width, height): (u32, u32), style: material::Style) -> Vec<Shape> {
+    vec![Shape {
+        rect: (0, 0, width as i32, height as i32),
+        radius: RADIUS as i32,
+        style,
+    }]
 }
 
 pub fn items(pinned: &[String], windows: &[WindowInfo], apps: &mut AppIndex) -> Vec<Item> {
@@ -92,17 +96,22 @@ pub fn activate(item: &Item) {
     }
 }
 
-pub fn view(items: &[Item]) -> Element<'_> {
+pub fn view(items: &[Item], material: Option<material::Kind>) -> Element<'_> {
+    // Glass brings its own rim and highlight; over blur (or nothing) the pill needs a faint
+    // fill and border to read as a surface.
+    let (fill, border) = match material {
+        Some(material::Kind::Glass) => (0.0, 0.0),
+        _ => (0.04, 0.14),
+    };
+
     container(row(items.iter().map(tile)).spacing(SPACING))
         .padding([PADDING, PADDING_X])
         .width(Length::Fill)
         .height(Length::Fill)
-        // Kept faint: the compositor provides the material (blur or glass) underneath, and
-        // glass draws its own rim highlight.
-        .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.04))),
+        .style(move |_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, fill))),
             border: Border {
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.14),
+                color: Color::from_rgba(1.0, 1.0, 1.0, border),
                 width: 1.0,
                 radius: RADIUS.into(),
             },

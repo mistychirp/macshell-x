@@ -1,4 +1,5 @@
-//! Compositor-side background blur through `ext-background-effect-v1`.
+//! The material behind shell surfaces: liquid glass (macshell-glass-v1, from our niri fork) when
+//! the compositor offers it, otherwise background blur (ext-background-effect-v1).
 //!
 //! The shell shares its Wayland connection with iced_layershell, so the `wl_surface` behind an
 //! iced window (reached with `window::run`) works with the protocol objects bound here.
@@ -16,22 +17,59 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
 };
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
 
+use crate::glass_protocol::macshell_glass_manager_v1::MacshellGlassManagerV1;
+use crate::glass_protocol::macshell_glass_v1::{self, MacshellGlassV1};
+
 /// A rectangle in surface-local logical coordinates: `(x, y, width, height)`.
 pub type Rect = (i32, i32, i32, i32);
 
-pub struct Blur {
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Style {
+    /// Refraction only; the background stays sharp.
+    #[default]
+    Clear,
+    /// Refraction over a blurred background.
+    Frosted,
+}
+
+/// A rounded rectangle of material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shape {
+    pub rect: Rect,
+    pub radius: i32,
+    pub style: Style,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Glass,
+    Blur,
+}
+
+pub struct Material {
     connection: Connection,
     compositor: WlCompositor,
-    manager: ExtBackgroundEffectManagerV1,
+    manager: Manager,
     queue: QueueHandle<Globals>,
     // Never dispatched after setup, but owns the queue our objects live on.
     _event_queue: EventQueue<Globals>,
 }
 
-/// A surface with a background effect attached.
-pub struct BlurredSurface {
+enum Manager {
+    Glass(MacshellGlassManagerV1),
+    Blur(ExtBackgroundEffectManagerV1),
+}
+
+/// A surface with material attached.
+pub struct MaterialSurface {
     surface: WlSurface,
-    effect: ExtBackgroundEffectSurfaceV1,
+    effect: Effect,
+}
+
+enum Effect {
+    Glass(MacshellGlassV1),
+    Blur(ExtBackgroundEffectSurfaceV1),
 }
 
 #[derive(Default)]
@@ -39,27 +77,34 @@ struct Globals {
     blur_supported: bool,
 }
 
-impl Blur {
-    /// Binds the protocol on `connection`. Returns `None` when the compositor can't blur.
+impl Material {
+    /// Binds the best protocol available on `connection`. Returns `None` when there's neither.
     pub fn new(connection: &Connection) -> Option<Self> {
         let (globals, mut event_queue) = registry_queue_init::<Globals>(connection)
             .inspect_err(|err| log::warn!("can't list Wayland globals: {err}"))
             .ok()?;
         let queue = event_queue.handle();
-
-        let manager: ExtBackgroundEffectManagerV1 = globals
-            .bind(&queue, 1..=1, ())
-            .inspect_err(|err| log::info!("no background effect support: {err}"))
-            .ok()?;
         let compositor: WlCompositor = globals.bind(&queue, 1..=6, ()).ok()?;
 
-        // Wait for the manager's capabilities event.
-        let mut state = Globals::default();
-        event_queue.roundtrip(&mut state).ok()?;
-        if !state.blur_supported {
-            log::info!("compositor has background effects, but not blur");
-            return None;
-        }
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=1, ()) {
+            log::info!("using liquid glass");
+            Manager::Glass(glass)
+        } else {
+            let blur: ExtBackgroundEffectManagerV1 = globals
+                .bind(&queue, 1..=1, ())
+                .inspect_err(|err| log::info!("no glass or background effect support: {err}"))
+                .ok()?;
+
+            // Wait for the manager's capabilities event.
+            let mut state = Globals::default();
+            event_queue.roundtrip(&mut state).ok()?;
+            if !state.blur_supported {
+                log::info!("compositor has background effects, but not blur");
+                return None;
+            }
+            log::info!("no liquid glass, using blur");
+            Manager::Blur(blur)
+        };
 
         Some(Self {
             connection: connection.clone(),
@@ -70,27 +115,56 @@ impl Blur {
         })
     }
 
+    pub fn kind(&self) -> Kind {
+        match self.manager {
+            Manager::Glass(_) => Kind::Glass,
+            Manager::Blur(_) => Kind::Blur,
+        }
+    }
+
     pub fn connection(&self) -> &Connection {
         &self.connection
     }
 
-    pub fn attach(&self, surface: WlSurface) -> BlurredSurface {
-        let effect = self
-            .manager
-            .get_background_effect(&surface, &self.queue, ());
-        BlurredSurface { surface, effect }
+    pub fn attach(&self, surface: WlSurface) -> MaterialSurface {
+        let effect = match &self.manager {
+            Manager::Glass(manager) => Effect::Glass(manager.get_glass(&surface, &self.queue, ())),
+            Manager::Blur(manager) => {
+                Effect::Blur(manager.get_background_effect(&surface, &self.queue, ()))
+            }
+        };
+        MaterialSurface { surface, effect }
     }
 
-    /// Replaces the blurred region and commits it right away.
-    pub fn set_region(&self, target: &BlurredSurface, rects: &[Rect]) {
-        let region = self.compositor.create_region(&self.queue, ());
-        for &(x, y, width, height) in rects {
-            region.add(x, y, width, height);
+    /// Replaces the material shapes and commits them right away.
+    pub fn set_shapes(&self, target: &MaterialSurface, shapes: &[Shape]) {
+        match &target.effect {
+            Effect::Glass(glass) => {
+                glass.clear();
+                for shape in shapes {
+                    let (x, y, width, height) = shape.rect;
+                    let style = match shape.style {
+                        Style::Clear => macshell_glass_v1::Style::Clear,
+                        Style::Frosted => macshell_glass_v1::Style::Frosted,
+                    };
+                    glass.add_rounded_rect(x, y, width, height, shape.radius.max(0) as u32, style);
+                }
+            }
+            // Blur has no notion of clear glass, so every shape is blurred.
+            Effect::Blur(effect) => {
+                let region = self.compositor.create_region(&self.queue, ());
+                for shape in shapes {
+                    let (x, y, width, height) = shape.rect;
+                    for (rx, ry, rw, rh) in rounded_rect(width, height, shape.radius) {
+                        region.add(x + rx, y + ry, rw, rh);
+                    }
+                }
+                effect.set_blur_region(Some(&region));
+                region.destroy();
+            }
         }
-        target.effect.set_blur_region(Some(&region));
-        region.destroy();
 
-        // The region is double-buffered. Committing without a new buffer only applies it, and
+        // The state is double-buffered. Committing without a new buffer only applies it, and
         // between iced's frames there's no other pending state we could flush by accident.
         target.surface.commit();
         if let Err(err) = self.connection.flush() {
@@ -114,8 +188,8 @@ pub fn surface_of(
 }
 
 /// Approximates a rounded rectangle with rectangles, since a `wl_region` can't hold curves.
-pub fn rounded_rect(width: i32, height: i32, radius: i32) -> Vec<Rect> {
-    let radius = radius.min(width / 2).min(height / 2);
+fn rounded_rect(width: i32, height: i32, radius: i32) -> Vec<Rect> {
+    let radius = radius.min(width / 2).min(height / 2).max(0);
     let r = radius as f32;
 
     // How far each corner row is inset from the side, merged into runs of equal inset.
@@ -170,3 +244,5 @@ impl Dispatch<ExtBackgroundEffectManagerV1, ()> for Globals {
 delegate_noop!(Globals: WlCompositor);
 delegate_noop!(Globals: WlRegion);
 delegate_noop!(Globals: ExtBackgroundEffectSurfaceV1);
+delegate_noop!(Globals: MacshellGlassManagerV1);
+delegate_noop!(Globals: MacshellGlassV1);

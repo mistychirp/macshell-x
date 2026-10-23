@@ -1,24 +1,14 @@
-// Liquid glass for the dock. Needs the macshell niri fork (compositor/niri, branch `macshell`);
-// stock niri rejects the `glass` options. Include it from your niri config:
+// Liquid glass settings for the macshell niri fork (compositor/niri, branch `macshell`); stock
+// niri rejects the `glass` block. Include it from your niri config:
 //   include "~/Projects/macshell-x/contrib/niri-glass.kdl"
+//
+// The shell asks for glass itself through the macshell-glass-v1 protocol, so no layer rules
+// are needed. (A `background-effect { glass true; }` rule on a macshell surface would render
+// glass twice.) Frosted glass uses the strength of the blur settings in this same section.
+//
+// You can only have one top-level `blur` section. If your config already has one, move the
+// `glass` block into it instead.
 
-layer-rule {
-    match namespace="^macshell-dock$"
-
-    // Glass takes its shape from the surface geometry and this radius (matches the dock pill).
-    geometry-corner-radius 20
-
-    background-effect {
-        glass true
-        // Clear glass. Set to true for a light frost under the refraction (strength comes from
-        // the global `blur` settings below).
-        blur false
-    }
-}
-
-// The values below are the defaults; tweak them live, niri reloads on save.
-// Note: you can only have one top-level `blur` section. If your config already has one, move
-// the `glass` block into it instead.
 blur {
     glass {
         // Width of the curved rim, in logical pixels.

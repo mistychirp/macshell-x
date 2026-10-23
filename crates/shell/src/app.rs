@@ -17,8 +17,8 @@ use wayland_client::Connection;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use crate::apps::AppIndex;
-use crate::blur::{self, Blur, BlurredSurface};
 use crate::config::Config;
+use crate::material::{self, Material, MaterialSurface};
 use crate::niri::{self, WindowInfo};
 use crate::{dock, menubar};
 
@@ -30,10 +30,10 @@ pub fn run() -> Result<(), iced_layershell::Error> {
     let connection = Connection::connect_to_env()
         .inspect_err(|err| log::error!("can't connect to Wayland: {err}"))
         .ok();
-    let blur = connection.as_ref().and_then(Blur::new).map(Rc::new);
+    let material = connection.as_ref().and_then(Material::new).map(Rc::new);
 
     daemon(
-        move || Shell::new(blur.clone()),
+        move || Shell::new(material.clone()),
         namespace,
         Shell::update,
         Shell::view,
@@ -75,17 +75,18 @@ struct Shell {
     surfaces: HashMap<IcedId, Surface>,
     apps: AppIndex,
     pinned: Vec<String>,
+    dock_style: material::Style,
     focused_app: Option<String>,
     clock: String,
     dock: Vec<dock::Item>,
     dock_id: IcedId,
     dock_size: (u32, u32),
-    blur: Option<Rc<Blur>>,
-    dock_blur: Option<BlurredSurface>,
+    material: Option<Rc<Material>>,
+    dock_material: Option<MaterialSurface>,
 }
 
 impl Shell {
-    fn new(blur: Option<Rc<Blur>>) -> (Self, Task<Message>) {
+    fn new(material: Option<Rc<Material>>) -> (Self, Task<Message>) {
         let config = Config::load();
         let mut apps = AppIndex::load();
         let dock = dock::items(&config.dock.pinned, &[], &mut apps);
@@ -97,13 +98,14 @@ impl Shell {
             surfaces: HashMap::from([(menubar_id, Surface::MenuBar), (dock_id, Surface::Dock)]),
             apps,
             pinned: config.dock.pinned,
+            dock_style: config.dock.glass,
             focused_app: None,
             clock: menubar::format_clock(),
             dock_size: dock::size(dock.len()),
             dock,
             dock_id,
-            blur,
-            dock_blur: None,
+            material,
+            dock_material: None,
         };
 
         (shell, Task::batch([open_menubar, open_dock]))
@@ -129,30 +131,35 @@ impl Shell {
             Message::SurfaceOpened(id) => {
                 // Attaching twice is a protocol error, so only ever do it once.
                 if id == self.dock_id
-                    && self.dock_blur.is_none()
-                    && let Some(blur) = &self.blur
+                    && self.dock_material.is_none()
+                    && let Some(material) = &self.material
                 {
-                    let connection = blur.connection().clone();
+                    let connection = material.connection().clone();
                     return iced_runtime::window::run(id, move |window| {
-                        blur::surface_of(&connection, window)
+                        material::surface_of(&connection, window)
                     })
                     .map(Message::DockSurface);
                 }
             }
             Message::DockSurface(Some(surface)) => {
-                if let Some(blur) = &self.blur {
-                    let target = blur.attach(surface);
-                    blur.set_region(&target, &dock::blur_region(self.dock_size));
-                    self.dock_blur = Some(target);
+                if let Some(material) = &self.material {
+                    let target = material.attach(surface);
+                    material.set_shapes(
+                        &target,
+                        &dock::material_shapes(self.dock_size, self.dock_style),
+                    );
+                    self.dock_material = Some(target);
                 }
             }
-            Message::DockSurface(None) => log::warn!("can't reach the dock's wl_surface; no blur"),
+            Message::DockSurface(None) => {
+                log::warn!("can't reach the dock's wl_surface; no material")
+            }
             _ => {}
         }
         Task::none()
     }
 
-    /// Fits the dock surface (and its blur) to the current number of items.
+    /// Fits the dock surface (and its material) to the current number of items.
     fn resize_dock(&mut self) -> Task<Message> {
         let size = dock::size(self.dock.len());
         if size == self.dock_size {
@@ -160,8 +167,8 @@ impl Shell {
         }
         self.dock_size = size;
 
-        if let (Some(blur), Some(target)) = (&self.blur, &self.dock_blur) {
-            blur.set_region(target, &dock::blur_region(size));
+        if let (Some(material), Some(target)) = (&self.material, &self.dock_material) {
+            material.set_shapes(target, &dock::material_shapes(size, self.dock_style));
         }
         Task::done(Message::SizeChange {
             id: self.dock_id,
@@ -172,7 +179,7 @@ impl Shell {
     fn view(&self, id: IcedId) -> Element<'_> {
         match self.surfaces.get(&id) {
             Some(Surface::MenuBar) => menubar::view(self.focused_app.as_deref(), &self.clock),
-            Some(Surface::Dock) => dock::view(&self.dock),
+            Some(Surface::Dock) => dock::view(&self.dock, self.material.as_ref().map(|m| m.kind())),
             None => Space::new().into(),
         }
     }
