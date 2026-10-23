@@ -1,6 +1,6 @@
-//! Bridges niri's blocking IPC event stream into iced subscriptions.
+//! Talks to niri: an event-stream subscription for window state, and one-shot actions.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io;
 use std::thread;
 
@@ -8,86 +8,123 @@ use iced_futures::Subscription;
 use iced_futures::futures::channel::mpsc;
 use iced_futures::futures::{SinkExt, Stream, StreamExt};
 use niri_ipc::socket::Socket;
-use niri_ipc::{Event, Request, Window};
+use niri_ipc::{Action, Event, Request, Window};
 
+/// The parts of a niri window the shell cares about.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FocusedWindow {
+pub struct WindowInfo {
+    pub id: u64,
     pub app_id: Option<String>,
-    pub title: Option<String>,
+    pub is_focused: bool,
+    /// Last focus time as `(secs, nanos)`, for most-recently-used ordering.
+    pub focused_at: Option<(u64, u32)>,
 }
 
-/// Emits the focused window every time it (or its title) changes.
-pub fn focused_window() -> Subscription<Option<FocusedWindow>> {
-    Subscription::run(focused_window_stream)
+impl From<&Window> for WindowInfo {
+    fn from(window: &Window) -> Self {
+        Self {
+            id: window.id,
+            app_id: window.app_id.clone(),
+            is_focused: window.is_focused,
+            focused_at: window.focus_timestamp.map(|t| (t.secs, t.nanos)),
+        }
+    }
 }
 
-fn focused_window_stream() -> impl Stream<Item = Option<FocusedWindow>> {
-    iced_futures::stream::channel(
-        16,
-        |mut output: mpsc::Sender<Option<FocusedWindow>>| async move {
-            let (tx, mut rx) = mpsc::unbounded();
+/// Emits the full window list, ordered by id, every time it changes.
+pub fn windows() -> Subscription<Vec<WindowInfo>> {
+    Subscription::run(windows_stream)
+}
 
-            // The niri socket API is blocking, so it gets its own thread.
-            thread::spawn(move || {
-                if let Err(err) = track_focus(tx) {
-                    log::error!("niri event stream ended: {err}");
-                }
-            });
+pub fn focus_window(id: u64) {
+    run_action(Action::FocusWindow { id });
+}
 
-            while let Some(focused) = rx.next().await {
-                if output.send(focused).await.is_err() {
-                    break;
-                }
+/// Spawns through niri so the process gets niri's environment, not ours.
+pub fn spawn(command: Vec<String>) {
+    run_action(Action::Spawn { command });
+}
+
+fn run_action(action: Action) {
+    let result = Socket::connect().and_then(|mut socket| {
+        socket
+            .send(Request::Action(action))?
+            .map(drop)
+            .map_err(io::Error::other)
+    });
+    if let Err(err) = result {
+        log::error!("niri action failed: {err}");
+    }
+}
+
+fn windows_stream() -> impl Stream<Item = Vec<WindowInfo>> {
+    iced_futures::stream::channel(16, |mut output: mpsc::Sender<Vec<WindowInfo>>| async move {
+        let (tx, mut rx) = mpsc::unbounded();
+
+        // The niri socket API is blocking, so it gets its own thread.
+        thread::spawn(move || {
+            if let Err(err) = track_windows(tx) {
+                log::error!("niri event stream ended: {err}");
             }
-        },
-    )
+        });
+
+        while let Some(windows) = rx.next().await {
+            if output.send(windows).await.is_err() {
+                break;
+            }
+        }
+    })
 }
 
-fn track_focus(tx: mpsc::UnboundedSender<Option<FocusedWindow>>) -> io::Result<()> {
+fn track_windows(tx: mpsc::UnboundedSender<Vec<WindowInfo>>) -> io::Result<()> {
     let mut socket = Socket::connect()?;
     socket
         .send(Request::EventStream)?
         .map_err(io::Error::other)?;
     let mut read_event = socket.read_events();
 
-    let mut windows: HashMap<u64, Window> = HashMap::new();
-    let mut focused_id: Option<u64> = None;
-    let mut last_sent: Option<Option<FocusedWindow>> = None;
+    // niri doesn't promise ids increase, but in practice id order is open order.
+    let mut windows: BTreeMap<u64, WindowInfo> = BTreeMap::new();
+    let mut last_sent: Option<Vec<WindowInfo>> = None;
 
     loop {
         match read_event()? {
             Event::WindowsChanged { windows: all } => {
-                focused_id = all.iter().find(|w| w.is_focused).map(|w| w.id);
-                windows = all.into_iter().map(|w| (w.id, w)).collect();
+                windows = all.iter().map(|w| (w.id, WindowInfo::from(w))).collect();
             }
             Event::WindowOpenedOrChanged { window } => {
                 if window.is_focused {
-                    focused_id = Some(window.id);
+                    for w in windows.values_mut() {
+                        w.is_focused = false;
+                    }
                 }
-                windows.insert(window.id, window);
+                windows.insert(window.id, WindowInfo::from(&window));
             }
             Event::WindowClosed { id } => {
                 windows.remove(&id);
-                if focused_id == Some(id) {
-                    focused_id = None;
+            }
+            Event::WindowFocusChanged { id } => {
+                for w in windows.values_mut() {
+                    w.is_focused = Some(w.id) == id;
                 }
             }
-            Event::WindowFocusChanged { id } => focused_id = id,
+            Event::WindowFocusTimestampChanged {
+                id,
+                focus_timestamp,
+            } => {
+                if let Some(w) = windows.get_mut(&id) {
+                    w.focused_at = focus_timestamp.map(|t| (t.secs, t.nanos));
+                }
+            }
             _ => continue,
         }
 
-        let focused = focused_id
-            .and_then(|id| windows.get(&id))
-            .map(|w| FocusedWindow {
-                app_id: w.app_id.clone(),
-                title: w.title.clone(),
-            });
-
-        if last_sent.as_ref() != Some(&focused) {
-            if tx.unbounded_send(focused.clone()).is_err() {
+        let snapshot: Vec<WindowInfo> = windows.values().cloned().collect();
+        if last_sent.as_ref() != Some(&snapshot) {
+            if tx.unbounded_send(snapshot.clone()).is_err() {
                 return Ok(());
             }
-            last_sent = Some(focused);
+            last_sent = Some(snapshot);
         }
     }
 }

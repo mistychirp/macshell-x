@@ -1,3 +1,7 @@
+mod app;
+mod apps;
+mod config;
+mod dock;
 mod menubar;
 mod niri;
 
@@ -6,5 +10,5 @@ fn main() -> Result<(), iced_layershell::Error> {
         env_logger::Env::default().default_filter_or("warn,layershellev=error,macshell=info"),
     )
     .init();
-    menubar::run()
+    app::run()
 }
