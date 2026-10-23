@@ -39,10 +39,48 @@ const LABEL_GAP: f32 = 10.0;
 /// Gap between a menu and the top of the icon it belongs to.
 const MENU_GAP: f32 = 8.0;
 
+/// One launch bounce: up and back down, in seconds.
+const LAUNCH_HOP: f32 = 0.7;
+const LAUNCH_HEIGHT: f32 = ICON_SIZE * 0.5;
+/// One attention bounce, then a pause as long as the hop.
+const ATTENTION_HOP: f32 = 0.6;
+const ATTENTION_HEIGHT: f32 = ICON_SIZE * 0.6;
+
 pub struct Item {
     pub app: Rc<App>,
     /// Open windows of this app, most recently focused first.
     windows: Vec<WindowInfo>,
+}
+
+impl Item {
+    pub fn is_running(&self) -> bool {
+        !self.windows.is_empty()
+    }
+
+    pub fn wants_attention(&self) -> bool {
+        self.windows.iter().any(|window| window.is_urgent)
+    }
+}
+
+/// A parabolic hop from 0 up to 1 and back down over `period` seconds, repeating.
+fn hop(t: f32, period: f32) -> f32 {
+    let p = (t / period).fract();
+    4.0 * p * (1.0 - p)
+}
+
+/// How far up a launching icon is, `t` seconds after the launch.
+pub fn launch_bounce(t: f32) -> f32 {
+    hop(t, LAUNCH_HOP) * LAUNCH_HEIGHT
+}
+
+/// How far up an icon asking for attention is: a hop, then a pause, repeating.
+pub fn attention_bounce(t: f32) -> f32 {
+    let t = t % (2.0 * ATTENTION_HOP);
+    if t < ATTENTION_HOP {
+        hop(t, ATTENTION_HOP) * ATTENTION_HEIGHT
+    } else {
+        0.0
+    }
 }
 
 /// Where the pointer is, as far as the layout cares.
@@ -62,6 +100,9 @@ pub struct Layout {
     /// One per item, bottom-aligned; magnified icons stand up out of the pill.
     pub icons: Vec<Rectangle>,
     pub label: Option<Label>,
+    /// How far each icon is lifted by a bounce. Only drawing uses it: the input region, the
+    /// material and the label stay put, so bouncing doesn't touch the surface's state.
+    pub bounce: Vec<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,7 +149,14 @@ fn icon_size(index: usize, pointer: &Pointer, max_icon: f32) -> f32 {
     ICON_SIZE + (max_icon - ICON_SIZE) * falloff * pointer.amount
 }
 
-pub fn layout(surface_width: f32, items: &[Item], pointer: &Pointer, max_icon: f32) -> Layout {
+/// `bounce` holds each item's current bounce height (missing items don't bounce).
+pub fn layout(
+    surface_width: f32,
+    items: &[Item],
+    pointer: &Pointer,
+    max_icon: f32,
+    bounce: Vec<f32>,
+) -> Layout {
     let sizes: Vec<f32> = (0..items.len())
         .map(|index| icon_size(index, pointer, max_icon))
         .collect();
@@ -162,7 +210,12 @@ pub fn layout(surface_width: f32, items: &[Item], pointer: &Pointer, max_icon: f
         })
     });
 
-    Layout { pill, icons, label }
+    Layout {
+        pill,
+        icons,
+        label,
+        bounce,
+    }
 }
 
 /// Horizontal extent of icon `index`'s slot: the icon plus half the spacing on either side, so
@@ -285,6 +338,9 @@ pub fn items(pinned: &[String], windows: &[WindowInfo], apps: &mut AppIndex) -> 
 #[derive(Debug, Clone)]
 pub enum MenuAction {
     FocusWindow(u64),
+    /// Launches the app with this id, bouncing its icon until it opens a window.
+    Open(String),
+    /// Runs an extra command, like a desktop action, without bouncing.
     Launch(Vec<String>),
     /// Pins or unpins the app with this id.
     TogglePin(String),
@@ -328,10 +384,10 @@ pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
     entries.push(menu::Entry::Separator);
 
     if item.windows.is_empty() {
-        if let Some(command) = &item.app.command {
+        if item.app.command.is_some() {
             entries.push(menu::Entry::item(
                 "Open",
-                Message::DockMenu(MenuAction::Launch(command.clone())),
+                Message::DockMenu(MenuAction::Open(item.app.id.clone())),
             ));
         }
     } else {
@@ -397,12 +453,13 @@ pub fn view<'a>(
     let mut layers: Vec<Element<'a>> = vec![pin(pill).x(layout.pill.x).y(layout.pill.y).into()];
 
     let dot_y = layout.pill.y + PADDING + ICON_SIZE + DOT_GAP;
-    for (item, rect) in items.iter().zip(&layout.icons) {
+    for (index, (item, rect)) in items.iter().zip(&layout.icons).enumerate() {
+        let lift = layout.bounce.get(index).copied().unwrap_or(0.0);
         let icon = mouse_area(icon(&item.app, rect.width))
             .on_press(Message::DockClicked(item.app.id.clone()))
             .on_right_press(Message::DockMenuRequested(item.app.id.clone()))
             .interaction(mouse::Interaction::Pointer);
-        layers.push(pin(icon).x(rect.x).y(rect.y).into());
+        layers.push(pin(icon).x(rect.x).y(rect.y - lift).into());
 
         if !item.windows.is_empty() {
             layers.push(

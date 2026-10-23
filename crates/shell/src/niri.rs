@@ -17,6 +17,8 @@ pub struct WindowInfo {
     pub app_id: Option<String>,
     pub title: Option<String>,
     pub is_focused: bool,
+    /// The window is asking for attention.
+    pub is_urgent: bool,
     /// Last focus time as `(secs, nanos)`, for most-recently-used ordering.
     pub focused_at: Option<(u64, u32)>,
 }
@@ -28,6 +30,7 @@ impl From<&Window> for WindowInfo {
             app_id: window.app_id.clone(),
             title: window.title.clone(),
             is_focused: window.is_focused,
+            is_urgent: window.is_urgent,
             focused_at: window.focus_timestamp.map(|t| (t.secs, t.nanos)),
         }
     }
@@ -113,6 +116,11 @@ fn track_windows(tx: mpsc::UnboundedSender<Vec<WindowInfo>>) -> io::Result<()> {
             Event::WindowFocusChanged { id } => {
                 for w in windows.values_mut() {
                     w.is_focused = Some(w.id) == id;
+                }
+            }
+            Event::WindowUrgencyChanged { id, urgent } => {
+                if let Some(w) = windows.get_mut(&id) {
+                    w.is_urgent = urgent;
                 }
             }
             Event::WindowFocusTimestampChanged {

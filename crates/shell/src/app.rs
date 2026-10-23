@@ -116,8 +116,15 @@ struct Shell {
     dock_material: Option<MaterialSurface>,
     /// Shapes last sent for the dock, to skip redundant updates while icons animate.
     dock_shapes: Vec<material::Shape>,
+    /// Apps launched from the dock that haven't opened a window yet, and when.
+    launching: HashMap<String, Instant>,
+    /// Shared start time for attention bounces, so they stay in step.
+    started: Instant,
     menu: Option<OpenMenu>,
 }
+
+/// How long a launch bounces before the dock gives up waiting for a window.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(8);
 
 impl Shell {
     fn new(material: Option<Rc<Material>>) -> (Self, Task<Message>) {
@@ -152,6 +159,8 @@ impl Shell {
             material,
             dock_material: None,
             dock_shapes: Vec::new(),
+            launching: HashMap::new(),
+            started: Instant::now(),
             menu: None,
         };
 
@@ -168,14 +177,17 @@ impl Shell {
                     .map(|app_id| self.apps.resolve(app_id).name.clone());
                 self.windows = windows;
                 self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
+                // A window showing up is what ends a launch bounce.
+                let dock = &self.dock;
+                self.launching.retain(|app_id, _| {
+                    !dock
+                        .iter()
+                        .any(|item| item.app.id == *app_id && item.is_running())
+                });
                 return self.relayout_dock();
             }
             Message::Tick => self.clock = menubar::format_clock(),
-            Message::DockClicked(app_id) => {
-                if let Some(item) = self.dock.iter().find(|item| item.app.id == app_id) {
-                    dock::activate(item);
-                }
-            }
+            Message::DockClicked(app_id) => return self.activate(&app_id),
             Message::DockPointerMoved(point) => {
                 self.dock_pointer.base_x = Some(dock::base_x(&self.dock_layout, point.x));
                 self.dock_pointer.hovered = dock::item_at(&self.dock_layout, point);
@@ -190,21 +202,28 @@ impl Shell {
                 return self.relayout_dock();
             }
             Message::DockFrame(now) => {
-                // Exponential easing, independent of how regularly frames arrive.
-                let dt = self
-                    .dock_last_frame
-                    .map_or(0.016, |last| (now - last).as_secs_f32())
-                    .min(0.05);
-                self.dock_last_frame = Some(now);
+                self.launching
+                    .retain(|_, started| now.duration_since(*started) < LAUNCH_TIMEOUT);
 
                 let pointer = &mut self.dock_pointer;
-                pointer.amount += (self.dock_target - pointer.amount) * (1.0 - (-dt / 0.06).exp());
-                if (self.dock_target - pointer.amount).abs() < 0.005 {
-                    pointer.amount = self.dock_target;
+                if pointer.amount == self.dock_target {
                     self.dock_last_frame = None;
-                }
-                if pointer.amount == 0.0 {
-                    pointer.base_x = None;
+                } else {
+                    // Exponential easing, independent of how regularly frames arrive.
+                    let dt = self
+                        .dock_last_frame
+                        .map_or(0.016, |last| (now - last).as_secs_f32())
+                        .min(0.05);
+                    self.dock_last_frame = Some(now);
+
+                    pointer.amount +=
+                        (self.dock_target - pointer.amount) * (1.0 - (-dt / 0.06).exp());
+                    if (self.dock_target - pointer.amount).abs() < 0.005 {
+                        pointer.amount = self.dock_target;
+                    }
+                    if pointer.amount == 0.0 {
+                        pointer.base_x = None;
+                    }
                 }
                 return self.relayout_dock();
             }
@@ -316,9 +335,25 @@ impl Shell {
         }
     }
 
+    /// Focuses the app, or launches it with a bounce if it isn't running.
+    fn activate(&mut self, app_id: &str) -> Task<Message> {
+        let Some(item) = self.dock.iter().find(|item| item.app.id == app_id) else {
+            return Task::none();
+        };
+        if !item.is_running() && item.app.command.is_some() {
+            self.launching.insert(app_id.to_owned(), Instant::now());
+        }
+        dock::activate(item);
+        self.relayout_dock()
+    }
+
     fn run_dock_action(&mut self, action: dock::MenuAction) {
         match action {
             dock::MenuAction::FocusWindow(id) => niri::focus_window(id),
+            dock::MenuAction::Open(app_id) => {
+                // The relayout happens on the next frame, which the bounce schedules.
+                let _ = self.activate(&app_id);
+            }
             dock::MenuAction::Launch(command) => niri::spawn(command),
             dock::MenuAction::Quit(ids) => ids.into_iter().for_each(niri::close_window),
             dock::MenuAction::TogglePin(app_id) => {
@@ -343,11 +378,25 @@ impl Shell {
             return Task::none();
         }
 
+        let now = Instant::now();
+        let bounce = self
+            .dock
+            .iter()
+            .map(|item| match self.launching.get(&item.app.id) {
+                Some(started) => dock::launch_bounce(now.duration_since(*started).as_secs_f32()),
+                None if item.wants_attention() => {
+                    dock::attention_bounce(now.duration_since(self.started).as_secs_f32())
+                }
+                None => 0.0,
+            })
+            .collect();
+
         let layout = dock::layout(
             self.dock_width,
             &self.dock,
             &self.dock_pointer,
             self.dock_max_icon,
+            bounce,
         );
         if layout == self.dock_layout {
             return Task::none();
@@ -394,11 +443,14 @@ impl Shell {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        // Only tick while magnification is easing in or out.
-        let dock_frames = if self.dock_pointer.amount == self.dock_target {
-            Subscription::none()
-        } else {
+        // Only tick while something in the dock moves.
+        let animating = self.dock_pointer.amount != self.dock_target
+            || !self.launching.is_empty()
+            || self.dock.iter().any(dock::Item::wants_attention);
+        let dock_frames = if animating {
             time::every(Duration::from_millis(16)).map(Message::DockFrame)
+        } else {
+            Subscription::none()
         };
 
         Subscription::batch([
