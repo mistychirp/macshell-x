@@ -37,6 +37,27 @@ impl Default for DockConfig {
     }
 }
 
+/// Rewrites `[dock] pinned` in the config file, keeping the rest of it (comments included).
+pub fn save_pinned(pinned: &[String]) -> io::Result<()> {
+    let path = config_path().ok_or_else(|| io::Error::other("no config directory"))?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(io::Error::other)?;
+    if !doc.contains_table("dock") {
+        doc["dock"] = toml_edit::table();
+    }
+    doc["dock"]["pinned"] = toml_edit::value(pinned.iter().collect::<toml_edit::Array>());
+
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(&path, doc.to_string())
+}
+
 impl Config {
     pub fn load() -> Self {
         let Some(path) = config_path() else {

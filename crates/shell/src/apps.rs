@@ -22,6 +22,14 @@ pub struct App {
     pub name: String,
     pub icon: Option<image::Handle>,
     pub command: Option<Vec<String>>,
+    /// Extra actions from the desktop entry, like "New Private Window".
+    pub actions: Vec<DesktopAction>,
+}
+
+#[derive(Debug)]
+pub struct DesktopAction {
+    pub name: String,
+    pub command: Vec<String>,
 }
 
 pub struct AppIndex {
@@ -66,12 +74,24 @@ impl AppIndex {
                     .and_then(|icon| self.find_icon(icon))
                     .and_then(|path| load_icon(&path)),
                 command: entry.parse_exec().ok(),
+                actions: entry
+                    .actions()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|action| {
+                        Some(DesktopAction {
+                            name: entry.action_name(action, &self.locales)?.into_owned(),
+                            command: entry.parse_exec_action(action).ok()?,
+                        })
+                    })
+                    .collect(),
             },
             None => App {
                 id: app_id.to_owned(),
                 name: fallback_name(app_id),
                 icon: self.find_icon(app_id).and_then(|path| load_icon(&path)),
                 command: None,
+                actions: Vec::new(),
             },
         });
 

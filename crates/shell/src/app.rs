@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 
 use iced_futures::Subscription;
 use iced_futures::backend::native::tokio::time;
-use iced_layershell::actions::ActionCallback;
+use iced_layershell::actions::{ActionCallback, IcedNewPopupSettings};
 use iced_layershell::daemon;
-use iced_layershell::reexport::{IcedId, Task, WithConnection};
+use iced_layershell::reexport::{IcedId, PopupAnchor, PopupGravity, Task, WithConnection};
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
 use iced_widget::Space;
@@ -18,10 +18,10 @@ use wayland_client::Connection;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use crate::apps::AppIndex;
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::material::{self, Material, MaterialSurface};
 use crate::niri::{self, WindowInfo};
-use crate::{dock, menubar};
+use crate::{dock, menu, menubar};
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
 
@@ -58,6 +58,7 @@ pub fn run() -> Result<(), iced_layershell::Error> {
 enum Surface {
     MenuBar,
     Dock,
+    DockMenu,
 }
 
 #[to_layer_message(multi)]
@@ -75,6 +76,20 @@ pub enum Message {
     SurfaceResized(IcedId, Size),
     /// The dock's `wl_surface`, if it could be reached.
     DockSurface(Option<WlSurface>),
+    /// A dock icon was right-clicked; carries the app's id.
+    DockMenuRequested(String),
+    DockMenu(dock::MenuAction),
+    /// The open menu's `wl_surface`, if it could be reached.
+    MenuSurface(Option<WlSurface>),
+    SurfaceClosed(IcedId),
+}
+
+/// A popup menu that's open, or opening.
+struct OpenMenu {
+    id: IcedId,
+    entries: Vec<menu::Entry>,
+    size: (u32, u32),
+    material: Option<MaterialSurface>,
 }
 
 struct Shell {
@@ -84,6 +99,8 @@ struct Shell {
     dock_style: material::Style,
     focused_app: Option<String>,
     clock: String,
+    /// The latest window list from niri.
+    windows: Vec<WindowInfo>,
     dock: Vec<dock::Item>,
     dock_id: IcedId,
     /// Width of the dock surface; 0 until the compositor has configured it.
@@ -99,6 +116,7 @@ struct Shell {
     dock_material: Option<MaterialSurface>,
     /// Shapes last sent for the dock, to skip redundant updates while icons animate.
     dock_shapes: Vec<material::Shape>,
+    menu: Option<OpenMenu>,
 }
 
 impl Shell {
@@ -122,6 +140,7 @@ impl Shell {
             dock_style: config.dock.glass,
             focused_app: None,
             clock: menubar::format_clock(),
+            windows: Vec::new(),
             dock,
             dock_id,
             dock_width: 0.0,
@@ -133,6 +152,7 @@ impl Shell {
             material,
             dock_material: None,
             dock_shapes: Vec::new(),
+            menu: None,
         };
 
         (shell, Task::batch([open_menubar, open_dock]))
@@ -146,7 +166,8 @@ impl Shell {
                     .find(|w| w.is_focused)
                     .and_then(|w| w.app_id.as_deref())
                     .map(|app_id| self.apps.resolve(app_id).name.clone());
-                self.dock = dock::items(&self.pinned, &windows, &mut self.apps);
+                self.windows = windows;
+                self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
                 return self.relayout_dock();
             }
             Message::Tick => self.clock = menubar::format_clock(),
@@ -221,9 +242,97 @@ impl Shell {
             Message::DockSurface(None) => {
                 log::warn!("can't reach the dock's wl_surface; no material")
             }
+            Message::DockMenuRequested(app_id) => return self.open_dock_menu(&app_id),
+            Message::DockMenu(action) => {
+                self.run_dock_action(action);
+                return self.close_menu();
+            }
+            Message::SurfaceOpened(id, _) if self.menu.as_ref().is_some_and(|m| m.id == id) => {
+                if let Some(material) = &self.material {
+                    let connection = material.connection().clone();
+                    return iced_runtime::window::run(id, move |window| {
+                        material::surface_of(&connection, window)
+                    })
+                    .map(Message::MenuSurface);
+                }
+            }
+            Message::MenuSurface(Some(surface)) => {
+                if let (Some(material), Some(menu)) = (&self.material, &mut self.menu) {
+                    let target = material.attach(surface);
+                    material.set_shapes(&target, &menu::material_shapes(menu.size));
+                    menu.material = Some(target);
+                }
+            }
+            Message::MenuSurface(None) => log::warn!("can't reach the menu's wl_surface"),
+            Message::SurfaceClosed(id) => {
+                self.surfaces.remove(&id);
+                if self.menu.as_ref().is_some_and(|menu| menu.id == id)
+                    && let Some(menu) = self.menu.take()
+                    && let Some(material) = menu.material
+                {
+                    material.destroy();
+                }
+            }
             _ => {}
         }
         Task::none()
+    }
+
+    fn open_dock_menu(&mut self, app_id: &str) -> Task<Message> {
+        let Some(index) = self.dock.iter().position(|item| item.app.id == app_id) else {
+            return Task::none();
+        };
+        let Some(anchor) = dock::menu_anchor(&self.dock_layout, index) else {
+            return Task::none();
+        };
+
+        let pinned = self.pinned.iter().any(|id| id == app_id);
+        let entries = dock::menu_entries(&self.dock[index], pinned);
+        let size = menu::size(&entries);
+
+        // One menu at a time: replace any that's open.
+        let close = self.close_menu();
+
+        let id = IcedId::unique();
+        self.surfaces.insert(id, Surface::DockMenu);
+        self.menu = Some(OpenMenu {
+            id,
+            entries,
+            size,
+            material: None,
+        });
+
+        let settings = IcedNewPopupSettings::new(self.dock_id, size, anchor)
+            .anchor(PopupAnchor::Top)
+            .gravity(PopupGravity::Top);
+        Task::batch([close, Task::done(Message::NewPopUp { settings, id })])
+    }
+
+    /// Closes the open menu, if any. Its state is cleaned up once the surface is gone.
+    fn close_menu(&mut self) -> Task<Message> {
+        match &self.menu {
+            Some(menu) => iced_runtime::window::close(menu.id),
+            None => Task::none(),
+        }
+    }
+
+    fn run_dock_action(&mut self, action: dock::MenuAction) {
+        match action {
+            dock::MenuAction::FocusWindow(id) => niri::focus_window(id),
+            dock::MenuAction::Launch(command) => niri::spawn(command),
+            dock::MenuAction::Quit(ids) => ids.into_iter().for_each(niri::close_window),
+            dock::MenuAction::TogglePin(app_id) => {
+                if let Some(index) = self.pinned.iter().position(|id| *id == app_id) {
+                    self.pinned.remove(index);
+                } else {
+                    self.pinned.push(app_id);
+                }
+                if let Err(err) = config::save_pinned(&self.pinned) {
+                    log::error!("can't save pinned apps: {err}");
+                }
+                self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
+            }
+        }
     }
 
     /// Recomputes the dock layout, and pushes whatever changed to the material and the input
@@ -276,6 +385,10 @@ impl Shell {
                 &self.dock_layout,
                 self.material.as_ref().map(|m| m.kind()),
             ),
+            Some(Surface::DockMenu) => match &self.menu {
+                Some(menu) => menu::view(&menu.entries, self.material.as_ref().map(|m| m.kind())),
+                None => Space::new().into(),
+            },
             None => Space::new().into(),
         }
     }
@@ -299,6 +412,7 @@ impl Shell {
                 Event::Window(window::Event::Resized(size)) => {
                     Some(Message::SurfaceResized(id, size))
                 }
+                Event::Window(window::Event::Closed) => Some(Message::SurfaceClosed(id)),
                 _ => None,
             }),
         ])

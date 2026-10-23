@@ -1964,6 +1964,7 @@ dependencies = [
  "resvg",
  "serde",
  "toml",
+ "toml_edit",
  "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
@@ -3408,6 +3409,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

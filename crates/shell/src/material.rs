@@ -173,6 +173,16 @@ impl Material {
     }
 }
 
+impl MaterialSurface {
+    /// Removes the material. Call it before the surface goes away, or the protocol objects leak.
+    pub fn destroy(self) {
+        match self.effect {
+            Effect::Glass(glass) => glass.destroy(),
+            Effect::Blur(effect) => effect.destroy(),
+        }
+    }
+}
+
 /// Wraps the `wl_surface` of an iced window. Call it from inside `iced_runtime::window::run`.
 pub fn surface_of(
     connection: &Connection,

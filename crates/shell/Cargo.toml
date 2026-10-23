@@ -25,6 +25,8 @@ raw-window-handle = "0.6"
 resvg = "0.45.1"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
+# Already in the tree through zbus; edits the config without losing comments.
+toml_edit = "0.25"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-scanner = "0.31"

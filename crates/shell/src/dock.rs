@@ -9,15 +9,13 @@ use std::f32::consts::PI;
 use std::rc::Rc;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
-use iced_widget::core::text::{LineHeight, Paragraph as _, Shaping, Wrapping};
-use iced_widget::core::{
-    Background, Border, Color, Font, Length, Point, Rectangle, Size, alignment, mouse,
-};
+use iced_widget::core::{Background, Border, Color, Length, Point, Rectangle, mouse};
 use iced_widget::{Space, container, image, mouse_area, pin, stack, text};
 
 use crate::app::{Element, Message};
 use crate::apps::{App, AppIndex};
 use crate::material::{self, Shape};
+use crate::menu;
 use crate::niri::{self, WindowInfo};
 
 pub const ICON_SIZE: f32 = 48.0;
@@ -38,6 +36,8 @@ const LABEL_PADDING_X: f32 = 10.0;
 const LABEL_HEIGHT: f32 = 26.0;
 /// Gap between the label and the top of the icon under it.
 const LABEL_GAP: f32 = 10.0;
+/// Gap between a menu and the top of the icon it belongs to.
+const MENU_GAP: f32 = 8.0;
 
 pub struct Item {
     pub app: Rc<App>,
@@ -145,7 +145,8 @@ pub fn layout(surface_width: f32, items: &[Item], pointer: &Pointer, max_icon: f
     let label = pointer.hovered.and_then(|index| {
         let item = items.get(index)?;
         let icon = icons.get(index)?;
-        let width = (measure_label(&item.app.name) + 2.0 * LABEL_PADDING_X).ceil();
+        let width =
+            (menu::text_width(&item.app.name, LABEL_TEXT_SIZE) + 2.0 * LABEL_PADDING_X).ceil();
         let x = (icon.center_x() - width / 2.0)
             .round()
             .clamp(0.0, (surface_width - width).max(0.0));
@@ -250,21 +251,6 @@ fn rect_i32(rect: Rectangle) -> material::Rect {
     )
 }
 
-fn measure_label(text: &str) -> f32 {
-    iced_widget::graphics::text::Paragraph::with_text(iced_widget::core::Text {
-        content: text,
-        bounds: Size::INFINITE,
-        size: LABEL_TEXT_SIZE.into(),
-        line_height: LineHeight::default(),
-        font: Font::default(),
-        align_x: Default::default(),
-        align_y: alignment::Vertical::Top,
-        shaping: Shaping::Advanced,
-        wrapping: Wrapping::None,
-    })
-    .min_width()
-}
-
 pub fn items(pinned: &[String], windows: &[WindowInfo], apps: &mut AppIndex) -> Vec<Item> {
     let mut items: Vec<Item> = pinned
         .iter()
@@ -293,6 +279,85 @@ pub fn items(pinned: &[String], windows: &[WindowInfo], apps: &mut AppIndex) -> 
             .sort_by_key(|w| std::cmp::Reverse(w.focused_at));
     }
     items
+}
+
+/// What a dock menu item does.
+#[derive(Debug, Clone)]
+pub enum MenuAction {
+    FocusWindow(u64),
+    Launch(Vec<String>),
+    /// Pins or unpins the app with this id.
+    TogglePin(String),
+    /// Closes these windows.
+    Quit(Vec<u64>),
+}
+
+/// The right-click menu for an item: its windows, its desktop actions, then dock and app
+/// controls.
+pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
+    let mut entries = Vec::new();
+
+    for window in &item.windows {
+        let title = window.title.as_deref().unwrap_or(&item.app.name);
+        entries.push(
+            menu::Entry::item(title, Message::DockMenu(MenuAction::FocusWindow(window.id)))
+                .checked(window.is_focused),
+        );
+    }
+    if !entries.is_empty() {
+        entries.push(menu::Entry::Separator);
+    }
+
+    if !item.app.actions.is_empty() {
+        for action in &item.app.actions {
+            entries.push(menu::Entry::item(
+                &action.name,
+                Message::DockMenu(MenuAction::Launch(action.command.clone())),
+            ));
+        }
+        entries.push(menu::Entry::Separator);
+    }
+
+    entries.push(
+        menu::Entry::item(
+            "Keep in Dock",
+            Message::DockMenu(MenuAction::TogglePin(item.app.id.clone())),
+        )
+        .checked(pinned),
+    );
+    entries.push(menu::Entry::Separator);
+
+    if item.windows.is_empty() {
+        if let Some(command) = &item.app.command {
+            entries.push(menu::Entry::item(
+                "Open",
+                Message::DockMenu(MenuAction::Launch(command.clone())),
+            ));
+        }
+    } else {
+        let ids = item.windows.iter().map(|window| window.id).collect();
+        entries.push(menu::Entry::item(
+            "Quit",
+            Message::DockMenu(MenuAction::Quit(ids)),
+        ));
+    }
+
+    // Drop a trailing separator, e.g. for an app with no way to launch it.
+    if matches!(entries.last(), Some(menu::Entry::Separator)) {
+        entries.pop();
+    }
+    entries
+}
+
+/// Where a menu for icon `index` attaches: just above the icon, centered on it.
+pub fn menu_anchor(layout: &Layout, index: usize) -> Option<(i32, i32, i32, i32)> {
+    let icon = layout.icons.get(index)?;
+    Some((
+        icon.x as i32,
+        (icon.y - MENU_GAP) as i32,
+        icon.width.ceil() as i32,
+        1,
+    ))
 }
 
 /// Focuses the app's most recent window, or launches it if nothing is open.
@@ -335,6 +400,7 @@ pub fn view<'a>(
     for (item, rect) in items.iter().zip(&layout.icons) {
         let icon = mouse_area(icon(&item.app, rect.width))
             .on_press(Message::DockClicked(item.app.id.clone()))
+            .on_right_press(Message::DockMenuRequested(item.app.id.clone()))
             .interaction(mouse::Interaction::Pointer);
         layers.push(pin(icon).x(rect.x).y(rect.y).into());
 

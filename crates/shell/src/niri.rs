@@ -15,6 +15,7 @@ use niri_ipc::{Action, Event, Request, Window};
 pub struct WindowInfo {
     pub id: u64,
     pub app_id: Option<String>,
+    pub title: Option<String>,
     pub is_focused: bool,
     /// Last focus time as `(secs, nanos)`, for most-recently-used ordering.
     pub focused_at: Option<(u64, u32)>,
@@ -25,6 +26,7 @@ impl From<&Window> for WindowInfo {
         Self {
             id: window.id,
             app_id: window.app_id.clone(),
+            title: window.title.clone(),
             is_focused: window.is_focused,
             focused_at: window.focus_timestamp.map(|t| (t.secs, t.nanos)),
         }
@@ -38,6 +40,11 @@ pub fn windows() -> Subscription<Vec<WindowInfo>> {
 
 pub fn focus_window(id: u64) {
     run_action(Action::FocusWindow { id });
+}
+
+/// Asks the window to close, the same as its close button would.
+pub fn close_window(id: u64) {
+    run_action(Action::CloseWindow { id: Some(id) });
 }
 
 /// Spawns through niri so the process gets niri's environment, not ours.

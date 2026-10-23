@@ -4,6 +4,7 @@ mod config;
 mod dock;
 mod glass_protocol;
 mod material;
+mod menu;
 mod menubar;
 mod niri;
 
