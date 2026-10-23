@@ -1,0 +1,16 @@
+// Liquid glass for the dock. Needs the macshell niri fork (compositor/niri, branch `macshell`);
+// stock niri rejects the `glass` option. Include it from your niri config:
+//   include "~/Projects/macshell-x/contrib/niri-glass.kdl"
+
+layer-rule {
+    match namespace="^macshell-dock$"
+
+    // Glass takes its shape from the surface geometry and this radius (matches the dock pill).
+    geometry-corner-radius 20
+
+    background-effect {
+        glass true
+        // Glass refracts; blur on top of it washes the refraction out.
+        blur false
+    }
+}

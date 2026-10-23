@@ -33,6 +33,26 @@ it needs no config. For other surfaces, you can force blur from your niri config
 include "~/Projects/macshell-x/contrib/niri.kdl"
 ```
 
+## Compositor
+
+The niri fork lives in `compositor/niri` (branch `macshell`, based on `v26.04`). It's a separate
+git repository and is ignored here for now. So far it adds a `glass` option to
+`background-effect`; see [contrib/niri-glass.kdl](contrib/niri-glass.kdl).
+
+Build it in nixpkgs' niri build environment, not niri's own flake. The flake pins an older
+nixpkgs, so its glibc doesn't match the system's Mesa drivers, and EGL fails to load at runtime:
+
+```sh
+cd compositor/niri
+nix develop nixpkgs#niri --command cargo build
+```
+
+To try it without leaving your session, run it nested with a test config. It opens as a window:
+
+```sh
+./target/debug/niri -c path/to/test.kdl
+```
+
 ## Notes
 
 - We depend on iced's component crates (`iced_widget`, `iced_futures`, `iced_renderer`) instead of
