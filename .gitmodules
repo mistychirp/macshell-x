@@ -1,0 +1,4 @@
+[submodule "compositor/niri"]
+	path = compositor/niri
+	url = https://github.com/mistychirp/niri.git
+	branch = macshell

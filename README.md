@@ -35,9 +35,17 @@ include "~/Projects/macshell-x/contrib/niri.kdl"
 
 ## Compositor
 
-The niri fork lives in `compositor/niri` (branch `macshell`, based on `v26.04`). It's a separate
-git repository and is ignored here for now. So far it adds a `glass` option to
-`background-effect`; see [contrib/niri-glass.kdl](contrib/niri-glass.kdl).
+The niri fork is a git submodule at `compositor/niri`. It tracks the `macshell` branch of
+[mistychirp/niri](https://github.com/mistychirp/niri), which is based on `v26.04`. So far it adds
+a `glass` option to `background-effect`; see [contrib/niri-glass.kdl](contrib/niri-glass.kdl).
+
+```sh
+git clone --recurse-submodules https://github.com/mistychirp/macshell-x.git
+# or, in an existing clone:
+git submodule update --init
+```
+
+Inside the submodule, `upstream` should point at niri-wm/niri for rebasing onto new releases.
 
 Build it in nixpkgs' niri build environment, not niri's own flake. The flake pins an older
 nixpkgs, so its glibc doesn't match the system's Mesa drivers, and EGL fails to load at runtime:
