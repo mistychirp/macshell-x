@@ -1,6 +1,6 @@
 //! The shell process: owns every layer surface and the state they share.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ use iced_layershell::reexport::{IcedId, PopupAnchor, PopupGravity, Task, WithCon
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
 use iced_widget::Space;
-use iced_widget::core::{Color, Event, Point, Size, Theme, theme, window};
+use iced_widget::core::{Color, Event, Point, Size, Theme, mouse, theme, window};
 use iced_widget::renderer::Renderer;
 use wayland_client::Connection;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -66,8 +66,12 @@ enum Surface {
 pub enum Message {
     WindowsChanged(Vec<WindowInfo>),
     Tick,
-    /// A dock icon was clicked; carries the app's id.
-    DockClicked(String),
+    /// A dock icon was pressed; carries the app's id. It becomes a click or a drag.
+    DockPressed(String),
+    /// Raw pointer motion on a surface, which keeps coming during a drag even outside it.
+    PointerMoved(IcedId, Point),
+    /// The left button was released over (or while grabbed by) a surface.
+    PointerReleased(IcedId),
     DockPointerMoved(Point),
     DockPointerLeft,
     /// An animation frame for dock magnification.
@@ -116,12 +120,25 @@ struct Shell {
     dock_material: Option<MaterialSurface>,
     /// Shapes last sent for the dock, to skip redundant updates while icons animate.
     dock_shapes: Vec<material::Shape>,
+    /// Latest pointer position over the dock surface.
+    dock_cursor: Point,
+    /// A press on a dock icon that hasn't become a click or a drag yet.
+    dock_press: Option<DockPress>,
+    dock_drag: Option<dock::Drag>,
     /// Apps launched from the dock that haven't opened a window yet, and when.
     launching: HashMap<String, Instant>,
     /// Shared start time for attention bounces, so they stay in step.
     started: Instant,
     menu: Option<OpenMenu>,
 }
+
+struct DockPress {
+    app_id: String,
+    at: Point,
+}
+
+/// How far the pointer has to move with the button down before a press becomes a drag.
+const DRAG_THRESHOLD: f32 = 4.0;
 
 /// How long a launch bounces before the dock gives up waiting for a window.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(8);
@@ -159,6 +176,9 @@ impl Shell {
             material,
             dock_material: None,
             dock_shapes: Vec::new(),
+            dock_cursor: Point::ORIGIN,
+            dock_press: None,
+            dock_drag: None,
             launching: HashMap::new(),
             started: Instant::now(),
             menu: None,
@@ -187,7 +207,37 @@ impl Shell {
                 return self.relayout_dock();
             }
             Message::Tick => self.clock = menubar::format_clock(),
-            Message::DockClicked(app_id) => return self.activate(&app_id),
+            Message::DockPressed(app_id) => {
+                self.dock_press = Some(DockPress {
+                    app_id,
+                    at: self.dock_cursor,
+                });
+            }
+            Message::PointerMoved(id, point) if id == self.dock_id => {
+                self.dock_cursor = point;
+                if let Some(drag) = &mut self.dock_drag {
+                    drag.pointer = point;
+                    return self.relayout_dock();
+                }
+                if let Some(press) = &self.dock_press
+                    && press.at.distance(point) > DRAG_THRESHOLD
+                {
+                    return self.start_drag();
+                }
+            }
+            Message::PointerReleased(id) if id == self.dock_id => {
+                let Some(press) = self.dock_press.take() else {
+                    return Task::none();
+                };
+                match self.dock_drag.take() {
+                    Some(drag) => {
+                        self.drop_dragged(&drag);
+                        return self.relayout_dock();
+                    }
+                    None => return self.activate(&press.app_id),
+                }
+            }
+            Message::DockPointerMoved(_) if self.dock_drag.is_some() => {}
             Message::DockPointerMoved(point) => {
                 self.dock_pointer.base_x = Some(dock::base_x(&self.dock_layout, point.x));
                 self.dock_pointer.hovered = dock::item_at(&self.dock_layout, point);
@@ -335,6 +385,67 @@ impl Shell {
         }
     }
 
+    fn start_drag(&mut self) -> Task<Message> {
+        let Some(press) = &self.dock_press else {
+            return Task::none();
+        };
+        let Some(index) = self
+            .dock
+            .iter()
+            .position(|item| item.app.id == press.app_id)
+        else {
+            return Task::none();
+        };
+        let Some(grab) = dock::grab_offset(&self.dock_layout, index, press.at) else {
+            return Task::none();
+        };
+
+        self.dock_drag = Some(dock::Drag {
+            index,
+            pointer: self.dock_cursor,
+            grab,
+            removable: self.pinned.contains(&press.app_id),
+        });
+        // Icons are dragged at their plain size, so magnification snaps off.
+        self.dock_pointer = dock::Pointer::default();
+        self.dock_target = 0.0;
+        self.relayout_dock()
+    }
+
+    /// Applies what the layout says releasing `drag` does, and saves the pinned apps.
+    fn drop_dragged(&mut self, drag: &dock::Drag) {
+        let Some(item) = self.dock.get(drag.index) else {
+            return;
+        };
+        let app_id = item.app.id.clone();
+
+        match self.dock_layout.drop {
+            Some(dock::Drop::Remove) => self.pinned.retain(|id| *id != app_id),
+            // Dropping an icon somewhere keeps it there, like on macOS: the dock's new order,
+            // filtered down to pinned apps (now including this one), becomes the pinned list.
+            Some(dock::Drop::Slot(slot)) => {
+                let mut order: Vec<String> = self
+                    .dock
+                    .iter()
+                    .enumerate()
+                    .filter(|&(index, _)| index != drag.index)
+                    .map(|(_, item)| item.app.id.clone())
+                    .collect();
+                order.insert(slot.min(order.len()), app_id.clone());
+
+                let mut pinned: HashSet<String> = self.pinned.drain(..).collect();
+                pinned.insert(app_id);
+                self.pinned = order.into_iter().filter(|id| pinned.contains(id)).collect();
+            }
+            None => return,
+        }
+
+        if let Err(err) = config::save_pinned(&self.pinned) {
+            log::error!("can't save pinned apps: {err}");
+        }
+        self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
+    }
+
     /// Focuses the app, or launches it with a bounce if it isn't running.
     fn activate(&mut self, app_id: &str) -> Task<Message> {
         let Some(item) = self.dock.iter().find(|item| item.app.id == app_id) else {
@@ -397,6 +508,7 @@ impl Shell {
             &self.dock_pointer,
             self.dock_max_icon,
             bounce,
+            self.dock_drag.as_ref(),
         );
         if layout == self.dock_layout {
             return Task::none();
@@ -465,6 +577,12 @@ impl Shell {
                     Some(Message::SurfaceResized(id, size))
                 }
                 Event::Window(window::Event::Closed) => Some(Message::SurfaceClosed(id)),
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(Message::PointerMoved(id, position))
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    Some(Message::PointerReleased(id))
+                }
                 _ => None,
             }),
         ])

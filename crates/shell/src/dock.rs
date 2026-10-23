@@ -9,7 +9,7 @@ use std::f32::consts::PI;
 use std::rc::Rc;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
-use iced_widget::core::{Background, Border, Color, Length, Point, Rectangle, mouse};
+use iced_widget::core::{Background, Border, Color, Length, Point, Rectangle, Vector, mouse};
 use iced_widget::{Space, container, image, mouse_area, pin, stack, text};
 
 use crate::app::{Element, Message};
@@ -38,6 +38,11 @@ const LABEL_HEIGHT: f32 = 26.0;
 const LABEL_GAP: f32 = 10.0;
 /// Gap between a menu and the top of the icon it belongs to.
 const MENU_GAP: f32 = 8.0;
+
+/// How far above the pill the pointer has to drag a pinned icon to remove it.
+const REMOVE_DISTANCE: f32 = 40.0;
+/// Room above the pill for an icon dragged toward removal, with its label.
+const DRAG_HEADROOM: f32 = REMOVE_DISTANCE + ICON_SIZE + LABEL_GAP + LABEL_HEIGHT + 4.0;
 
 /// One launch bounce: up and back down, in seconds.
 const LAUNCH_HOP: f32 = 0.7;
@@ -103,6 +108,30 @@ pub struct Layout {
     /// How far each icon is lifted by a bounce. Only drawing uses it: the input region, the
     /// material and the label stay put, so bouncing doesn't touch the surface's state.
     pub bounce: Vec<f32>,
+    /// The item being dragged, if any; its icon floats under the pointer.
+    pub dragged: Option<usize>,
+    /// What releasing the drag would do.
+    pub drop: Option<Drop>,
+}
+
+/// An icon being dragged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Drag {
+    pub index: usize,
+    /// Pointer position, in surface coordinates.
+    pub pointer: Point,
+    /// Where the icon was grabbed, from its top-left corner at its unmagnified size.
+    pub grab: Vector,
+    /// Whether dragging it out of the dock removes it, i.e. it's pinned.
+    pub removable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drop {
+    /// Keep the app in the dock at this position.
+    Slot(usize),
+    /// Unpin the app.
+    Remove,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,9 +140,10 @@ pub struct Label {
     pub text: String,
 }
 
-/// Room above the pill for the largest icon and the label over it.
+/// Room above the pill: for the largest icon and the label over it, or for dragging an icon
+/// out, whichever needs more.
 fn headroom(max_icon: f32) -> f32 {
-    (max_icon - ICON_SIZE).max(0.0) + LABEL_GAP + LABEL_HEIGHT + 4.0
+    ((max_icon - ICON_SIZE).max(0.0) + LABEL_GAP + LABEL_HEIGHT + 4.0).max(DRAG_HEADROOM)
 }
 
 /// `max_icon` is the size of a fully magnified icon (the plain icon size without magnification).
@@ -156,7 +186,14 @@ pub fn layout(
     pointer: &Pointer,
     max_icon: f32,
     bounce: Vec<f32>,
+    drag: Option<&Drag>,
 ) -> Layout {
+    if let Some(drag) = drag
+        && drag.index < items.len()
+    {
+        return drag_layout(surface_width, items.len(), drag, max_icon);
+    }
+
     let sizes: Vec<f32> = (0..items.len())
         .map(|index| icon_size(index, pointer, max_icon))
         .collect();
@@ -215,7 +252,97 @@ pub fn layout(
         icons,
         label,
         bounce,
+        dragged: None,
+        drop: None,
     }
+}
+
+/// While dragging: icons at their plain size, a gap where the dragged one would land, and the
+/// dragged icon itself under the pointer.
+fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> Layout {
+    let pill_y = headroom(max_icon).round();
+    let removing = drag.removable && drag.pointer.y < pill_y - REMOVE_DISTANCE;
+    // Dragging out to remove closes the gap; otherwise the dragged icon keeps a slot.
+    let slots = if removing { count - 1 } else { count };
+
+    let width = if slots == 0 {
+        2.0 * PADDING_X + ICON_SIZE
+    } else {
+        2.0 * PADDING_X + slots as f32 * ICON_SIZE + (slots - 1) as f32 * SPACING
+    };
+    let pill = Rectangle {
+        x: ((surface_width - width) / 2.0).round(),
+        y: pill_y,
+        width,
+        height: PILL_HEIGHT,
+    };
+
+    let dragged = Rectangle {
+        x: drag.pointer.x - drag.grab.x,
+        y: (drag.pointer.y - drag.grab.y).max(0.0),
+        width: ICON_SIZE,
+        height: ICON_SIZE,
+    };
+    let slot_x = |slot: usize| pill.x + PADDING_X + slot as f32 * (ICON_SIZE + SPACING);
+    let target = (!removing).then(|| {
+        let slot = (dragged.x - slot_x(0)) / (ICON_SIZE + SPACING);
+        slot.round().clamp(0.0, (count - 1) as f32) as usize
+    });
+
+    let mut slot = 0;
+    let icons = (0..count)
+        .map(|index| {
+            if index == drag.index {
+                return dragged;
+            }
+            if Some(slot) == target {
+                slot += 1;
+            }
+            let rect = Rectangle {
+                x: slot_x(slot),
+                y: pill.y + PADDING,
+                width: ICON_SIZE,
+                height: ICON_SIZE,
+            };
+            slot += 1;
+            rect
+        })
+        .collect();
+
+    let label = removing.then(|| {
+        let text = String::from("Remove");
+        let width = (menu::text_width(&text, LABEL_TEXT_SIZE) + 2.0 * LABEL_PADDING_X).ceil();
+        Label {
+            rect: Rectangle {
+                x: (dragged.center_x() - width / 2.0)
+                    .round()
+                    .clamp(0.0, (surface_width - width).max(0.0)),
+                y: (dragged.y - LABEL_GAP - LABEL_HEIGHT).round().max(0.0),
+                width,
+                height: LABEL_HEIGHT,
+            },
+            text,
+        }
+    });
+
+    Layout {
+        pill,
+        icons,
+        label,
+        bounce: Vec::new(),
+        dragged: Some(drag.index),
+        drop: Some(target.map_or(Drop::Remove, Drop::Slot)),
+    }
+}
+
+/// Where icon `index` of `layout` was grabbed, at the icon's unmagnified size.
+pub fn grab_offset(layout: &Layout, index: usize, pointer: Point) -> Option<Vector> {
+    let icon = layout.icons.get(index)?;
+    let scale = ICON_SIZE / icon.width;
+    Some(Vector::new(
+        (pointer.x - icon.x) * scale,
+        (pointer.y - icon.y) * scale,
+    ))
 }
 
 /// Horizontal extent of icon `index`'s slot: the icon plus half the spacing on either side, so
@@ -280,7 +407,10 @@ pub fn input_region(layout: &Layout) -> Vec<material::Rect> {
         layout
             .icons
             .iter()
-            .filter(|icon| icon.y < layout.pill.y)
+            .enumerate()
+            // A dragged icon gets pointer events through the implicit grab anyway.
+            .filter(|&(index, icon)| icon.y < layout.pill.y && layout.dragged != Some(index))
+            .map(|(_, icon)| icon)
             .map(|&icon| {
                 let (start, end) = slot(&icon);
                 let top = icon.y.floor();
@@ -454,9 +584,13 @@ pub fn view<'a>(
 
     let dot_y = layout.pill.y + PADDING + ICON_SIZE + DOT_GAP;
     for (index, (item, rect)) in items.iter().zip(&layout.icons).enumerate() {
+        if layout.dragged == Some(index) {
+            continue;
+        }
         let lift = layout.bounce.get(index).copied().unwrap_or(0.0);
+        // A press becomes a click or a drag depending on what the pointer does next.
         let icon = mouse_area(icon(&item.app, rect.width))
-            .on_press(Message::DockClicked(item.app.id.clone()))
+            .on_press(Message::DockPressed(item.app.id.clone()))
             .on_right_press(Message::DockMenuRequested(item.app.id.clone()))
             .interaction(mouse::Interaction::Pointer);
         layers.push(pin(icon).x(rect.x).y(rect.y - lift).into());
@@ -469,6 +603,13 @@ pub fn view<'a>(
                     .into(),
             );
         }
+    }
+
+    // The dragged icon floats above everything else.
+    if let Some(index) = layout.dragged
+        && let (Some(item), Some(rect)) = (items.get(index), layout.icons.get(index))
+    {
+        layers.push(pin(icon(&item.app, rect.width)).x(rect.x).y(rect.y).into());
     }
 
     if let Some(label) = &layout.label {
