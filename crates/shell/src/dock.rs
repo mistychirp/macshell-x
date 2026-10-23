@@ -1,10 +1,18 @@
-//! The dock: pinned apps first, then running ones, with a dot under each running app.
+//! The dock: pinned apps first, then running ones, with a dot under each running app and the
+//! hovered app's name above it.
+//!
+//! The surface spans the bottom of the output and is taller than the pill, leaving room above
+//! it. [`layout`] places everything; the view, the material shapes and the input region are all
+//! derived from it, so they always line up.
 
 use std::rc::Rc;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
-use iced_widget::core::{Alignment, Background, Border, Color, Length, mouse};
-use iced_widget::{Space, column, container, image, mouse_area, row, svg, text};
+use iced_widget::core::text::{LineHeight, Paragraph as _, Shaping, Wrapping};
+use iced_widget::core::{
+    Alignment, Background, Border, Color, Font, Length, Point, Rectangle, Size, alignment, mouse,
+};
+use iced_widget::{Space, column, container, image, mouse_area, pin, row, stack, svg, text};
 
 use crate::app::{Element, Message};
 use crate::apps::{App, AppIndex};
@@ -18,8 +26,17 @@ const PADDING: f32 = 6.0;
 const PADDING_X: f32 = PADDING + 2.0;
 const SPACING: f32 = 4.0;
 const RADIUS: f32 = 20.0;
-const MARGIN: i32 = 6;
-const HEIGHT: u32 = (ICON_SIZE + DOT_GAP + DOT_SIZE + 2.0 * PADDING) as u32;
+const MARGIN: f32 = 6.0;
+const PILL_HEIGHT: f32 = ICON_SIZE + DOT_GAP + DOT_SIZE + 2.0 * PADDING;
+/// Room above the pill for the name label (and later, magnified icons).
+const HEADROOM: f32 = 96.0;
+const SURFACE_HEIGHT: u32 = (HEADROOM + PILL_HEIGHT + MARGIN) as u32;
+
+const LABEL_TEXT_SIZE: f32 = 13.0;
+const LABEL_PADDING_X: f32 = 10.0;
+const LABEL_HEIGHT: f32 = 26.0;
+/// Gap between the label and the top of the pill.
+const LABEL_GAP: f32 = 10.0;
 
 pub struct Item {
     pub app: Rc<App>,
@@ -27,32 +44,122 @@ pub struct Item {
     windows: Vec<WindowInfo>,
 }
 
-/// The surface is exactly the pill, so clicks beside it reach the windows behind.
-pub fn settings(item_count: usize) -> NewLayerShellSettings {
+/// Where everything goes, in surface-local logical pixels.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Layout {
+    pub pill: Rectangle,
+    pub label: Option<Label>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Label {
+    pub rect: Rectangle,
+    pub text: String,
+}
+
+pub fn settings() -> NewLayerShellSettings {
     NewLayerShellSettings {
-        anchor: Anchor::Bottom,
+        anchor: Anchor::Bottom | Anchor::Left | Anchor::Right,
         layer: Layer::Top,
-        size: Some(size(item_count)),
-        margin: Some((0, 0, MARGIN, 0)),
-        exclusive_zone: Some(HEIGHT as i32),
+        size: Some((0, SURFACE_HEIGHT)),
+        // Only the pill reserves space; the room above it overlaps windows, and the input
+        // region lets clicks there through.
+        exclusive_zone: Some((PILL_HEIGHT + MARGIN) as i32),
         keyboard_interactivity: KeyboardInteractivity::None,
         namespace: Some(String::from("macshell-dock")),
         ..Default::default()
     }
 }
 
-pub fn size(item_count: usize) -> (u32, u32) {
-    let n = item_count.max(1) as f32;
+pub fn layout(surface_width: f32, items: &[Item], hovered: Option<usize>) -> Layout {
+    let n = items.len().max(1) as f32;
     let width = 2.0 * PADDING_X + n * ICON_SIZE + (n - 1.0) * SPACING;
-    (width as u32, HEIGHT)
+    let pill = Rectangle {
+        x: ((surface_width - width) / 2.0).round(),
+        y: HEADROOM,
+        width,
+        height: PILL_HEIGHT,
+    };
+
+    let label = hovered.and_then(|index| {
+        let item = items.get(index)?;
+        let width = (measure_label(&item.app.name) + 2.0 * LABEL_PADDING_X).ceil();
+        let icon_center =
+            pill.x + PADDING_X + index as f32 * (ICON_SIZE + SPACING) + ICON_SIZE / 2.0;
+        let x = (icon_center - width / 2.0)
+            .round()
+            .clamp(0.0, (surface_width - width).max(0.0));
+
+        Some(Label {
+            rect: Rectangle {
+                x,
+                y: pill.y - LABEL_GAP - LABEL_HEIGHT,
+                width,
+                height: LABEL_HEIGHT,
+            },
+            text: item.app.name.clone(),
+        })
+    });
+
+    Layout { pill, label }
 }
 
-pub fn material_shapes((width, height): (u32, u32), style: material::Style) -> Vec<Shape> {
-    vec![Shape {
-        rect: (0, 0, width as i32, height as i32),
+/// The item under `point`, given relative to the pill.
+pub fn item_at(point: Point, item_count: usize) -> Option<usize> {
+    // Each icon owns half of the spacing on either side, so there are no dead gaps.
+    let slot = ICON_SIZE + SPACING;
+    let x = point.x - PADDING_X + SPACING / 2.0;
+    if x < 0.0 {
+        return None;
+    }
+    let index = (x / slot) as usize;
+    (index < item_count).then_some(index)
+}
+
+pub fn material_shapes(layout: &Layout, style: material::Style) -> Vec<Shape> {
+    let mut shapes = vec![Shape {
+        rect: rect_i32(layout.pill),
         radius: RADIUS as i32,
         style,
-    }]
+    }];
+    if let Some(label) = &layout.label {
+        shapes.push(Shape {
+            rect: rect_i32(label.rect),
+            radius: (LABEL_HEIGHT / 2.0) as i32,
+            // Frosted keeps the name readable over busy backgrounds.
+            style: material::Style::Frosted,
+        });
+    }
+    shapes
+}
+
+/// The part of the surface that takes input: just the pill.
+pub fn input_region(layout: &Layout) -> material::Rect {
+    rect_i32(layout.pill)
+}
+
+fn rect_i32(rect: Rectangle) -> material::Rect {
+    (
+        rect.x as i32,
+        rect.y as i32,
+        rect.width as i32,
+        rect.height as i32,
+    )
+}
+
+fn measure_label(text: &str) -> f32 {
+    iced_widget::graphics::text::Paragraph::with_text(iced_widget::core::Text {
+        content: text,
+        bounds: Size::INFINITE,
+        size: LABEL_TEXT_SIZE.into(),
+        line_height: LineHeight::default(),
+        font: Font::default(),
+        align_x: Default::default(),
+        align_y: alignment::Vertical::Top,
+        shaping: Shaping::Advanced,
+        wrapping: Wrapping::None,
+    })
+    .min_width()
 }
 
 pub fn items(pinned: &[String], windows: &[WindowInfo], apps: &mut AppIndex) -> Vec<Item> {
@@ -96,18 +203,20 @@ pub fn activate(item: &Item) {
     }
 }
 
-pub fn view(items: &[Item], material: Option<material::Kind>) -> Element<'_> {
+pub fn view<'a>(
+    items: &'a [Item],
+    layout: &'a Layout,
+    material: Option<material::Kind>,
+) -> Element<'a> {
     // Glass brings its own rim and highlight; over blur (or nothing) the pill needs a faint
     // fill and border to read as a surface.
-    let (fill, border) = match material {
-        Some(material::Kind::Glass) => (0.0, 0.0),
-        _ => (0.04, 0.14),
-    };
+    let glass = material == Some(material::Kind::Glass);
+    let (fill, border) = if glass { (0.0, 0.0) } else { (0.04, 0.14) };
 
-    container(row(items.iter().map(tile)).spacing(SPACING))
+    let pill = container(row(items.iter().map(tile)).spacing(SPACING))
         .padding([PADDING, PADDING_X])
-        .width(Length::Fill)
-        .height(Length::Fill)
+        .width(layout.pill.width)
+        .height(layout.pill.height)
         .style(move |_| container::Style {
             background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, fill))),
             border: Border {
@@ -116,7 +225,34 @@ pub fn view(items: &[Item], material: Option<material::Kind>) -> Element<'_> {
                 radius: RADIUS.into(),
             },
             ..Default::default()
-        })
+        });
+    let pill = mouse_area(pill)
+        .on_move(Message::DockPointerMoved)
+        .on_exit(Message::DockPointerLeft);
+
+    let mut layers = vec![pin(pill).x(layout.pill.x).y(layout.pill.y).into()];
+
+    if let Some(label) = &layout.label {
+        // Over glass, a light dark tint keeps the frosted bubble legible; without it, the
+        // bubble needs a fill of its own.
+        let tint = if material.is_some() { 0.25 } else { 0.6 };
+        let bubble = container(text(&label.text).size(LABEL_TEXT_SIZE))
+            .center_x(label.rect.width)
+            .center_y(label.rect.height)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, tint))),
+                border: Border {
+                    radius: (LABEL_HEIGHT / 2.0).into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        layers.push(pin(bubble).x(label.rect.x).y(label.rect.y).into());
+    }
+
+    stack(layers)
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
 }
 

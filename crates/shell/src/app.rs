@@ -6,12 +6,13 @@ use std::time::Duration;
 
 use iced_futures::Subscription;
 use iced_futures::backend::native::tokio::time;
+use iced_layershell::actions::ActionCallback;
 use iced_layershell::daemon;
 use iced_layershell::reexport::{IcedId, Task, WithConnection};
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
 use iced_widget::Space;
-use iced_widget::core::{Color, Event, Theme, theme, window};
+use iced_widget::core::{Color, Event, Point, Size, Theme, theme, window};
 use iced_widget::renderer::Renderer;
 use wayland_client::Connection;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -66,7 +67,10 @@ pub enum Message {
     Tick,
     /// A dock icon was clicked; carries the app's id.
     DockClicked(String),
-    SurfaceOpened(IcedId),
+    DockPointerMoved(Point),
+    DockPointerLeft,
+    SurfaceOpened(IcedId, Size),
+    SurfaceResized(IcedId, Size),
     /// The dock's `wl_surface`, if it could be reached.
     DockSurface(Option<WlSurface>),
 }
@@ -80,7 +84,10 @@ struct Shell {
     clock: String,
     dock: Vec<dock::Item>,
     dock_id: IcedId,
-    dock_size: (u32, u32),
+    /// Width of the dock surface; 0 until the compositor has configured it.
+    dock_width: f32,
+    dock_hovered: Option<usize>,
+    dock_layout: dock::Layout,
     material: Option<Rc<Material>>,
     dock_material: Option<MaterialSurface>,
 }
@@ -92,7 +99,7 @@ impl Shell {
         let dock = dock::items(&config.dock.pinned, &[], &mut apps);
 
         let (menubar_id, open_menubar) = Message::layershell_open(menubar::settings());
-        let (dock_id, open_dock) = Message::layershell_open(dock::settings(dock.len()));
+        let (dock_id, open_dock) = Message::layershell_open(dock::settings());
 
         let shell = Self {
             surfaces: HashMap::from([(menubar_id, Surface::MenuBar), (dock_id, Surface::Dock)]),
@@ -101,9 +108,11 @@ impl Shell {
             dock_style: config.dock.glass,
             focused_app: None,
             clock: menubar::format_clock(),
-            dock_size: dock::size(dock.len()),
             dock,
             dock_id,
+            dock_width: 0.0,
+            dock_hovered: None,
+            dock_layout: dock::Layout::default(),
             material,
             dock_material: None,
         };
@@ -120,7 +129,7 @@ impl Shell {
                     .and_then(|w| w.app_id.as_deref())
                     .map(|app_id| self.apps.resolve(app_id).name.clone());
                 self.dock = dock::items(&self.pinned, &windows, &mut self.apps);
-                return self.resize_dock();
+                return self.relayout_dock();
             }
             Message::Tick => self.clock = menubar::format_clock(),
             Message::DockClicked(app_id) => {
@@ -128,17 +137,39 @@ impl Shell {
                     dock::activate(item);
                 }
             }
-            Message::SurfaceOpened(id) => {
+            Message::DockPointerMoved(point) => {
+                let hovered = dock::item_at(point, self.dock.len());
+                if hovered != self.dock_hovered {
+                    self.dock_hovered = hovered;
+                    return self.relayout_dock();
+                }
+            }
+            Message::DockPointerLeft => {
+                if self.dock_hovered.take().is_some() {
+                    return self.relayout_dock();
+                }
+            }
+            Message::SurfaceOpened(id, size) if id == self.dock_id => {
+                self.dock_width = size.width;
+                let relayout = self.relayout_dock();
+
                 // Attaching twice is a protocol error, so only ever do it once.
-                if id == self.dock_id
-                    && self.dock_material.is_none()
+                if self.dock_material.is_none()
                     && let Some(material) = &self.material
                 {
                     let connection = material.connection().clone();
-                    return iced_runtime::window::run(id, move |window| {
+                    let attach = iced_runtime::window::run(id, move |window| {
                         material::surface_of(&connection, window)
                     })
                     .map(Message::DockSurface);
+                    return Task::batch([relayout, attach]);
+                }
+                return relayout;
+            }
+            Message::SurfaceResized(id, size) if id == self.dock_id => {
+                if size.width != self.dock_width {
+                    self.dock_width = size.width;
+                    return self.relayout_dock();
                 }
             }
             Message::DockSurface(Some(surface)) => {
@@ -146,7 +177,7 @@ impl Shell {
                     let target = material.attach(surface);
                     material.set_shapes(
                         &target,
-                        &dock::material_shapes(self.dock_size, self.dock_style),
+                        &dock::material_shapes(&self.dock_layout, self.dock_style),
                     );
                     self.dock_material = Some(target);
                 }
@@ -159,27 +190,46 @@ impl Shell {
         Task::none()
     }
 
-    /// Fits the dock surface (and its material) to the current number of items.
-    fn resize_dock(&mut self) -> Task<Message> {
-        let size = dock::size(self.dock.len());
-        if size == self.dock_size {
+    /// Recomputes the dock layout, and pushes whatever changed to the material and the input
+    /// region.
+    fn relayout_dock(&mut self) -> Task<Message> {
+        // Nothing to place until the compositor has given the surface a size.
+        if self.dock_width == 0.0 {
             return Task::none();
         }
-        self.dock_size = size;
+
+        let layout = dock::layout(self.dock_width, &self.dock, self.dock_hovered);
+        if layout == self.dock_layout {
+            return Task::none();
+        }
+        let pill_moved = layout.pill != self.dock_layout.pill;
+        self.dock_layout = layout;
 
         if let (Some(material), Some(target)) = (&self.material, &self.dock_material) {
-            material.set_shapes(target, &dock::material_shapes(size, self.dock_style));
+            material.set_shapes(
+                target,
+                &dock::material_shapes(&self.dock_layout, self.dock_style),
+            );
         }
-        Task::done(Message::SizeChange {
+
+        if !pill_moved {
+            return Task::none();
+        }
+        let (x, y, width, height) = dock::input_region(&self.dock_layout);
+        Task::done(Message::SetInputRegion {
             id: self.dock_id,
-            size,
+            callback: ActionCallback::new(move |region| region.add(x, y, width, height)),
         })
     }
 
     fn view(&self, id: IcedId) -> Element<'_> {
         match self.surfaces.get(&id) {
             Some(Surface::MenuBar) => menubar::view(self.focused_app.as_deref(), &self.clock),
-            Some(Surface::Dock) => dock::view(&self.dock, self.material.as_ref().map(|m| m.kind())),
+            Some(Surface::Dock) => dock::view(
+                &self.dock,
+                &self.dock_layout,
+                self.material.as_ref().map(|m| m.kind()),
+            ),
             None => Space::new().into(),
         }
     }
@@ -189,7 +239,12 @@ impl Shell {
             niri::windows().map(Message::WindowsChanged),
             time::every(Duration::from_secs(1)).map(|_| Message::Tick),
             iced_futures::event::listen_with(|event, _, id| match event {
-                Event::Window(window::Event::Opened { .. }) => Some(Message::SurfaceOpened(id)),
+                Event::Window(window::Event::Opened { size, .. }) => {
+                    Some(Message::SurfaceOpened(id, size))
+                }
+                Event::Window(window::Event::Resized(size)) => {
+                    Some(Message::SurfaceResized(id, size))
+                }
                 _ => None,
             }),
         ])
