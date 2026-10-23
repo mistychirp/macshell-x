@@ -13,13 +13,28 @@ pub struct Config {
     pub dock: DockConfig,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct DockConfig {
     /// Desktop entry ids (or app ids) kept in the dock even when they aren't running.
     pub pinned: Vec<String>,
     /// Glass style behind the dock, when the compositor offers glass.
     pub glass: Style,
+    /// Grow icons near the pointer.
+    pub magnification: bool,
+    /// Size of the icon right under the pointer, in logical pixels (icons are 48).
+    pub magnified_size: f32,
+}
+
+impl Default for DockConfig {
+    fn default() -> Self {
+        Self {
+            pinned: Vec::new(),
+            glass: Style::default(),
+            magnification: true,
+            magnified_size: 80.0,
+        }
+    }
 }
 
 impl Config {

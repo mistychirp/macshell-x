@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iced_futures::Subscription;
 use iced_futures::backend::native::tokio::time;
@@ -69,6 +69,8 @@ pub enum Message {
     DockClicked(String),
     DockPointerMoved(Point),
     DockPointerLeft,
+    /// An animation frame for dock magnification.
+    DockFrame(Instant),
     SurfaceOpened(IcedId, Size),
     SurfaceResized(IcedId, Size),
     /// The dock's `wl_surface`, if it could be reached.
@@ -86,10 +88,17 @@ struct Shell {
     dock_id: IcedId,
     /// Width of the dock surface; 0 until the compositor has configured it.
     dock_width: f32,
-    dock_hovered: Option<usize>,
+    dock_pointer: dock::Pointer,
+    /// What `dock_pointer.amount` is easing toward.
+    dock_target: f32,
+    dock_last_frame: Option<Instant>,
+    /// Size of a fully magnified icon.
+    dock_max_icon: f32,
     dock_layout: dock::Layout,
     material: Option<Rc<Material>>,
     dock_material: Option<MaterialSurface>,
+    /// Shapes last sent for the dock, to skip redundant updates while icons animate.
+    dock_shapes: Vec<material::Shape>,
 }
 
 impl Shell {
@@ -99,7 +108,12 @@ impl Shell {
         let dock = dock::items(&config.dock.pinned, &[], &mut apps);
 
         let (menubar_id, open_menubar) = Message::layershell_open(menubar::settings());
-        let (dock_id, open_dock) = Message::layershell_open(dock::settings());
+        let dock_max_icon = if config.dock.magnification {
+            config.dock.magnified_size.clamp(dock::ICON_SIZE, 128.0)
+        } else {
+            dock::ICON_SIZE
+        };
+        let (dock_id, open_dock) = Message::layershell_open(dock::settings(dock_max_icon));
 
         let shell = Self {
             surfaces: HashMap::from([(menubar_id, Surface::MenuBar), (dock_id, Surface::Dock)]),
@@ -111,10 +125,14 @@ impl Shell {
             dock,
             dock_id,
             dock_width: 0.0,
-            dock_hovered: None,
+            dock_pointer: dock::Pointer::default(),
+            dock_target: 0.0,
+            dock_last_frame: None,
+            dock_max_icon,
             dock_layout: dock::Layout::default(),
             material,
             dock_material: None,
+            dock_shapes: Vec::new(),
         };
 
         (shell, Task::batch([open_menubar, open_dock]))
@@ -138,16 +156,36 @@ impl Shell {
                 }
             }
             Message::DockPointerMoved(point) => {
-                let hovered = dock::item_at(point, self.dock.len());
-                if hovered != self.dock_hovered {
-                    self.dock_hovered = hovered;
-                    return self.relayout_dock();
+                self.dock_pointer.base_x = Some(dock::base_x(&self.dock_layout, point.x));
+                self.dock_pointer.hovered = dock::item_at(&self.dock_layout, point);
+                if self.dock_max_icon > dock::ICON_SIZE {
+                    self.dock_target = 1.0;
                 }
+                return self.relayout_dock();
             }
             Message::DockPointerLeft => {
-                if self.dock_hovered.take().is_some() {
-                    return self.relayout_dock();
+                self.dock_pointer.hovered = None;
+                self.dock_target = 0.0;
+                return self.relayout_dock();
+            }
+            Message::DockFrame(now) => {
+                // Exponential easing, independent of how regularly frames arrive.
+                let dt = self
+                    .dock_last_frame
+                    .map_or(0.016, |last| (now - last).as_secs_f32())
+                    .min(0.05);
+                self.dock_last_frame = Some(now);
+
+                let pointer = &mut self.dock_pointer;
+                pointer.amount += (self.dock_target - pointer.amount) * (1.0 - (-dt / 0.06).exp());
+                if (self.dock_target - pointer.amount).abs() < 0.005 {
+                    pointer.amount = self.dock_target;
+                    self.dock_last_frame = None;
                 }
+                if pointer.amount == 0.0 {
+                    pointer.base_x = None;
+                }
+                return self.relayout_dock();
             }
             Message::SurfaceOpened(id, size) if id == self.dock_id => {
                 self.dock_width = size.width;
@@ -175,10 +213,8 @@ impl Shell {
             Message::DockSurface(Some(surface)) => {
                 if let Some(material) = &self.material {
                     let target = material.attach(surface);
-                    material.set_shapes(
-                        &target,
-                        &dock::material_shapes(&self.dock_layout, self.dock_style),
-                    );
+                    self.dock_shapes = dock::material_shapes(&self.dock_layout, self.dock_style);
+                    material.set_shapes(&target, &self.dock_shapes);
                     self.dock_material = Some(target);
                 }
             }
@@ -198,27 +234,37 @@ impl Shell {
             return Task::none();
         }
 
-        let layout = dock::layout(self.dock_width, &self.dock, self.dock_hovered);
+        let layout = dock::layout(
+            self.dock_width,
+            &self.dock,
+            &self.dock_pointer,
+            self.dock_max_icon,
+        );
         if layout == self.dock_layout {
             return Task::none();
         }
-        let pill_moved = layout.pill != self.dock_layout.pill;
+        let input_region = dock::input_region(&layout);
+        let input_changed = input_region != dock::input_region(&self.dock_layout);
         self.dock_layout = layout;
 
-        if let (Some(material), Some(target)) = (&self.material, &self.dock_material) {
-            material.set_shapes(
-                target,
-                &dock::material_shapes(&self.dock_layout, self.dock_style),
-            );
+        let shapes = dock::material_shapes(&self.dock_layout, self.dock_style);
+        if shapes != self.dock_shapes
+            && let (Some(material), Some(target)) = (&self.material, &self.dock_material)
+        {
+            material.set_shapes(target, &shapes);
+            self.dock_shapes = shapes;
         }
 
-        if !pill_moved {
+        if !input_changed {
             return Task::none();
         }
-        let (x, y, width, height) = dock::input_region(&self.dock_layout);
         Task::done(Message::SetInputRegion {
             id: self.dock_id,
-            callback: ActionCallback::new(move |region| region.add(x, y, width, height)),
+            callback: ActionCallback::new(move |region| {
+                for &(x, y, width, height) in &input_region {
+                    region.add(x, y, width, height);
+                }
+            }),
         })
     }
 
@@ -235,7 +281,15 @@ impl Shell {
     }
 
     fn subscription(&self) -> Subscription<Message> {
+        // Only tick while magnification is easing in or out.
+        let dock_frames = if self.dock_pointer.amount == self.dock_target {
+            Subscription::none()
+        } else {
+            time::every(Duration::from_millis(16)).map(Message::DockFrame)
+        };
+
         Subscription::batch([
+            dock_frames,
             niri::windows().map(Message::WindowsChanged),
             time::every(Duration::from_secs(1)).map(|_| Message::Tick),
             iced_futures::event::listen_with(|event, _, id| match event {

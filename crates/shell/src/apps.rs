@@ -2,18 +2,25 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use freedesktop_desktop_entry::unicase::Ascii;
 use freedesktop_desktop_entry::{DesktopEntry, find_app_by_id};
+use iced_widget::image;
+use resvg::{tiny_skia, usvg};
+
+/// Pixel size SVG icons are rasterized at: enough for a 128px magnified dock icon at 2x scale,
+/// so the GPU only ever scales them down.
+const SVG_RASTER_SIZE: u32 = 256;
 
 #[derive(Debug)]
 pub struct App {
     /// Desktop entry id (e.g. `org.kde.dolphin`), or the raw app id when no entry matched.
     pub id: String,
     pub name: String,
-    pub icon: Option<PathBuf>,
+    pub icon: Option<image::Handle>,
     pub command: Option<Vec<String>>,
 }
 
@@ -54,13 +61,16 @@ impl AppIndex {
                 name: entry
                     .name(&self.locales)
                     .map_or_else(|| fallback_name(app_id), Cow::into_owned),
-                icon: entry.icon().and_then(|icon| self.find_icon(icon)),
+                icon: entry
+                    .icon()
+                    .and_then(|icon| self.find_icon(icon))
+                    .and_then(|path| load_icon(&path)),
                 command: entry.parse_exec().ok(),
             },
             None => App {
                 id: app_id.to_owned(),
                 name: fallback_name(app_id),
-                icon: self.find_icon(app_id),
+                icon: self.find_icon(app_id).and_then(|path| load_icon(&path)),
                 command: None,
             },
         });
@@ -91,4 +101,42 @@ fn fallback_name(app_id: &str) -> String {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::from(app_id),
     }
+}
+
+/// Loads an icon as an image the GPU can scale smoothly. SVGs are rasterized once here, since
+/// drawing them as SVGs would re-rasterize them for every size the dock animates through.
+fn load_icon(path: &Path) -> Option<image::Handle> {
+    if path.extension().is_none_or(|ext| ext != "svg") {
+        return Some(image::Handle::from_path(path));
+    }
+
+    let data = fs::read(path)
+        .inspect_err(|err| log::warn!("can't read {}: {err}", path.display()))
+        .ok()?;
+    let tree = usvg::Tree::from_data(&data, &usvg::Options::default())
+        .inspect_err(|err| log::warn!("can't parse {}: {err}", path.display()))
+        .ok()?;
+
+    let size = SVG_RASTER_SIZE;
+    let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
+    let svg_size = tree.size();
+    let scale = size as f32 / svg_size.width().max(svg_size.height());
+    let offset_x = (size as f32 - svg_size.width() * scale) / 2.0;
+    let offset_y = (size as f32 - svg_size.height() * scale) / 2.0;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, offset_x, offset_y),
+        &mut pixmap.as_mut(),
+    );
+
+    // tiny-skia stores premultiplied alpha; iced expects straight alpha.
+    let rgba: Vec<u8> = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|pixel| {
+            let color = pixel.demultiply();
+            [color.red(), color.green(), color.blue(), color.alpha()]
+        })
+        .collect();
+    Some(image::Handle::from_rgba(size, size, rgba))
 }
