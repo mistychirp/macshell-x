@@ -1472,8 +1472,6 @@ dependencies = [
 [[package]]
 name = "iced_layershell"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51b59e8af02bf4c51db2ee5d130293e6e1e5ac4ae9f74a1e57990a19221aa0d5"
 dependencies = [
  "enumflags2",
  "futures",
@@ -1957,12 +1955,16 @@ dependencies = [
  "iced_futures",
  "iced_layershell",
  "iced_renderer",
+ "iced_runtime",
  "iced_widget",
  "image",
  "log",
  "niri-ipc",
+ "raw-window-handle",
  "serde",
  "toml",
+ "wayland-client",
+ "wayland-protocols",
 ]
 
 [[package]]

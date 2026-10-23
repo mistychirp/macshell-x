@@ -1,7 +1,12 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+
+[patch.crates-io]
+# Adds `window::Action::Run`, which we need to reach a surface's `wl_surface`. See vendor/README.md.
+iced_layershell = { path = "vendor/iced_layershell" }

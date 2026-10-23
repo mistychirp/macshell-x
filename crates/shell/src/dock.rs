@@ -8,14 +8,18 @@ use iced_widget::{Space, column, container, image, mouse_area, row, svg, text};
 
 use crate::app::{Element, Message};
 use crate::apps::{App, AppIndex};
+use crate::blur::{self, Rect};
 use crate::niri::{self, WindowInfo};
 
 const ICON_SIZE: f32 = 48.0;
 const DOT_SIZE: f32 = 4.0;
 const DOT_GAP: f32 = 3.0;
 const PADDING: f32 = 6.0;
-const MARGIN: f32 = 6.0;
-const HEIGHT: u32 = (ICON_SIZE + DOT_GAP + DOT_SIZE + 2.0 * PADDING + MARGIN) as u32;
+const PADDING_X: f32 = PADDING + 2.0;
+const SPACING: f32 = 4.0;
+const RADIUS: f32 = 20.0;
+const MARGIN: i32 = 6;
+const HEIGHT: u32 = (ICON_SIZE + DOT_GAP + DOT_SIZE + 2.0 * PADDING) as u32;
 
 pub struct Item {
     pub app: Rc<App>,
@@ -23,16 +27,28 @@ pub struct Item {
     windows: Vec<WindowInfo>,
 }
 
-pub fn settings() -> NewLayerShellSettings {
+/// The surface is exactly the pill, so clicks beside it reach the windows behind.
+pub fn settings(item_count: usize) -> NewLayerShellSettings {
     NewLayerShellSettings {
-        anchor: Anchor::Bottom | Anchor::Left | Anchor::Right,
+        anchor: Anchor::Bottom,
         layer: Layer::Top,
-        size: Some((0, HEIGHT)),
+        size: Some(size(item_count)),
+        margin: Some((0, 0, MARGIN, 0)),
         exclusive_zone: Some(HEIGHT as i32),
         keyboard_interactivity: KeyboardInteractivity::None,
         namespace: Some(String::from("macshell-dock")),
         ..Default::default()
     }
+}
+
+pub fn size(item_count: usize) -> (u32, u32) {
+    let n = item_count.max(1) as f32;
+    let width = 2.0 * PADDING_X + n * ICON_SIZE + (n - 1.0) * SPACING;
+    (width as u32, HEIGHT)
+}
+
+pub fn blur_region((width, height): (u32, u32)) -> Vec<Rect> {
+    blur::rounded_rect(width as i32, height as i32, RADIUS as i32)
 }
 
 pub fn items(pinned: &[String], windows: &[WindowInfo], apps: &mut AppIndex) -> Vec<Item> {
@@ -77,22 +93,19 @@ pub fn activate(item: &Item) {
 }
 
 pub fn view(items: &[Item]) -> Element<'_> {
-    let pill = container(row(items.iter().map(tile)).spacing(4))
-        .padding([PADDING, PADDING + 2.0])
+    container(row(items.iter().map(tile)).spacing(SPACING))
+        .padding([PADDING, PADDING_X])
+        .width(Length::Fill)
+        .height(Length::Fill)
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.12))),
             border: Border {
                 color: Color::from_rgba(1.0, 1.0, 1.0, 0.22),
                 width: 1.0,
-                radius: 20.0.into(),
+                radius: RADIUS.into(),
             },
             ..Default::default()
-        });
-
-    container(pill)
-        .center_x(Length::Fill)
-        .align_bottom(Length::Fill)
-        .padding(iced_widget::core::Padding::ZERO.bottom(MARGIN))
+        })
         .into()
 }
 

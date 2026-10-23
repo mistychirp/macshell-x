@@ -27,6 +27,8 @@ where
     pub surface: C::Surface,
     pub state: State<P>,
     pub mouse_interaction: mouse::Interaction,
+    /// The raw window, kept around to serve `window::Action::Run`.
+    pub raw: Arc<WindowWrapper>,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(iced_core::Rectangle, input_method::Purpose)>,
 }
@@ -97,7 +99,11 @@ where
         let layerid = window.id();
         let state = State::new(id, application, size, fractal_scale, &window, system_theme);
         let physical_size = state.viewport().physical_size();
-        let surface = compositor.create_surface(window, physical_size.width, physical_size.height);
+        let surface = compositor.create_surface(
+            window.clone(),
+            physical_size.width,
+            physical_size.height,
+        );
         let renderer = compositor.create_renderer();
         let _ = self.aliases.insert(layerid, id);
         let _ = self.back_aliases.insert(id, layerid);
@@ -111,6 +117,7 @@ where
                 surface,
                 state,
                 mouse_interaction: mouse::Interaction::Idle,
+                raw: window,
                 preedit: None,
                 ime_state: None,
             },

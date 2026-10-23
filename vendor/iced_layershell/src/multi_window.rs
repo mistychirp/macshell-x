@@ -1226,6 +1226,11 @@ pub(crate) fn run_action<P, C, E: Executor>(
                     let _ = channel.send(window.state.wayland_scale_factor() as f32);
                 };
             }
+            WindowAction::Run(id, f) => {
+                if let Some(window) = window_manager.get(id) {
+                    f(window.raw.as_ref());
+                }
+            }
             _ => {}
         },
         Action::System(action) => match action {
