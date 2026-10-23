@@ -1,0 +1,16 @@
+[package]
+name = "macshell"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+env_logger = "0.11"
+# Component crates instead of `iced` itself, which hard-depends on winit.
+iced_futures = { version = "0.14", features = ["tokio"] }
+iced_layershell = "0.19.1"
+# Without an explicit backend, iced falls back to a renderer that draws nothing.
+iced_renderer = { version = "0.14", features = ["wgpu", "tiny-skia", "wayland"] }
+iced_widget = "0.14"
+log = "0.4"
+niri-ipc = "26.4.0"
