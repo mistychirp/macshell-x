@@ -11,6 +11,9 @@ use crate::material::Style;
 #[serde(default)]
 pub struct Config {
     pub dock: DockConfig,
+    /// Desktop entry id of the app that opens folders and the trash. Defaults to the system's
+    /// default app for folders.
+    pub file_manager: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

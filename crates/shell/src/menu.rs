@@ -65,11 +65,11 @@ pub fn size(entries: &[Entry]) -> (u32, u32) {
     let label_width = entries
         .iter()
         .filter_map(|entry| match entry {
-            Entry::Item { label, .. } => Some(text_width(label, TEXT_SIZE)),
+            Entry::Item { label, .. } => Some(text_width(label, TEXT_SIZE) + CHECK_WIDTH),
             Entry::Separator => None,
         })
         .fold(0.0, f32::max);
-    let width = (label_width + CHECK_WIDTH + 2.0 * ITEM_PADDING_X + 2.0 * PADDING).max(MIN_WIDTH);
+    let width = (label_width + 2.0 * ITEM_PADDING_X + 2.0 * PADDING).max(MIN_WIDTH);
 
     let height = 2.0 * PADDING
         + entries

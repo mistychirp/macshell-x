@@ -21,11 +21,19 @@ cargo run
 `~/.config/macshell/config.toml`:
 
 ```toml
+# Desktop entry id of the app that opens folders and the trash. Defaults to the system's
+# default app for folders (`xdg-mime query default inode/directory`).
+file_manager = "org.kde.dolphin"
+
 [dock]
 # Desktop entry ids (the .desktop file name without the extension), in dock order.
+# The dock rewrites this when you drag icons around or use Keep in Dock.
 pinned = ["org.kde.dolphin", "vivaldi-stable", "Alacritty"]
 # Glass behind the dock: "clear" (refraction only, the default) or "frosted" (over a blur).
 glass = "clear"
+# Grow icons toward the pointer, up to this size (icons are 48).
+magnification = true
+magnified_size = 80
 ```
 
 The shell chooses the material behind its surfaces itself, so it needs no compositor rules:

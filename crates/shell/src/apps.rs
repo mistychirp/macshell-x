@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::rc::Rc;
 
 use freedesktop_desktop_entry::unicase::Ascii;
@@ -37,14 +38,15 @@ pub struct AppIndex {
     locales: Vec<String>,
     icon_theme: String,
     cache: HashMap<String, Rc<App>>,
+    /// Theme icons looked up by name, like the dock's places and file types.
+    themed_icons: HashMap<String, Option<image::Handle>>,
 }
 
 impl AppIndex {
     pub fn load() -> Self {
         let locales = freedesktop_desktop_entry::get_languages_from_env();
         let entries = freedesktop_desktop_entry::desktop_entries(&locales);
-        let icon_theme =
-            freedesktop_icons::default_theme_gtk().unwrap_or_else(|| String::from("hicolor"));
+        let icon_theme = icon_theme().unwrap_or_else(|| String::from("hicolor"));
         log::info!(
             "indexed {} desktop entries, icon theme {icon_theme}",
             entries.len()
@@ -55,6 +57,7 @@ impl AppIndex {
             locales,
             icon_theme,
             cache: HashMap::new(),
+            themed_icons: HashMap::new(),
         }
     }
 
@@ -98,6 +101,23 @@ impl AppIndex {
         log::debug!("resolved {app_id}: {app:?}");
         self.cache.insert(app_id.to_owned(), app.clone());
         app
+    }
+
+    /// An icon from the theme by name, like `user-trash`.
+    pub fn themed_icon(&mut self, name: &str) -> Option<image::Handle> {
+        if let Some(icon) = self.themed_icons.get(name) {
+            return icon.clone();
+        }
+        let icon = self.find_icon(name).and_then(|path| load_icon(&path));
+        self.themed_icons.insert(name.to_owned(), icon.clone());
+        icon
+    }
+
+    /// The command that opens `uris` with the app `app_id`.
+    pub fn command_with_uris(&self, app_id: &str, uris: &[&str]) -> Option<Vec<String>> {
+        find_app_by_id(&self.entries, Ascii::new(app_id))?
+            .parse_exec_with_uris(uris, &self.locales)
+            .ok()
     }
 
     fn find_icon(&self, name: &str) -> Option<PathBuf> {
@@ -159,4 +179,27 @@ fn load_icon(path: &Path) -> Option<image::Handle> {
         })
         .collect();
     Some(image::Handle::from_rgba(size, size, rgba))
+}
+
+/// The desktop entry id of the default app for `mime`, like `org.kde.dolphin` for folders.
+pub fn default_app(mime: &str) -> Option<String> {
+    let output = Command::new("xdg-mime")
+        .args(["query", "default", mime])
+        .output()
+        .ok()?;
+    let desktop_file = String::from_utf8(output.stdout).ok()?;
+    let id = desktop_file.trim().strip_suffix(".desktop")?;
+    (!id.is_empty()).then(|| id.to_owned())
+}
+
+/// The id of the GTK icon theme, like `breeze-dark`. (freedesktop_icons' `default_theme_gtk`
+/// returns the theme's display name, which lookups don't accept.)
+fn icon_theme() -> Option<String> {
+    let output = Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "icon-theme"])
+        .output()
+        .ok()?;
+    let theme = String::from_utf8(output.stdout).ok()?;
+    let theme = theme.trim().trim_matches('\'');
+    (!theme.is_empty()).then(|| theme.to_owned())
 }

@@ -1,11 +1,13 @@
 //! The dock: pinned apps first, then running ones, with a dot under each running app, the
-//! hovered app's name above it, and icons that grow toward the pointer.
+//! hovered app's name above it, and icons that grow toward the pointer. After a separator
+//! come the places: Downloads and Trash.
 //!
 //! The surface spans the bottom of the output and is taller than the pill, leaving room above
 //! it. [`layout`] places everything; the view, the material shapes and the input region are all
 //! derived from it, so they always line up.
 
 use std::f32::consts::PI;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
@@ -17,6 +19,7 @@ use crate::apps::{App, AppIndex};
 use crate::material::{self, Shape};
 use crate::menu;
 use crate::niri::{self, WindowInfo};
+use crate::places::Place;
 
 pub const ICON_SIZE: f32 = 48.0;
 const DOT_SIZE: f32 = 4.0;
@@ -27,6 +30,10 @@ const SPACING: f32 = 4.0;
 const RADIUS: f32 = 20.0;
 const MARGIN: f32 = 6.0;
 const PILL_HEIGHT: f32 = ICON_SIZE + DOT_GAP + DOT_SIZE + 2.0 * PADDING;
+
+/// Extra room between the apps and the places, where the separator line goes.
+const SEPARATOR_GAP: f32 = 12.0;
+const SEPARATOR_HEIGHT: f32 = ICON_SIZE * 0.75;
 
 /// How many icon slots to either side of the pointer magnification reaches.
 const INFLUENCE: f32 = 2.5;
@@ -102,8 +109,13 @@ pub struct Pointer {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Layout {
     pub pill: Rectangle,
-    /// One per item, bottom-aligned; magnified icons stand up out of the pill.
+    /// One per slot: the apps, then the places. Bottom-aligned; magnified icons stand up out
+    /// of the pill.
     pub icons: Vec<Rectangle>,
+    /// How many of the slots are apps; the rest are [`Place::ALL`].
+    pub apps: usize,
+    /// Horizontal center of the line between the apps and the places.
+    pub separator: f32,
     pub label: Option<Label>,
     /// How far each icon is lifted by a bounce. Only drawing uses it: the input region, the
     /// material and the label stay put, so bouncing doesn't touch the surface's state.
@@ -162,16 +174,18 @@ pub fn settings(max_icon: f32) -> NewLayerShellSettings {
     }
 }
 
-/// Unmagnified center of icon `index`, in pill coordinates.
-fn base_center(index: usize) -> f32 {
-    PADDING_X + index as f32 * (ICON_SIZE + SPACING) + ICON_SIZE / 2.0
+/// Unmagnified center of slot `index`, in pill coordinates, with `apps` app slots before the
+/// separator.
+fn base_center(index: usize, apps: usize) -> f32 {
+    let gap = if index >= apps { SEPARATOR_GAP } else { 0.0 };
+    PADDING_X + index as f32 * (ICON_SIZE + SPACING) + gap + ICON_SIZE / 2.0
 }
 
-fn icon_size(index: usize, pointer: &Pointer, max_icon: f32) -> f32 {
+fn icon_size(index: usize, apps: usize, pointer: &Pointer, max_icon: f32) -> f32 {
     let Some(base_x) = pointer.base_x else {
         return ICON_SIZE;
     };
-    let distance = (base_x - base_center(index)).abs() / (INFLUENCE * (ICON_SIZE + SPACING));
+    let distance = (base_x - base_center(index, apps)).abs() / (INFLUENCE * (ICON_SIZE + SPACING));
     if distance >= 1.0 {
         return ICON_SIZE;
     }
@@ -194,14 +208,12 @@ pub fn layout(
         return drag_layout(surface_width, items.len(), drag, max_icon);
     }
 
-    let sizes: Vec<f32> = (0..items.len())
-        .map(|index| icon_size(index, pointer, max_icon))
+    let apps = items.len();
+    let sizes: Vec<f32> = (0..apps + Place::ALL.len())
+        .map(|index| icon_size(index, apps, pointer, max_icon))
         .collect();
-    let icons_width = if sizes.is_empty() {
-        ICON_SIZE
-    } else {
-        sizes.iter().sum::<f32>() + (sizes.len() - 1) as f32 * SPACING
-    };
+    let icons_width =
+        sizes.iter().sum::<f32>() + (sizes.len() - 1) as f32 * SPACING + SEPARATOR_GAP;
 
     let width = (2.0 * PADDING_X + icons_width).round();
     let pill = Rectangle {
@@ -213,9 +225,15 @@ pub fn layout(
 
     let icon_bottom = pill.y + PADDING + ICON_SIZE;
     let mut x = pill.x + PADDING_X;
+    let mut separator = 0.0;
     let icons: Vec<Rectangle> = sizes
         .iter()
-        .map(|&size| {
+        .enumerate()
+        .map(|(index, &size)| {
+            if index == apps {
+                separator = x - SPACING / 2.0 + SEPARATOR_GAP / 2.0;
+                x += SEPARATOR_GAP;
+            }
             let rect = Rectangle {
                 x,
                 y: icon_bottom - size,
@@ -228,10 +246,12 @@ pub fn layout(
         .collect();
 
     let label = pointer.hovered.and_then(|index| {
-        let item = items.get(index)?;
+        let name = match items.get(index) {
+            Some(item) => item.app.name.clone(),
+            None => Place::ALL.get(index - apps)?.name().to_owned(),
+        };
         let icon = icons.get(index)?;
-        let width =
-            (menu::text_width(&item.app.name, LABEL_TEXT_SIZE) + 2.0 * LABEL_PADDING_X).ceil();
+        let width = (menu::text_width(&name, LABEL_TEXT_SIZE) + 2.0 * LABEL_PADDING_X).ceil();
         let x = (icon.center_x() - width / 2.0)
             .round()
             .clamp(0.0, (surface_width - width).max(0.0));
@@ -243,13 +263,15 @@ pub fn layout(
                 width,
                 height: LABEL_HEIGHT,
             },
-            text: item.app.name.clone(),
+            text: name,
         })
     });
 
     Layout {
         pill,
         icons,
+        apps,
+        separator,
         label,
         bounce,
         dragged: None,
@@ -263,13 +285,11 @@ fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> 
     let pill_y = headroom(max_icon).round();
     let removing = drag.removable && drag.pointer.y < pill_y - REMOVE_DISTANCE;
     // Dragging out to remove closes the gap; otherwise the dragged icon keeps a slot.
-    let slots = if removing { count - 1 } else { count };
+    let app_slots = if removing { count - 1 } else { count };
+    let slots = app_slots + Place::ALL.len();
 
-    let width = if slots == 0 {
-        2.0 * PADDING_X + ICON_SIZE
-    } else {
-        2.0 * PADDING_X + slots as f32 * ICON_SIZE + (slots - 1) as f32 * SPACING
-    };
+    let width =
+        2.0 * PADDING_X + slots as f32 * ICON_SIZE + (slots - 1) as f32 * SPACING + SEPARATOR_GAP;
     let pill = Rectangle {
         x: ((surface_width - width) / 2.0).round(),
         y: pill_y,
@@ -290,7 +310,7 @@ fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> 
     });
 
     let mut slot = 0;
-    let icons = (0..count)
+    let mut icons: Vec<Rectangle> = (0..count)
         .map(|index| {
             if index == drag.index {
                 return dragged;
@@ -308,6 +328,14 @@ fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> 
             rect
         })
         .collect();
+
+    let separator = slot_x(app_slots) - SPACING / 2.0 + SEPARATOR_GAP / 2.0;
+    icons.extend((0..Place::ALL.len()).map(|index| Rectangle {
+        x: slot_x(app_slots + index) + SEPARATOR_GAP,
+        y: pill.y + PADDING,
+        width: ICON_SIZE,
+        height: ICON_SIZE,
+    }));
 
     let label = removing.then(|| {
         let text = String::from("Remove");
@@ -328,6 +356,8 @@ fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> 
     Layout {
         pill,
         icons,
+        apps: count,
+        separator,
         label,
         bounce: Vec::new(),
         dragged: Some(drag.index),
@@ -361,17 +391,17 @@ pub fn base_x(layout: &Layout, surface_x: f32) -> f32 {
 
     let (first_start, _) = slot(first);
     if surface_x < first_start {
-        return base_center(0) - slot_width / 2.0 - (first_start - surface_x);
+        return base_center(0, layout.apps) - slot_width / 2.0 - (first_start - surface_x);
     }
     for (index, icon) in layout.icons.iter().enumerate() {
         let (start, end) = slot(icon);
         if surface_x < end {
             let t = (surface_x - start) / (end - start);
-            return base_center(index) - slot_width / 2.0 + t * slot_width;
+            return base_center(index, layout.apps) - slot_width / 2.0 + t * slot_width;
         }
     }
     let (_, last_end) = slot(last);
-    base_center(layout.icons.len() - 1) + slot_width / 2.0 + (surface_x - last_end)
+    base_center(layout.icons.len() - 1, layout.apps) + slot_width / 2.0 + (surface_x - last_end)
 }
 
 /// The item whose slot contains `point` (in surface coordinates).
@@ -476,6 +506,33 @@ pub enum MenuAction {
     TogglePin(String),
     /// Closes these windows.
     Quit(Vec<u64>),
+    /// Opens a file with its default app.
+    OpenPath(PathBuf),
+    /// Opens a place in the file manager.
+    OpenPlace(Place),
+    /// Asks before emptying the trash.
+    ConfirmEmptyTrash,
+    EmptyTrash,
+}
+
+/// The right-click menu for a place. `trash_count` is how many items are in the trash.
+pub fn place_menu_entries(place: Place, trash_count: usize) -> Vec<menu::Entry> {
+    let open = menu::Entry::item(
+        &format!("Open {}", place.name()),
+        Message::DockMenu(MenuAction::OpenPlace(place)),
+    );
+    match place {
+        Place::Downloads => vec![open],
+        Place::Trash if trash_count == 0 => vec![open],
+        Place::Trash => vec![
+            open,
+            menu::Entry::Separator,
+            menu::Entry::item(
+                "Empty Trash",
+                Message::DockMenu(MenuAction::ConfirmEmptyTrash),
+            ),
+        ],
+    }
 }
 
 /// The right-click menu for an item: its windows, its desktop actions, then dock and app
@@ -557,8 +614,10 @@ pub fn activate(item: &Item) {
     }
 }
 
+/// `places` holds the current icon of each of [`Place::ALL`].
 pub fn view<'a>(
     items: &'a [Item],
+    places: &'a [Option<image::Handle>],
     layout: &'a Layout,
     material: Option<material::Kind>,
 ) -> Element<'a> {
@@ -604,6 +663,34 @@ pub fn view<'a>(
             );
         }
     }
+
+    for (offset, &place) in Place::ALL.iter().enumerate() {
+        let Some(rect) = layout.icons.get(layout.apps + offset) else {
+            continue;
+        };
+        let handle = places.get(offset).and_then(Option::as_ref);
+        // Places can't be dragged, so they act right away. On press, not release: a popup's
+        // pointer grab needs the press to still be held.
+        let icon = mouse_area(icon_image(handle, place.name(), rect.width))
+            .on_press(Message::PlaceClicked(place))
+            .on_right_press(Message::PlaceMenuRequested(place))
+            .interaction(mouse::Interaction::Pointer);
+        layers.push(pin(icon).x(rect.x).y(rect.y).into());
+    }
+
+    let separator = container(Space::new())
+        .width(1)
+        .height(SEPARATOR_HEIGHT)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.3))),
+            ..Default::default()
+        });
+    layers.push(
+        pin(separator)
+            .x(layout.separator - 0.5)
+            .y(layout.pill.y + PADDING + (ICON_SIZE - SEPARATOR_HEIGHT) / 2.0)
+            .into(),
+    );
 
     // The dragged icon floats above everything else.
     if let Some(index) = layout.dragged
@@ -653,21 +740,23 @@ fn dot<'a>() -> Element<'a> {
 }
 
 fn icon(app: &App, size: f32) -> Element<'_> {
-    match &app.icon {
+    icon_image(app.icon.as_ref(), &app.name, size)
+}
+
+fn icon_image<'a>(handle: Option<&image::Handle>, name: &str, size: f32) -> Element<'a> {
+    match handle {
         Some(handle) => image(handle.clone()).width(size).height(size).into(),
-        // No icon found: a rounded tile with the app's initial.
-        None => {
-            container(text(app.name.chars().next().unwrap_or('?').to_string()).size(size * 0.45))
-                .center(size)
-                .style(move |_| container::Style {
-                    background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.2))),
-                    border: Border {
-                        radius: (size / 4.0).into(),
-                        ..Default::default()
-                    },
+        // No icon found: a rounded tile with the initial.
+        None => container(text(name.chars().next().unwrap_or('?').to_string()).size(size * 0.45))
+            .center(size)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.2))),
+                border: Border {
+                    radius: (size / 4.0).into(),
                     ..Default::default()
-                })
-                .into()
-        }
+                },
+                ..Default::default()
+            })
+            .into(),
     }
 }

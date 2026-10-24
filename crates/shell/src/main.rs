@@ -1,3 +1,4 @@
+mod alert;
 mod app;
 mod apps;
 mod config;
@@ -7,6 +8,8 @@ mod material;
 mod menu;
 mod menubar;
 mod niri;
+mod places;
+mod stack;
 
 fn main() -> Result<(), iced_layershell::Error> {
     env_logger::Builder::from_env(
