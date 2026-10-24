@@ -135,7 +135,8 @@ pub fn material_shapes(width: f32) -> Vec<Shape> {
     vec![Shape {
         rect: (0, 0, width.ceil() as i32, HEIGHT as i32),
         radius: 0,
-        style: material::Style::Clear,
+        // No background, like macOS's menu bar; the text adapts to the wallpaper instead.
+        style: material::Style::Transparent,
     }]
 }
 
@@ -254,7 +255,6 @@ pub fn view<'a>(
     clock: &'a str,
     logo: Option<&'a image::Handle>,
     open: Option<Title>,
-    material: Option<material::Kind>,
     backdrop: Option<Backdrop>,
 ) -> Element<'a> {
     let logo: Element<'a> = match logo {
@@ -265,14 +265,12 @@ pub fn view<'a>(
         None => Space::new().width(LOGO_SIZE).into(),
     };
 
-    // Knowing the backdrop, the text flips between white and black and a faint tint is enough.
-    // Otherwise a darker tint keeps white text readable on bright wallpapers.
+    // Like macOS, the bar has no background: knowing the backdrop, its text flips between white
+    // and black. Without that, a dark tint keeps white text readable on bright wallpapers.
     let ink = backdrop.unwrap_or(Backdrop::Dark).ink();
-    let tint = match (backdrop, material) {
-        (Some(Backdrop::Light), _) => Color::from_rgba(1.0, 1.0, 1.0, 0.12),
-        (Some(Backdrop::Dark), _) => Color::from_rgba(0.0, 0.0, 0.0, 0.12),
-        (None, Some(_)) => Color::from_rgba(0.0, 0.0, 0.0, 0.3),
-        (None, None) => Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+    let tint = match backdrop {
+        Some(_) => Color::TRANSPARENT,
+        None => Color::from_rgba(0.0, 0.0, 0.0, 0.3),
     };
     let highlight = Color { a: 0.2, ..ink };
     container(

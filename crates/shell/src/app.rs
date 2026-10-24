@@ -902,7 +902,6 @@ impl Shell {
                     _ => self.logo.as_ref(),
                 },
                 self.popup.as_ref().and_then(|popup| popup.title),
-                self.material.as_ref().map(|m| m.kind()),
                 self.bar_backdrop,
             ),
             Some(Surface::Dock) => dock::view(

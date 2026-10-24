@@ -34,6 +34,9 @@ pub enum Style {
     /// Refraction over a blurred background, macOS's "regular" glass. For menus, popovers and
     /// alerts, whose text needs a calm background.
     Frosted,
+    /// Nothing at all, like macOS's menu bar; the shape only says where to measure brightness
+    /// (see [`Material::track_brightness`]). Dropped where that isn't supported.
+    Transparent,
 }
 
 /// A rounded rectangle of material.
@@ -154,6 +157,10 @@ impl Material {
                     let style = match shape.style {
                         Style::Clear => macshell_glass_v1::Style::Clear,
                         Style::Frosted => macshell_glass_v1::Style::Frosted,
+                        Style::Transparent if glass.version() >= 2 => {
+                            macshell_glass_v1::Style::Transparent
+                        }
+                        Style::Transparent => continue,
                     };
                     glass.add_rounded_rect(x, y, width, height, shape.radius.max(0) as u32, style);
                 }
@@ -161,7 +168,10 @@ impl Material {
             // Blur has no notion of clear glass, so every shape is blurred.
             Effect::Blur(effect) => {
                 let region = self.compositor.create_region(&self.queue, ());
-                for shape in shapes {
+                for shape in shapes
+                    .iter()
+                    .filter(|shape| shape.style != Style::Transparent)
+                {
                     let (x, y, width, height) = shape.rect;
                     for (rx, ry, rw, rh) in rounded_rect(width, height, shape.radius) {
                         region.add(x + rx, y + ry, rw, rh);
