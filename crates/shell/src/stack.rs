@@ -5,7 +5,7 @@ use iced_widget::{button, column, container, image, row, text};
 
 use crate::app::{Element, Message};
 use crate::dock::MenuAction;
-use crate::material;
+use crate::{material, menu};
 use crate::places::{Download, Place};
 
 /// How many downloads the stack shows.
@@ -39,7 +39,6 @@ pub fn material_shapes((width, height): (u32, u32)) -> Vec<material::Shape> {
     vec![material::Shape {
         rect: (0, 0, width as i32, height as i32),
         radius: RADIUS as i32,
-        style: material::Style::Frosted,
     }]
 }
 
@@ -84,8 +83,8 @@ pub fn view(tiles: &[Tile], material: Option<material::Kind>) -> Element<'_> {
             ..Default::default()
         });
 
-    // Like menus: a light tint over frosted material, nearly opaque without it.
-    let tint = if material.is_some() { 0.3 } else { 0.9 };
+    // Like menus: a dark tint over glass, nearly opaque without it.
+    let tint = if material.is_some() { menu::TINT } else { 0.9 };
     container(
         column![
             grid,

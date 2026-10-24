@@ -413,18 +413,15 @@ pub fn item_at(layout: &Layout, point: Point) -> Option<usize> {
     })
 }
 
-pub fn material_shapes(layout: &Layout, style: material::Style) -> Vec<Shape> {
+pub fn material_shapes(layout: &Layout) -> Vec<Shape> {
     let mut shapes = vec![Shape {
         rect: rect_i32(layout.pill),
         radius: RADIUS as i32,
-        style,
     }];
     if let Some(label) = &layout.label {
         shapes.push(Shape {
             rect: rect_i32(label.rect),
             radius: (LABEL_HEIGHT / 2.0) as i32,
-            // Frosted keeps the name readable over busy backgrounds.
-            style: material::Style::Frosted,
         });
     }
     shapes
@@ -700,9 +697,8 @@ pub fn view<'a>(
     }
 
     if let Some(label) = &layout.label {
-        // Over glass, a light dark tint keeps the frosted bubble legible; without it, the
-        // bubble needs a fill of its own.
-        let tint = if material.is_some() { 0.25 } else { 0.6 };
+        // Over clear glass, the bubble needs a dark tint to stay legible on bright backgrounds.
+        let tint = if material.is_some() { 0.5 } else { 0.6 };
         let bubble = container(text(&label.text).size(LABEL_TEXT_SIZE))
             .center_x(label.rect.width)
             .center_y(label.rect.height)

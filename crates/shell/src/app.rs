@@ -122,7 +122,6 @@ struct Shell {
     surfaces: HashMap<IcedId, Surface>,
     apps: AppIndex,
     pinned: Vec<String>,
-    dock_style: material::Style,
     focused_app: Option<String>,
     clock: String,
     /// The latest window list from niri.
@@ -211,7 +210,6 @@ impl Shell {
             surfaces: HashMap::from([(menubar_id, Surface::MenuBar), (dock_id, Surface::Dock)]),
             apps,
             pinned: config.dock.pinned,
-            dock_style: config.dock.glass,
             focused_app: None,
             clock: menubar::format_clock(),
             windows: Vec::new(),
@@ -368,7 +366,7 @@ impl Shell {
             Message::DockSurface(Some(surface)) => {
                 if let Some(material) = &self.material {
                     let target = material.attach(surface);
-                    self.dock_shapes = dock::material_shapes(&self.dock_layout, self.dock_style);
+                    self.dock_shapes = dock::material_shapes(&self.dock_layout);
                     material.set_shapes(&target, &self.dock_shapes);
                     self.dock_material = Some(target);
                 }
@@ -458,9 +456,11 @@ impl Shell {
                 self.surfaces.remove(&id);
                 if self.popup.as_ref().is_some_and(|popup| popup.id == id)
                     && let Some(popup) = self.popup.take()
-                    && let Some(material) = popup.material
                 {
-                    material.destroy();
+                    if let Some(material) = popup.material {
+                        material.destroy();
+                    }
+                    return self.relayout_dock();
                 }
                 if self.alert.as_ref().is_some_and(|open| open.id == id)
                     && let Some(open) = self.alert.take()
@@ -516,7 +516,10 @@ impl Shell {
         let settings = IcedNewPopupSettings::new(self.dock_id, size, anchor)
             .anchor(PopupAnchor::Top)
             .gravity(PopupGravity::Top);
-        Task::done(Message::NewPopUp { settings, id })
+        Task::batch([
+            self.relayout_dock(),
+            Task::done(Message::NewPopUp { settings, id }),
+        ])
     }
 
     /// Opens an alert, unless one is already up.
@@ -713,7 +716,7 @@ impl Shell {
             })
             .collect();
 
-        let layout = dock::layout(
+        let mut layout = dock::layout(
             self.dock_width,
             &self.dock,
             &self.dock_pointer,
@@ -721,6 +724,11 @@ impl Shell {
             bounce,
             self.dock_drag.as_ref(),
         );
+        // Like macOS, an open menu or stack hides the name over the icon. It would show
+        // through the popup's clear glass anyway.
+        if self.popup.is_some() {
+            layout.label = None;
+        }
         if layout == self.dock_layout {
             return Task::none();
         }
@@ -728,7 +736,7 @@ impl Shell {
         let input_changed = input_region != dock::input_region(&self.dock_layout);
         self.dock_layout = layout;
 
-        let shapes = dock::material_shapes(&self.dock_layout, self.dock_style);
+        let shapes = dock::material_shapes(&self.dock_layout);
         if shapes != self.dock_shapes
             && let (Some(material), Some(target)) = (&self.material, &self.dock_material)
         {

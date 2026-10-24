@@ -29,8 +29,6 @@ file_manager = "org.kde.dolphin"
 # Desktop entry ids (the .desktop file name without the extension), in dock order.
 # The dock rewrites this when you drag icons around or use Keep in Dock.
 pinned = ["org.kde.dolphin", "vivaldi-stable", "Alacritty"]
-# Glass behind the dock: "clear" (refraction only, the default) or "frosted" (over a blur).
-glass = "clear"
 # Grow icons toward the pointer, up to this size (icons are 48).
 magnification = true
 magnified_size = 80

@@ -5,8 +5,6 @@ use std::{env, fs, io};
 
 use serde::Deserialize;
 
-use crate::material::Style;
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -21,8 +19,6 @@ pub struct Config {
 pub struct DockConfig {
     /// Desktop entry ids (or app ids) kept in the dock even when they aren't running.
     pub pinned: Vec<String>,
-    /// Glass style behind the dock, when the compositor offers glass.
-    pub glass: Style,
     /// Grow icons near the pointer.
     pub magnification: bool,
     /// Size of the icon right under the pointer, in logical pixels (icons are 48).
@@ -33,7 +29,6 @@ impl Default for DockConfig {
     fn default() -> Self {
         Self {
             pinned: Vec::new(),
-            glass: Style::default(),
             magnification: true,
             magnified_size: 80.0,
         }

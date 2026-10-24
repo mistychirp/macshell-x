@@ -8,7 +8,7 @@ use iced_widget::{Space, button, column, container, image, row, text};
 
 use crate::app::{Element, Message};
 use crate::dock::MenuAction;
-use crate::material;
+use crate::{material, menu};
 
 const WIDTH: u32 = 300;
 const HEIGHT: u32 = 196;
@@ -42,7 +42,6 @@ pub fn material_shapes() -> Vec<material::Shape> {
     vec![material::Shape {
         rect: (0, 0, WIDTH as i32, HEIGHT as i32),
         radius: RADIUS as i32,
-        style: material::Style::Frosted,
     }]
 }
 
@@ -61,7 +60,7 @@ pub fn view(alert: &Alert, material: Option<material::Kind>) -> Element<'_> {
     ]
     .spacing(8);
 
-    let tint = if material.is_some() { 0.35 } else { 0.92 };
+    let tint = if material.is_some() { menu::TINT } else { 0.92 };
     container(
         column![
             icon,

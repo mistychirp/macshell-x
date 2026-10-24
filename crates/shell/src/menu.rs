@@ -20,6 +20,8 @@ const MIN_WIDTH: f32 = 160.0;
 /// Labels longer than this many characters are cut short with an ellipsis.
 const MAX_LABEL_CHARS: usize = 48;
 pub const RADIUS: f32 = 10.0;
+/// Opacity of the dark tint over glass, shared by the shell's other popups.
+pub const TINT: f32 = 0.55;
 
 /// macOS's selection blue.
 const ACCENT: Color = Color::from_rgba(0.0, 0.45, 1.0, 0.95);
@@ -87,7 +89,6 @@ pub fn material_shapes((width, height): (u32, u32)) -> Vec<material::Shape> {
     vec![material::Shape {
         rect: (0, 0, width as i32, height as i32),
         radius: RADIUS as i32,
-        style: material::Style::Frosted,
     }]
 }
 
@@ -102,7 +103,8 @@ pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> 
                 text(if *checked { "✓" } else { "" })
                     .size(TEXT_SIZE)
                     .width(CHECK_WIDTH),
-                text(label).size(TEXT_SIZE),
+                // The width is measured to fit, but rounding mustn't wrap it onto two lines.
+                text(label).size(TEXT_SIZE).wrapping(Wrapping::None),
             ]
             .align_y(Alignment::Center),
         )
@@ -133,9 +135,9 @@ pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> 
         .into(),
     });
 
-    // Over frosted material a light dark tint is enough for legibility; with nothing behind
-    // the menu, it needs to be nearly opaque.
-    let tint = if material.is_some() { 0.3 } else { 0.9 };
+    // Clear glass needs a fair dark tint to keep text legible over bright backgrounds; with
+    // nothing behind the menu, it needs to be nearly opaque.
+    let tint = if material.is_some() { TINT } else { 0.9 };
     container(column(rows))
         .padding(PADDING)
         .width(Length::Fill)
