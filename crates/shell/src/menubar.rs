@@ -277,6 +277,7 @@ fn title<'a>(
             }),
     )
     .on_press(Message::BarPressed(title))
+    .on_enter(Message::BarEntered(title))
     .into()
 }
 

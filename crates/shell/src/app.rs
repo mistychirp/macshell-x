@@ -86,6 +86,8 @@ pub enum Message {
     SurfaceReached(IcedId, Option<WlSurface>),
     /// A menu bar title was pressed.
     BarPressed(menubar::Title),
+    /// The pointer moved onto a menu bar title.
+    BarEntered(menubar::Title),
     /// Something was chosen in the system menu.
     System(menubar::SystemAction),
     /// A system action was confirmed in its alert.
@@ -164,6 +166,8 @@ struct Shell {
     /// Shared start time for attention bounces, so they stay in step.
     started: Instant,
     popup: Option<Popup>,
+    /// A menu bar title whose menu opens once the open popup is gone.
+    next_bar_menu: Option<menubar::Title>,
     alert: Option<OpenAlert>,
     /// Desktop entry id of the app that opens folders and the trash.
     file_manager: String,
@@ -253,6 +257,7 @@ impl Shell {
             launching: HashMap::new(),
             started: Instant::now(),
             popup: None,
+            next_bar_menu: None,
             alert: None,
             file_manager,
             downloads_dir: places::downloads_dir(),
@@ -394,6 +399,17 @@ impl Shell {
             Message::SurfaceReached(id, Some(surface)) => self.attach_material(id, surface),
             Message::SurfaceReached(_, None) => log::warn!("can't reach a wl_surface; no material"),
             Message::BarPressed(title) => return self.open_bar_menu(title),
+            // Like on macOS, while a bar menu is open, pointing at another title switches to its
+            // menu. The new popup can only take the grab once the old one is destroyed, so it
+            // opens when the old one reports closed.
+            Message::BarEntered(title) => {
+                if let Some(open) = self.popup.as_ref().and_then(|popup| popup.title)
+                    && open != title
+                {
+                    self.next_bar_menu = Some(title);
+                    return self.close_popup();
+                }
+            }
             Message::System(action) => {
                 let close = self.close_popup();
                 let Some(confirmation) = action.confirmation() else {
@@ -463,7 +479,11 @@ impl Shell {
                     if let Some(material) = popup.material {
                         material.destroy();
                     }
-                    return self.relayout_dock();
+                    let relayout = self.relayout_dock();
+                    return match self.next_bar_menu.take() {
+                        Some(title) => Task::batch([relayout, self.open_bar_menu(title)]),
+                        None => relayout,
+                    };
                 }
                 if self.alert.as_ref().is_some_and(|open| open.id == id)
                     && let Some(open) = self.alert.take()
