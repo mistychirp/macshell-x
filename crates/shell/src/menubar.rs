@@ -40,6 +40,38 @@ pub enum Title {
     App,
 }
 
+/// How bright what's behind the bar is, which decides its text color, like on macOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backdrop {
+    Dark,
+    Light,
+}
+
+/// Relative luminance above which a dark backdrop turns light, and below which a light one
+/// turns dark again. Black and white text contrast equally at about 0.18; the gap around it
+/// keeps the bar from flickering.
+const LIGHT_ABOVE: f32 = 0.24;
+const DARK_BELOW: f32 = 0.16;
+
+impl Backdrop {
+    pub fn from_luminance(previous: Option<Self>, luminance: f32) -> Self {
+        match previous {
+            Some(Backdrop::Light) if luminance >= DARK_BELOW => Backdrop::Light,
+            Some(Backdrop::Dark) if luminance <= LIGHT_ABOVE => Backdrop::Dark,
+            _ if luminance > (LIGHT_ABOVE + DARK_BELOW) / 2.0 => Backdrop::Light,
+            _ => Backdrop::Dark,
+        }
+    }
+
+    /// The color of text and the logo.
+    pub fn ink(self) -> Color {
+        match self {
+            Backdrop::Dark => Color::WHITE,
+            Backdrop::Light => Color::from_rgba(0.0, 0.0, 0.0, 0.85),
+        }
+    }
+}
+
 /// What the system menu does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemAction {
@@ -215,12 +247,15 @@ fn user_name() -> String {
     full_name.unwrap_or(login)
 }
 
+/// `backdrop` is `None` when the compositor can't tell how bright the background is; `logo`
+/// should match its ink.
 pub fn view<'a>(
     app_name: &'a str,
     clock: &'a str,
     logo: Option<&'a image::Handle>,
     open: Option<Title>,
     material: Option<material::Kind>,
+    backdrop: Option<Backdrop>,
 ) -> Element<'a> {
     let logo: Element<'a> = match logo {
         Some(handle) => image(handle.clone())
@@ -230,13 +265,26 @@ pub fn view<'a>(
         None => Space::new().width(LOGO_SIZE).into(),
     };
 
-    // Over glass, a dark tint keeps white text readable on bright wallpapers. (macOS flips the
-    // text to black instead; that needs to know how bright the wallpaper is.)
-    let tint = if material.is_some() { 0.3 } else { 0.4 };
+    // Knowing the backdrop, the text flips between white and black and a faint tint is enough.
+    // Otherwise a darker tint keeps white text readable on bright wallpapers.
+    let ink = backdrop.unwrap_or(Backdrop::Dark).ink();
+    let tint = match (backdrop, material) {
+        (Some(Backdrop::Light), _) => Color::from_rgba(1.0, 1.0, 1.0, 0.12),
+        (Some(Backdrop::Dark), _) => Color::from_rgba(0.0, 0.0, 0.0, 0.12),
+        (None, Some(_)) => Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+        (None, None) => Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+    };
+    let highlight = Color { a: 0.2, ..ink };
     container(
         row![
-            title(Title::System, logo, app_name, open),
-            title(Title::App, text(app_name).font(BOLD).into(), app_name, open),
+            title(Title::System, logo, app_name, open, highlight),
+            title(
+                Title::App,
+                text(app_name).font(BOLD).into(),
+                app_name,
+                open,
+                highlight
+            ),
             Space::new().width(Length::Fill),
             container(text(clock)).padding([0.0, TITLE_PADDING_X]),
         ]
@@ -247,7 +295,8 @@ pub fn view<'a>(
     .height(Length::Fill)
     .align_y(Alignment::Center)
     .style(move |_| container::Style {
-        background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, tint))),
+        background: Some(Background::Color(tint)),
+        text_color: Some(ink),
         ..Default::default()
     })
     .into()
@@ -259,6 +308,7 @@ fn title<'a>(
     content: Element<'a>,
     app_name: &str,
     open: Option<Title>,
+    highlight: Color,
 ) -> Element<'a> {
     let rect = title_rect(title, app_name);
     let highlighted = open == Some(title);
@@ -268,8 +318,7 @@ fn title<'a>(
             .center_x(rect.width)
             .center_y(rect.height)
             .style(move |_| container::Style {
-                background: highlighted
-                    .then_some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.2))),
+                background: highlighted.then_some(Background::Color(highlight)),
                 border: Border {
                     radius: 7.0.into(),
                     ..Default::default()

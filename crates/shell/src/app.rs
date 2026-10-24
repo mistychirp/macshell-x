@@ -92,6 +92,8 @@ pub enum Message {
     System(menubar::SystemAction),
     /// A system action was confirmed in its alert.
     SystemConfirmed(menubar::SystemAction),
+    /// Time to check for news about the brightness behind the bar.
+    BarBrightness,
     /// A dock icon was right-clicked; carries the app's id.
     DockMenuRequested(String),
     /// Something was chosen in a dock popup.
@@ -135,8 +137,13 @@ struct Shell {
     /// Width of the menu bar surface; 0 until the compositor has configured it.
     menubar_width: f32,
     menubar_material: Option<MaterialSurface>,
-    /// The distro logo, as a white silhouette.
+    /// The distro logo as silhouettes, for dark and light backdrops.
     logo: Option<image::Handle>,
+    logo_dark: Option<image::Handle>,
+    /// How bright the background behind the bar is, if the compositor can tell.
+    bar_backdrop: Option<menubar::Backdrop>,
+    /// Whether the compositor reports the brightness behind the bar.
+    bar_tracks_brightness: bool,
     /// The distro logo in color, for alerts about the whole system.
     system_icon: Option<image::Handle>,
     /// The latest window list from niri.
@@ -223,7 +230,9 @@ impl Shell {
         let trash_dir = places::trash_dir();
         let trash_count = places::trash_count(&trash_dir);
         let configured_logo = config.menubar.logo.as_deref();
-        let logo = apps.silhouette(&menubar::logo_names(configured_logo, true));
+        let logo_names = menubar::logo_names(configured_logo, true);
+        let logo = apps.silhouette(&logo_names, [255, 255, 255, 255]);
+        let logo_dark = apps.silhouette(&logo_names, [0, 0, 0, 217]);
         let system_icon = menubar::logo_names(configured_logo, false)
             .iter()
             .find_map(|name| apps.themed_icon(name));
@@ -238,6 +247,9 @@ impl Shell {
             menubar_width: 0.0,
             menubar_material: None,
             logo,
+            logo_dark,
+            bar_backdrop: None,
+            bar_tracks_brightness: false,
             system_icon,
             windows: Vec::new(),
             dock,
@@ -426,6 +438,17 @@ impl Shell {
                 return Task::batch([close, self.open_alert(alert)]);
             }
             Message::SystemConfirmed(action) => action.run(),
+            Message::BarBrightness => {
+                if let (Some(material), Some(target)) = (&self.material, &self.menubar_material)
+                    && let Some(luminance) = material.brightness(target)
+                {
+                    let backdrop = menubar::Backdrop::from_luminance(self.bar_backdrop, luminance);
+                    if self.bar_backdrop != Some(backdrop) {
+                        log::debug!("menu bar backdrop {backdrop:?} at luminance {luminance}");
+                        self.bar_backdrop = Some(backdrop);
+                    }
+                }
+            }
             Message::DockMenuRequested(app_id) => return self.open_dock_menu(&app_id),
             Message::DockMenu(action) => {
                 let close = self.close_popup();
@@ -597,6 +620,7 @@ impl Shell {
         let target = material.attach(surface);
         match self.surfaces.get(&id) {
             Some(Surface::MenuBar) => {
+                self.bar_tracks_brightness = material.track_brightness(&target);
                 material.set_shapes(&target, &menubar::material_shapes(self.menubar_width));
                 self.menubar_material = Some(target);
             }
@@ -873,9 +897,13 @@ impl Shell {
             Some(Surface::MenuBar) => menubar::view(
                 self.app_name(),
                 &self.clock,
-                self.logo.as_ref(),
+                match self.bar_backdrop {
+                    Some(menubar::Backdrop::Light) => self.logo_dark.as_ref(),
+                    _ => self.logo.as_ref(),
+                },
                 self.popup.as_ref().and_then(|popup| popup.title),
                 self.material.as_ref().map(|m| m.kind()),
+                self.bar_backdrop,
             ),
             Some(Surface::Dock) => dock::view(
                 &self.dock,
@@ -910,8 +938,16 @@ impl Shell {
             Subscription::none()
         };
 
+        // Brightness events arrive on the material's queue, which nothing else dispatches.
+        let bar_brightness = if self.bar_tracks_brightness {
+            time::every(Duration::from_millis(250)).map(|_| Message::BarBrightness)
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             dock_frames,
+            bar_brightness,
             niri::windows().map(Message::WindowsChanged),
             time::every(Duration::from_secs(1)).map(|_| Message::Tick),
             iced_futures::event::listen_with(|event, _, id| match event {

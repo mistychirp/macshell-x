@@ -4,6 +4,9 @@
 //! The shell shares its Wayland connection with iced_layershell, so the `wl_surface` behind an
 //! iced window (reached with `window::run`) works with the protocol objects bound here.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use raw_window_handle::RawWindowHandle;
 use wayland_client::backend::ObjectId;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -52,8 +55,10 @@ pub struct Material {
     compositor: WlCompositor,
     manager: Manager,
     queue: QueueHandle<Globals>,
-    // Never dispatched after setup, but owns the queue our objects live on.
-    _event_queue: EventQueue<Globals>,
+    /// Where events for our objects land; iced_layershell reads the shared socket, and
+    /// [`Material::brightness`] dispatches what it queued here.
+    event_queue: RefCell<EventQueue<Globals>>,
+    state: RefCell<Globals>,
 }
 
 enum Manager {
@@ -75,6 +80,8 @@ enum Effect {
 #[derive(Default)]
 struct Globals {
     blur_supported: bool,
+    /// The latest luminance (out of 1000) behind each glass object that tracks it.
+    brightness: HashMap<ObjectId, u32>,
 }
 
 impl Material {
@@ -86,7 +93,7 @@ impl Material {
         let queue = event_queue.handle();
         let compositor: WlCompositor = globals.bind(&queue, 1..=6, ()).ok()?;
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=1, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=2, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -111,7 +118,8 @@ impl Material {
             compositor,
             manager,
             queue,
-            _event_queue: event_queue,
+            event_queue: RefCell::new(event_queue),
+            state: RefCell::new(Globals::default()),
         })
     }
 
@@ -170,6 +178,33 @@ impl Material {
         if let Err(err) = self.connection.flush() {
             log::error!("can't flush Wayland connection: {err}");
         }
+    }
+}
+
+impl Material {
+    /// Asks to hear how bright the background behind the first shape is. Returns whether the
+    /// compositor can tell.
+    pub fn track_brightness(&self, target: &MaterialSurface) -> bool {
+        match &target.effect {
+            Effect::Glass(glass) if glass.version() >= 2 => {
+                glass.track_brightness();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The latest relative luminance behind a surface that tracks brightness, from 0 to 1.
+    pub fn brightness(&self, target: &MaterialSurface) -> Option<f32> {
+        let Effect::Glass(glass) = &target.effect else {
+            return None;
+        };
+        let mut state = self.state.borrow_mut();
+        if let Err(err) = self.event_queue.borrow_mut().dispatch_pending(&mut state) {
+            log::error!("can't dispatch material events: {err}");
+        }
+        let luminance = *state.brightness.get(&glass.id())?;
+        Some(luminance as f32 / 1000.0)
     }
 }
 
@@ -255,4 +290,16 @@ delegate_noop!(Globals: WlCompositor);
 delegate_noop!(Globals: WlRegion);
 delegate_noop!(Globals: ExtBackgroundEffectSurfaceV1);
 delegate_noop!(Globals: MacshellGlassManagerV1);
-delegate_noop!(Globals: MacshellGlassV1);
+impl Dispatch<MacshellGlassV1, ()> for Globals {
+    fn event(
+        state: &mut Self,
+        glass: &MacshellGlassV1,
+        event: macshell_glass_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let macshell_glass_v1::Event::Brightness { luminance } = event;
+        state.brightness.insert(glass.id(), luminance);
+    }
+}

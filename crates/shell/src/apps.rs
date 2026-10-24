@@ -113,13 +113,14 @@ impl AppIndex {
         icon
     }
 
-    /// The first of `names` the theme has, as a white silhouette, the way macOS draws the
-    /// Apple logo. Names can also be absolute paths.
-    pub fn silhouette(&self, names: &[String]) -> Option<image::Handle> {
+    /// The first of `names` the theme has, as a silhouette in `color` (straight RGBA), the way
+    /// macOS draws the Apple logo. Names can also be absolute paths.
+    pub fn silhouette(&self, names: &[String], color: [u8; 4]) -> Option<image::Handle> {
         let path = names.iter().find_map(|name| self.find_icon(name))?;
         let (width, height, mut rgba) = load_rgba(&path)?;
         for pixel in rgba.chunks_exact_mut(4) {
-            pixel[..3].fill(255);
+            let alpha = u16::from(pixel[3]) * u16::from(color[3]) / 255;
+            pixel.copy_from_slice(&[color[0], color[1], color[2], alpha as u8]);
         }
         Some(image::Handle::from_rgba(width, height, rgba))
     }
