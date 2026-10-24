@@ -124,9 +124,12 @@ fn cell(tile: &Tile) -> Element<'_> {
             icon,
             text(shorten(&tile.download.name))
                 .size(NAME_SIZE)
+                .width(Length::Fill)
                 .align_x(alignment::Horizontal::Center)
         ]
         .spacing(4)
+        // Fill the cell, so icons center on it rather than on their names.
+        .width(Length::Fill)
         .align_x(Alignment::Center),
     )
     .on_press(Message::DockMenu(MenuAction::OpenPath(
