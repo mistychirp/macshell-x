@@ -23,11 +23,22 @@ use crate::glass_protocol::macshell_glass_v1::{self, MacshellGlassV1};
 /// A rectangle in surface-local logical coordinates: `(x, y, width, height)`.
 pub type Rect = (i32, i32, i32, i32);
 
+/// Like macOS's Liquid Glass variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// Refraction only; the background stays sharp. For the dock and the menu bar.
+    Clear,
+    /// Refraction over a blurred background, macOS's "regular" glass. For menus, popovers and
+    /// alerts, whose text needs a calm background.
+    Frosted,
+}
+
 /// A rounded rectangle of material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {
     pub rect: Rect,
     pub radius: i32,
+    pub style: Style,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,15 +143,11 @@ impl Material {
                 glass.clear();
                 for shape in shapes {
                     let (x, y, width, height) = shape.rect;
-                    // Always clear: frosted glass (over a blur) looked off next to macOS.
-                    glass.add_rounded_rect(
-                        x,
-                        y,
-                        width,
-                        height,
-                        shape.radius.max(0) as u32,
-                        macshell_glass_v1::Style::Clear,
-                    );
+                    let style = match shape.style {
+                        Style::Clear => macshell_glass_v1::Style::Clear,
+                        Style::Frosted => macshell_glass_v1::Style::Frosted,
+                    };
+                    glass.add_rounded_rect(x, y, width, height, shape.radius.max(0) as u32, style);
                 }
             }
             // Blur has no notion of clear glass, so every shape is blurred.

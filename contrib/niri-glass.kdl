@@ -4,7 +4,7 @@
 //
 // The shell asks for glass itself through the macshell-glass-v1 protocol, so no layer rules
 // are needed. (A `background-effect { glass true; }` rule on a macshell surface would render
-// glass twice.) Frosted glass uses the strength of the blur settings in this same section.
+// glass twice.)
 //
 // You can only have one top-level `blur` section. If your config already has one, move the
 // `glass` block into it instead.
@@ -19,5 +19,14 @@ blur {
         highlight 0.35
         // Tint over the glass, e.g. "#ffffff10" for a faint white.
         tint "#ffffff00"
+
+        // The blur under frosted glass (menus, popovers, alerts). Separate from the window
+        // blur settings in this section; same meaning.
+        frost {
+            passes 2
+            offset 2
+            noise 0
+            saturation 1.8
+        }
     }
 }

@@ -425,11 +425,13 @@ pub fn material_shapes(layout: &Layout) -> Vec<Shape> {
     let mut shapes = vec![Shape {
         rect: rect_i32(layout.pill),
         radius: RADIUS as i32,
+        style: material::Style::Clear,
     }];
     if let Some(label) = &layout.label {
         shapes.push(Shape {
             rect: rect_i32(label.rect),
             radius: (LABEL_HEIGHT / 2.0) as i32,
+            style: material::Style::Frosted,
         });
     }
     shapes

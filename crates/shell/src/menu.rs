@@ -21,7 +21,7 @@ const MIN_WIDTH: f32 = 160.0;
 const MAX_LABEL_CHARS: usize = 48;
 pub const RADIUS: f32 = 10.0;
 /// Opacity of the dark tint over glass, shared by the shell's other popups.
-pub const TINT: f32 = 0.55;
+pub const TINT: f32 = 0.35;
 
 /// macOS's selection blue.
 const ACCENT: Color = Color::from_rgba(0.0, 0.45, 1.0, 0.95);
@@ -91,6 +91,7 @@ pub fn material_shapes((width, height): (u32, u32)) -> Vec<material::Shape> {
     vec![material::Shape {
         rect: (0, 0, width as i32, height as i32),
         radius: RADIUS as i32,
+        style: material::Style::Frosted,
     }]
 }
 

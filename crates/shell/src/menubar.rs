@@ -103,6 +103,7 @@ pub fn material_shapes(width: f32) -> Vec<Shape> {
     vec![Shape {
         rect: (0, 0, width.ceil() as i32, HEIGHT as i32),
         radius: 0,
+        style: material::Style::Clear,
     }]
 }
 

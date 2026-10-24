@@ -39,6 +39,7 @@ pub fn material_shapes((width, height): (u32, u32)) -> Vec<material::Shape> {
     vec![material::Shape {
         rect: (0, 0, width as i32, height as i32),
         radius: RADIUS as i32,
+        style: material::Style::Frosted,
     }]
 }
 
