@@ -9,6 +9,7 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct Config {
     pub dock: DockConfig,
+    pub menubar: MenuBarConfig,
     /// Desktop entry id of the app that opens folders and the trash. Defaults to the system's
     /// default app for folders.
     pub file_manager: Option<String>,
@@ -33,6 +34,13 @@ impl Default for DockConfig {
             magnified_size: 80.0,
         }
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct MenuBarConfig {
+    /// Icon name or path of the logo that opens the system menu. Defaults to the distro's.
+    pub logo: Option<String>,
 }
 
 /// Rewrites `[dock] pinned` in the config file, keeping the rest of it (comments included).

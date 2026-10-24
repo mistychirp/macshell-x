@@ -7,7 +7,6 @@ use iced_widget::core::{Alignment, Background, Border, Color, Length, alignment}
 use iced_widget::{Space, button, column, container, image, row, text};
 
 use crate::app::{Element, Message};
-use crate::dock::MenuAction;
 use crate::{material, menu};
 
 const WIDTH: u32 = 300;
@@ -21,7 +20,7 @@ pub struct Alert {
     pub detail: String,
     pub confirm: String,
     /// What confirming does.
-    pub on_confirm: MenuAction,
+    pub on_confirm: Message,
     pub icon: Option<image::Handle>,
 }
 

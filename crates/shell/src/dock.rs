@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
-use iced_widget::core::{Background, Border, Color, Length, Point, Rectangle, Vector, mouse};
+use iced_widget::core::{Background, Border, Color, Font, Length, Point, Rectangle, Vector, mouse};
 use iced_widget::{Space, container, image, mouse_area, pin, stack, text};
 
 use crate::app::{Element, Message};
@@ -71,6 +71,10 @@ impl Item {
 
     pub fn wants_attention(&self) -> bool {
         self.windows.iter().any(|window| window.is_urgent)
+    }
+
+    pub fn window_ids(&self) -> Vec<u64> {
+        self.windows.iter().map(|window| window.id).collect()
     }
 }
 
@@ -251,7 +255,9 @@ pub fn layout(
             None => Place::ALL.get(index - apps)?.name().to_owned(),
         };
         let icon = icons.get(index)?;
-        let width = (menu::text_width(&name, LABEL_TEXT_SIZE) + 2.0 * LABEL_PADDING_X).ceil();
+        let width = (menu::text_width(&name, LABEL_TEXT_SIZE, Font::default())
+            + 2.0 * LABEL_PADDING_X)
+            .ceil();
         let x = (icon.center_x() - width / 2.0)
             .round()
             .clamp(0.0, (surface_width - width).max(0.0));
@@ -339,7 +345,9 @@ fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> 
 
     let label = removing.then(|| {
         let text = String::from("Remove");
-        let width = (menu::text_width(&text, LABEL_TEXT_SIZE) + 2.0 * LABEL_PADDING_X).ceil();
+        let width = (menu::text_width(&text, LABEL_TEXT_SIZE, Font::default())
+            + 2.0 * LABEL_PADDING_X)
+            .ceil();
         Label {
             rect: Rectangle {
                 x: (dragged.center_x() - width / 2.0)
@@ -575,10 +583,9 @@ pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
             ));
         }
     } else {
-        let ids = item.windows.iter().map(|window| window.id).collect();
         entries.push(menu::Entry::item(
             "Quit",
-            Message::DockMenu(MenuAction::Quit(ids)),
+            Message::DockMenu(MenuAction::Quit(item.window_ids())),
         ));
     }
 

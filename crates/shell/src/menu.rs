@@ -67,7 +67,9 @@ pub fn size(entries: &[Entry]) -> (u32, u32) {
     let label_width = entries
         .iter()
         .filter_map(|entry| match entry {
-            Entry::Item { label, .. } => Some(text_width(label, TEXT_SIZE) + CHECK_WIDTH),
+            Entry::Item { label, .. } => {
+                Some(text_width(label, TEXT_SIZE, Font::default()) + CHECK_WIDTH)
+            }
             Entry::Separator => None,
         })
         .fold(0.0, f32::max);
@@ -155,13 +157,13 @@ pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> 
 }
 
 /// Width of `text` on one line, in logical pixels.
-pub fn text_width(text: &str, size: f32) -> f32 {
+pub fn text_width(text: &str, size: f32, font: Font) -> f32 {
     iced_widget::graphics::text::Paragraph::with_text(iced_widget::core::Text {
         content: text,
         bounds: Size::INFINITE,
         size: size.into(),
         line_height: LineHeight::default(),
-        font: Font::default(),
+        font,
         align_x: Default::default(),
         align_y: alignment::Vertical::Top,
         shaping: Shaping::Advanced,

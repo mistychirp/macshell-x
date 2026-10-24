@@ -51,6 +51,13 @@ pub fn close_window(id: u64) {
 }
 
 /// Spawns through niri so the process gets niri's environment, not ours.
+/// Ends the session, without niri's own confirmation dialog.
+pub fn quit() {
+    run_action(Action::Quit {
+        skip_confirmation: true,
+    });
+}
+
 pub fn spawn(command: Vec<String>) {
     run_action(Action::Spawn { command });
 }

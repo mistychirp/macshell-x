@@ -5,8 +5,8 @@ use iced_widget::{button, column, container, image, row, text};
 
 use crate::app::{Element, Message};
 use crate::dock::MenuAction;
-use crate::{material, menu};
 use crate::places::{Download, Place};
+use crate::{material, menu};
 
 /// How many downloads the stack shows.
 pub const LIMIT: usize = 12;

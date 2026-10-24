@@ -32,6 +32,11 @@ pinned = ["org.kde.dolphin", "vivaldi-stable", "Alacritty"]
 # Grow icons toward the pointer, up to this size (icons are 48).
 magnification = true
 magnified_size = 80
+
+[menubar]
+# Icon name or path of the logo that opens the system menu, drawn as a white silhouette.
+# Defaults to the distro's logo (`LOGO` in /etc/os-release).
+logo = "nix-snowflake"
 ```
 
 The shell chooses the material behind its surfaces itself, so it needs no compositor rules:

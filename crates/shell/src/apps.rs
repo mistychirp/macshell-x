@@ -113,6 +113,17 @@ impl AppIndex {
         icon
     }
 
+    /// The first of `names` the theme has, as a white silhouette, the way macOS draws the
+    /// Apple logo. Names can also be absolute paths.
+    pub fn silhouette(&self, names: &[String]) -> Option<image::Handle> {
+        let path = names.iter().find_map(|name| self.find_icon(name))?;
+        let (width, height, mut rgba) = load_rgba(&path)?;
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[..3].fill(255);
+        }
+        Some(image::Handle::from_rgba(width, height, rgba))
+    }
+
     /// The command that opens `uris` with the app `app_id`.
     pub fn command_with_uris(&self, app_id: &str, uris: &[&str]) -> Option<Vec<String>> {
         find_app_by_id(&self.entries, Ascii::new(app_id))?
@@ -149,7 +160,23 @@ fn load_icon(path: &Path) -> Option<image::Handle> {
     if path.extension().is_none_or(|ext| ext != "svg") {
         return Some(image::Handle::from_path(path));
     }
+    let (width, height, rgba) = rasterize_svg(path)?;
+    Some(image::Handle::from_rgba(width, height, rgba))
+}
 
+/// Decodes an icon to straight-alpha RGBA pixels: `(width, height, pixels)`.
+fn load_rgba(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    if path.extension().is_some_and(|ext| ext == "svg") {
+        return rasterize_svg(path);
+    }
+    let decoded = ::image::open(path)
+        .inspect_err(|err| log::warn!("can't decode {}: {err}", path.display()))
+        .ok()?
+        .into_rgba8();
+    Some((decoded.width(), decoded.height(), decoded.into_raw()))
+}
+
+fn rasterize_svg(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
     let data = fs::read(path)
         .inspect_err(|err| log::warn!("can't read {}: {err}", path.display()))
         .ok()?;
@@ -178,7 +205,7 @@ fn load_icon(path: &Path) -> Option<image::Handle> {
             [color.red(), color.green(), color.blue(), color.alpha()]
         })
         .collect();
-    Some(image::Handle::from_rgba(size, size, rgba))
+    Some((size, size, rgba))
 }
 
 /// The desktop entry id of the default app for `mime`, like `org.kde.dolphin` for folders.

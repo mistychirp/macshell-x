@@ -19,7 +19,7 @@ use wayland_client::Connection;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use crate::alert::{self, Alert};
-use crate::apps::{self, AppIndex};
+use crate::apps::{self, App, AppIndex};
 use crate::config::{self, Config};
 use crate::material::{self, Material, MaterialSurface};
 use crate::niri::{self, WindowInfo};
@@ -82,26 +82,30 @@ pub enum Message {
     DockFrame(Instant),
     SurfaceOpened(IcedId, Size),
     SurfaceResized(IcedId, Size),
-    /// The dock's `wl_surface`, if it could be reached.
-    DockSurface(Option<WlSurface>),
+    /// A surface's `wl_surface`, if it could be reached, to put material behind.
+    SurfaceReached(IcedId, Option<WlSurface>),
+    /// A menu bar title was pressed.
+    BarPressed(menubar::Title),
+    /// Something was chosen in the system menu.
+    System(menubar::SystemAction),
+    /// A system action was confirmed in its alert.
+    SystemConfirmed(menubar::SystemAction),
     /// A dock icon was right-clicked; carries the app's id.
     DockMenuRequested(String),
     /// Something was chosen in a dock popup.
     DockMenu(dock::MenuAction),
     PlaceClicked(Place),
     PlaceMenuRequested(Place),
-    /// The open popup's `wl_surface`, if it could be reached.
-    PopupSurface(Option<WlSurface>),
     /// The alert was answered: confirmed, or cancelled.
     AlertAnswered(bool),
-    /// The alert's `wl_surface`, if it could be reached.
-    AlertSurface(Option<WlSurface>),
     SurfaceClosed(IcedId),
 }
 
 /// A popup that's open, or opening: a menu, or the Downloads stack.
 struct Popup {
     id: IcedId,
+    /// The menu bar title it hangs from, if any; otherwise it belongs to the dock.
+    title: Option<menubar::Title>,
     content: PopupContent,
     size: (u32, u32),
     material: Option<MaterialSurface>,
@@ -122,8 +126,17 @@ struct Shell {
     surfaces: HashMap<IcedId, Surface>,
     apps: AppIndex,
     pinned: Vec<String>,
-    focused_app: Option<String>,
+    /// The app of the focused window.
+    focused_app: Option<Rc<App>>,
     clock: String,
+    menubar_id: IcedId,
+    /// Width of the menu bar surface; 0 until the compositor has configured it.
+    menubar_width: f32,
+    menubar_material: Option<MaterialSurface>,
+    /// The distro logo, as a white silhouette.
+    logo: Option<image::Handle>,
+    /// The distro logo in color, for alerts about the whole system.
+    system_icon: Option<image::Handle>,
     /// The latest window list from niri.
     windows: Vec<WindowInfo>,
     dock: Vec<dock::Item>,
@@ -205,6 +218,11 @@ impl Shell {
             .unwrap_or_default();
         let trash_dir = places::trash_dir();
         let trash_count = places::trash_count(&trash_dir);
+        let configured_logo = config.menubar.logo.as_deref();
+        let logo = apps.silhouette(&menubar::logo_names(configured_logo, true));
+        let system_icon = menubar::logo_names(configured_logo, false)
+            .iter()
+            .find_map(|name| apps.themed_icon(name));
 
         let shell = Self {
             surfaces: HashMap::from([(menubar_id, Surface::MenuBar), (dock_id, Surface::Dock)]),
@@ -212,6 +230,11 @@ impl Shell {
             pinned: config.dock.pinned,
             focused_app: None,
             clock: menubar::format_clock(),
+            menubar_id,
+            menubar_width: 0.0,
+            menubar_material: None,
+            logo,
+            system_icon,
             windows: Vec::new(),
             dock,
             dock_id,
@@ -250,7 +273,7 @@ impl Shell {
                     .iter()
                     .find(|w| w.is_focused)
                     .and_then(|w| w.app_id.as_deref())
-                    .map(|app_id| self.apps.resolve(app_id).name.clone());
+                    .map(|app_id| self.apps.resolve(app_id));
                 self.windows = windows;
                 self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
                 // A window showing up is what ends a launch bounce.
@@ -345,17 +368,22 @@ impl Shell {
                 let relayout = self.relayout_dock();
 
                 // Attaching twice is a protocol error, so only ever do it once.
-                if self.dock_material.is_none()
-                    && let Some(material) = &self.material
-                {
-                    let connection = material.connection().clone();
-                    let attach = iced_runtime::window::run(id, move |window| {
-                        material::surface_of(&connection, window)
-                    })
-                    .map(Message::DockSurface);
-                    return Task::batch([relayout, attach]);
+                if self.dock_material.is_none() {
+                    return Task::batch([relayout, self.reach_surface(id)]);
                 }
                 return relayout;
+            }
+            Message::SurfaceOpened(id, size) if id == self.menubar_id => {
+                self.menubar_width = size.width;
+                if self.menubar_material.is_none() {
+                    return self.reach_surface(id);
+                }
+            }
+            Message::SurfaceResized(id, size) if id == self.menubar_id => {
+                self.menubar_width = size.width;
+                if let (Some(material), Some(target)) = (&self.material, &self.menubar_material) {
+                    material.set_shapes(target, &menubar::material_shapes(size.width));
+                }
             }
             Message::SurfaceResized(id, size) if id == self.dock_id => {
                 if size.width != self.dock_width {
@@ -363,17 +391,25 @@ impl Shell {
                     return self.relayout_dock();
                 }
             }
-            Message::DockSurface(Some(surface)) => {
-                if let Some(material) = &self.material {
-                    let target = material.attach(surface);
-                    self.dock_shapes = dock::material_shapes(&self.dock_layout);
-                    material.set_shapes(&target, &self.dock_shapes);
-                    self.dock_material = Some(target);
-                }
+            Message::SurfaceReached(id, Some(surface)) => self.attach_material(id, surface),
+            Message::SurfaceReached(_, None) => log::warn!("can't reach a wl_surface; no material"),
+            Message::BarPressed(title) => return self.open_bar_menu(title),
+            Message::System(action) => {
+                let close = self.close_popup();
+                let Some(confirmation) = action.confirmation() else {
+                    action.run();
+                    return close;
+                };
+                let alert = Alert {
+                    title: confirmation.title.to_owned(),
+                    detail: String::from("Unsaved changes in open apps may be lost."),
+                    confirm: confirmation.confirm.to_owned(),
+                    on_confirm: Message::SystemConfirmed(action),
+                    icon: self.system_icon.clone(),
+                };
+                return Task::batch([close, self.open_alert(alert)]);
             }
-            Message::DockSurface(None) => {
-                log::warn!("can't reach the dock's wl_surface; no material")
-            }
+            Message::SystemConfirmed(action) => action.run(),
             Message::DockMenuRequested(app_id) => return self.open_dock_menu(&app_id),
             Message::DockMenu(action) => {
                 let close = self.close_popup();
@@ -385,28 +421,13 @@ impl Shell {
                 };
                 let close = iced_runtime::window::close(open.id);
                 if confirmed {
-                    let action = open.alert.on_confirm.clone();
-                    return Task::batch([close, self.run_dock_action(action)]);
+                    return Task::batch([close, Task::done(open.alert.on_confirm.clone())]);
                 }
                 return close;
             }
             Message::SurfaceOpened(id, _) if self.alert.as_ref().is_some_and(|a| a.id == id) => {
-                if let Some(material) = &self.material {
-                    let connection = material.connection().clone();
-                    return iced_runtime::window::run(id, move |window| {
-                        material::surface_of(&connection, window)
-                    })
-                    .map(Message::AlertSurface);
-                }
+                return self.reach_surface(id);
             }
-            Message::AlertSurface(Some(surface)) => {
-                if let (Some(material), Some(open)) = (&self.material, &mut self.alert) {
-                    let target = material.attach(surface);
-                    material.set_shapes(&target, &alert::material_shapes());
-                    open.material = Some(target);
-                }
-            }
-            Message::AlertSurface(None) => log::warn!("can't reach the alert's wl_surface"),
             Message::PlaceClicked(place) => match place {
                 Place::Downloads => {
                     let tiles: Vec<stack::Tile> =
@@ -418,7 +439,7 @@ impl Shell {
                             })
                             .collect();
                     let size = stack::size(tiles.len());
-                    return self.open_popup(
+                    return self.open_dock_popup(
                         place_slot(place),
                         PopupContent::Downloads(tiles),
                         size,
@@ -429,29 +450,11 @@ impl Shell {
             Message::PlaceMenuRequested(place) => {
                 let entries = dock::place_menu_entries(place, self.trash_count);
                 let size = menu::size(&entries);
-                return self.open_popup(place_slot(place), PopupContent::Menu(entries), size);
+                return self.open_dock_popup(place_slot(place), PopupContent::Menu(entries), size);
             }
             Message::SurfaceOpened(id, _) if self.popup.as_ref().is_some_and(|p| p.id == id) => {
-                if let Some(material) = &self.material {
-                    let connection = material.connection().clone();
-                    return iced_runtime::window::run(id, move |window| {
-                        material::surface_of(&connection, window)
-                    })
-                    .map(Message::PopupSurface);
-                }
+                return self.reach_surface(id);
             }
-            Message::PopupSurface(Some(surface)) => {
-                if let (Some(material), Some(popup)) = (&self.material, &mut self.popup) {
-                    let target = material.attach(surface);
-                    let shapes = match popup.content {
-                        PopupContent::Menu(_) => menu::material_shapes(popup.size),
-                        PopupContent::Downloads(_) => stack::material_shapes(popup.size),
-                    };
-                    material.set_shapes(&target, &shapes);
-                    popup.material = Some(target);
-                }
-            }
-            Message::PopupSurface(None) => log::warn!("can't reach the popup's wl_surface"),
             Message::SurfaceClosed(id) => {
                 self.surfaces.remove(&id);
                 if self.popup.as_ref().is_some_and(|popup| popup.id == id)
@@ -481,11 +484,11 @@ impl Shell {
         let pinned = self.pinned.iter().any(|id| id == app_id);
         let entries = dock::menu_entries(&self.dock[index], pinned);
         let size = menu::size(&entries);
-        self.open_popup(DockSlot::App(index), PopupContent::Menu(entries), size)
+        self.open_dock_popup(DockSlot::App(index), PopupContent::Menu(entries), size)
     }
 
-    /// Opens a popup above a dock icon, replacing any popup that's open.
-    fn open_popup(
+    /// Opens a popup above a dock icon.
+    fn open_dock_popup(
         &mut self,
         slot: DockSlot,
         content: PopupContent,
@@ -498,6 +501,44 @@ impl Shell {
         let Some(anchor) = dock::menu_anchor(&self.dock_layout, index) else {
             return Task::none();
         };
+        let settings = IcedNewPopupSettings::new(self.dock_id, size, anchor)
+            .anchor(PopupAnchor::Top)
+            .gravity(PopupGravity::Top);
+        self.open_popup(None, settings, content)
+    }
+
+    /// Opens a menu bar title's menu under it.
+    fn open_bar_menu(&mut self, title: menubar::Title) -> Task<Message> {
+        let entries = match title {
+            menubar::Title::System => menubar::system_menu(),
+            menubar::Title::App => {
+                let Some(app) = &self.focused_app else {
+                    return Task::none();
+                };
+                let windows = self
+                    .dock
+                    .iter()
+                    .find(|item| item.app.id == app.id)
+                    .map(dock::Item::window_ids)
+                    .unwrap_or_default();
+                menubar::app_menu(app, windows)
+            }
+        };
+        let size = menu::size(&entries);
+        let anchor = menubar::menu_anchor(title, self.app_name());
+        let settings = IcedNewPopupSettings::new(self.menubar_id, size, anchor)
+            .anchor(PopupAnchor::BottomLeft)
+            .gravity(PopupGravity::BottomRight);
+        self.open_popup(Some(title), settings, PopupContent::Menu(entries))
+    }
+
+    /// Opens a popup, unless one is open: then it closes that one instead.
+    fn open_popup(
+        &mut self,
+        title: Option<menubar::Title>,
+        settings: IcedNewPopupSettings,
+        content: PopupContent,
+    ) -> Task<Message> {
         // xdg-shell only lets the topmost popup grab, so a new popup can't open until the old
         // one is gone. Close it, and let the next click open the new one.
         if self.popup.is_some() {
@@ -508,18 +549,68 @@ impl Shell {
         self.surfaces.insert(id, Surface::Popup);
         self.popup = Some(Popup {
             id,
+            title,
             content,
-            size,
+            size: settings.size,
             material: None,
         });
-
-        let settings = IcedNewPopupSettings::new(self.dock_id, size, anchor)
-            .anchor(PopupAnchor::Top)
-            .gravity(PopupGravity::Top);
         Task::batch([
             self.relayout_dock(),
             Task::done(Message::NewPopUp { settings, id }),
         ])
+    }
+
+    /// Reaches the `wl_surface` behind an iced surface, to put material behind it.
+    fn reach_surface(&self, id: IcedId) -> Task<Message> {
+        let Some(material) = &self.material else {
+            return Task::none();
+        };
+        let connection = material.connection().clone();
+        iced_runtime::window::run(id, move |window| material::surface_of(&connection, window))
+            .map(move |surface| Message::SurfaceReached(id, surface))
+    }
+
+    fn attach_material(&mut self, id: IcedId, surface: WlSurface) {
+        let Some(material) = &self.material else {
+            return;
+        };
+        let target = material.attach(surface);
+        match self.surfaces.get(&id) {
+            Some(Surface::MenuBar) => {
+                material.set_shapes(&target, &menubar::material_shapes(self.menubar_width));
+                self.menubar_material = Some(target);
+            }
+            Some(Surface::Dock) => {
+                self.dock_shapes = dock::material_shapes(&self.dock_layout);
+                material.set_shapes(&target, &self.dock_shapes);
+                self.dock_material = Some(target);
+            }
+            Some(Surface::Popup) => match &mut self.popup {
+                Some(popup) if popup.id == id => {
+                    let shapes = match popup.content {
+                        PopupContent::Menu(_) => menu::material_shapes(popup.size),
+                        PopupContent::Downloads(_) => stack::material_shapes(popup.size),
+                    };
+                    material.set_shapes(&target, &shapes);
+                    popup.material = Some(target);
+                }
+                _ => target.destroy(),
+            },
+            Some(Surface::Alert) => match &mut self.alert {
+                Some(open) if open.id == id => {
+                    material.set_shapes(&target, &alert::material_shapes());
+                    open.material = Some(target);
+                }
+                _ => target.destroy(),
+            },
+            // Closed before it could be reached.
+            None => target.destroy(),
+        }
+    }
+
+    /// What the menu bar calls the focused app; "Desktop" when nothing is focused.
+    fn app_name(&self) -> &str {
+        self.focused_app.as_ref().map_or("Desktop", |app| &app.name)
     }
 
     /// Opens an alert, unless one is already up.
@@ -679,7 +770,7 @@ impl Shell {
                     ),
                     detail: String::from("You can't undo this action."),
                     confirm: String::from("Empty Trash"),
-                    on_confirm: dock::MenuAction::EmptyTrash,
+                    on_confirm: Message::DockMenu(dock::MenuAction::EmptyTrash),
                     icon: self.apps.themed_icon("user-trash-full"),
                 };
                 return self.open_alert(alert);
@@ -759,7 +850,13 @@ impl Shell {
 
     fn view(&self, id: IcedId) -> Element<'_> {
         match self.surfaces.get(&id) {
-            Some(Surface::MenuBar) => menubar::view(self.focused_app.as_deref(), &self.clock),
+            Some(Surface::MenuBar) => menubar::view(
+                self.app_name(),
+                &self.clock,
+                self.logo.as_ref(),
+                self.popup.as_ref().and_then(|popup| popup.title),
+                self.material.as_ref().map(|m| m.kind()),
+            ),
             Some(Surface::Dock) => dock::view(
                 &self.dock,
                 &self.place_icons,
