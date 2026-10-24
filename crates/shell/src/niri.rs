@@ -8,7 +8,7 @@ use iced_futures::Subscription;
 use iced_futures::futures::channel::mpsc;
 use iced_futures::futures::{SinkExt, Stream, StreamExt};
 use niri_ipc::socket::Socket;
-use niri_ipc::{Action, Event, Request, Window};
+use niri_ipc::{Action, Event, KeyboardLayouts, LayoutSwitchTarget, Request, Window};
 
 /// The parts of a niri window the shell cares about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,9 +36,23 @@ impl From<&Window> for WindowInfo {
     }
 }
 
-/// Emits the full window list, ordered by id, every time it changes.
-pub fn windows() -> Subscription<Vec<WindowInfo>> {
-    Subscription::run(windows_stream)
+/// News from niri's event stream.
+#[derive(Debug, Clone)]
+pub enum Update {
+    /// The full window list, ordered by id, every time it changes.
+    Windows(Vec<WindowInfo>),
+    /// The keyboard layouts and which one is active, every time either changes.
+    KeyboardLayouts(KeyboardLayouts),
+}
+
+pub fn updates() -> Subscription<Update> {
+    Subscription::run(update_stream)
+}
+
+pub fn switch_layout(index: u8) {
+    run_action(Action::SwitchLayout {
+        layout: LayoutSwitchTarget::Index(index),
+    });
 }
 
 pub fn focus_window(id: u64) {
@@ -50,7 +64,6 @@ pub fn close_window(id: u64) {
     run_action(Action::CloseWindow { id: Some(id) });
 }
 
-/// Spawns through niri so the process gets niri's environment, not ours.
 /// Ends the session, without niri's own confirmation dialog.
 pub fn quit() {
     run_action(Action::Quit {
@@ -58,6 +71,7 @@ pub fn quit() {
     });
 }
 
+/// Spawns through niri so the process gets niri's environment, not ours.
 pub fn spawn(command: Vec<String>) {
     run_action(Action::Spawn { command });
 }
@@ -74,26 +88,26 @@ fn run_action(action: Action) {
     }
 }
 
-fn windows_stream() -> impl Stream<Item = Vec<WindowInfo>> {
-    iced_futures::stream::channel(16, |mut output: mpsc::Sender<Vec<WindowInfo>>| async move {
+fn update_stream() -> impl Stream<Item = Update> {
+    iced_futures::stream::channel(16, |mut output: mpsc::Sender<Update>| async move {
         let (tx, mut rx) = mpsc::unbounded();
 
         // The niri socket API is blocking, so it gets its own thread.
         thread::spawn(move || {
-            if let Err(err) = track_windows(tx) {
+            if let Err(err) = track(tx) {
                 log::error!("niri event stream ended: {err}");
             }
         });
 
-        while let Some(windows) = rx.next().await {
-            if output.send(windows).await.is_err() {
+        while let Some(update) = rx.next().await {
+            if output.send(update).await.is_err() {
                 break;
             }
         }
     })
 }
 
-fn track_windows(tx: mpsc::UnboundedSender<Vec<WindowInfo>>) -> io::Result<()> {
+fn track(tx: mpsc::UnboundedSender<Update>) -> io::Result<()> {
     let mut socket = Socket::connect()?;
     socket
         .send(Request::EventStream)?
@@ -103,9 +117,33 @@ fn track_windows(tx: mpsc::UnboundedSender<Vec<WindowInfo>>) -> io::Result<()> {
     // niri doesn't promise ids increase, but in practice id order is open order.
     let mut windows: BTreeMap<u64, WindowInfo> = BTreeMap::new();
     let mut last_sent: Option<Vec<WindowInfo>> = None;
+    let mut layouts: Option<KeyboardLayouts> = None;
 
     loop {
         match read_event()? {
+            Event::KeyboardLayoutsChanged { keyboard_layouts } => {
+                layouts = Some(keyboard_layouts.clone());
+                if tx
+                    .unbounded_send(Update::KeyboardLayouts(keyboard_layouts))
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                continue;
+            }
+            Event::KeyboardLayoutSwitched { idx } => {
+                let Some(layouts) = &mut layouts else {
+                    continue;
+                };
+                layouts.current_idx = idx;
+                if tx
+                    .unbounded_send(Update::KeyboardLayouts(layouts.clone()))
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                continue;
+            }
             Event::WindowsChanged { windows: all } => {
                 windows = all.iter().map(|w| (w.id, WindowInfo::from(w))).collect();
             }
@@ -143,7 +181,10 @@ fn track_windows(tx: mpsc::UnboundedSender<Vec<WindowInfo>>) -> io::Result<()> {
 
         let snapshot: Vec<WindowInfo> = windows.values().cloned().collect();
         if last_sent.as_ref() != Some(&snapshot) {
-            if tx.unbounded_send(snapshot.clone()).is_err() {
+            if tx
+                .unbounded_send(Update::Windows(snapshot.clone()))
+                .is_err()
+            {
                 return Ok(());
             }
             last_sent = Some(snapshot);

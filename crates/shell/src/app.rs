@@ -25,6 +25,7 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::niri::{self, WindowInfo};
 use crate::places::{self, Place};
 use crate::{dock, menu, menubar, stack};
+use niri_ipc::KeyboardLayouts;
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
 
@@ -69,6 +70,9 @@ enum Surface {
 #[derive(Debug, Clone)]
 pub enum Message {
     WindowsChanged(Vec<WindowInfo>),
+    KeyboardLayoutsChanged(KeyboardLayouts),
+    /// A layout was chosen in the keyboard layout menu; carries its index.
+    SwitchLayout(u8),
     Tick,
     /// A dock icon was pressed; carries the app's id. It becomes a click or a drag.
     DockPressed(String),
@@ -144,6 +148,9 @@ struct Shell {
     bar_backdrop: Option<menubar::Backdrop>,
     /// Whether the compositor reports the brightness behind the bar.
     bar_tracks_brightness: bool,
+    keyboard_layouts: Option<KeyboardLayouts>,
+    /// Short name of the active keyboard layout, when there's more than one.
+    input_label: Option<String>,
     /// The distro logo in color, for alerts about the whole system.
     system_icon: Option<image::Handle>,
     /// The latest window list from niri.
@@ -250,6 +257,8 @@ impl Shell {
             logo_dark,
             bar_backdrop: None,
             bar_tracks_brightness: false,
+            keyboard_layouts: None,
+            input_label: None,
             system_icon,
             windows: Vec::new(),
             dock,
@@ -301,6 +310,17 @@ impl Shell {
                         .any(|item| item.app.id == *app_id && item.is_running())
                 });
                 return self.relayout_dock();
+            }
+            Message::KeyboardLayoutsChanged(layouts) => {
+                self.input_label = (layouts.names.len() > 1)
+                    .then(|| layouts.names.get(usize::from(layouts.current_idx)))
+                    .flatten()
+                    .map(|name| menubar::input_label(name));
+                self.keyboard_layouts = Some(layouts);
+            }
+            Message::SwitchLayout(index) => {
+                niri::switch_layout(index);
+                return self.close_popup();
             }
             Message::Tick => {
                 self.clock = menubar::format_clock();
@@ -566,9 +586,15 @@ impl Shell {
                     .unwrap_or_default();
                 menubar::app_menu(app, windows)
             }
+            menubar::Title::Input => match &self.keyboard_layouts {
+                Some(layouts) => menubar::input_menu(layouts),
+                None => return Task::none(),
+            },
         };
         let size = menu::size(&entries);
-        let anchor = menubar::menu_anchor(title, self.app_name());
+        let Some(anchor) = self.bar().menu_anchor(title) else {
+            return Task::none();
+        };
         let settings = IcedNewPopupSettings::new(self.menubar_id, size, anchor)
             .anchor(PopupAnchor::BottomLeft)
             .gravity(PopupGravity::BottomRight);
@@ -649,6 +675,21 @@ impl Shell {
             },
             // Closed before it could be reached.
             None => target.destroy(),
+        }
+    }
+
+    fn bar(&self) -> menubar::Bar<'_> {
+        menubar::Bar {
+            width: self.menubar_width,
+            app_name: self.app_name(),
+            clock: &self.clock,
+            logo: match self.bar_backdrop {
+                Some(menubar::Backdrop::Light) => self.logo_dark.as_ref(),
+                _ => self.logo.as_ref(),
+            },
+            open: self.popup.as_ref().and_then(|popup| popup.title),
+            backdrop: self.bar_backdrop,
+            input: self.input_label.as_deref(),
         }
     }
 
@@ -894,16 +935,7 @@ impl Shell {
 
     fn view(&self, id: IcedId) -> Element<'_> {
         match self.surfaces.get(&id) {
-            Some(Surface::MenuBar) => menubar::view(
-                self.app_name(),
-                &self.clock,
-                match self.bar_backdrop {
-                    Some(menubar::Backdrop::Light) => self.logo_dark.as_ref(),
-                    _ => self.logo.as_ref(),
-                },
-                self.popup.as_ref().and_then(|popup| popup.title),
-                self.bar_backdrop,
-            ),
+            Some(Surface::MenuBar) => menubar::view(&self.bar()),
             Some(Surface::Dock) => dock::view(
                 &self.dock,
                 &self.place_icons,
@@ -947,7 +979,10 @@ impl Shell {
         Subscription::batch([
             dock_frames,
             bar_brightness,
-            niri::windows().map(Message::WindowsChanged),
+            niri::updates().map(|update| match update {
+                niri::Update::Windows(windows) => Message::WindowsChanged(windows),
+                niri::Update::KeyboardLayouts(layouts) => Message::KeyboardLayoutsChanged(layouts),
+            }),
             time::every(Duration::from_secs(1)).map(|_| Message::Tick),
             iced_futures::event::listen_with(|event, _, id| match event {
                 Event::Window(window::Event::Opened { size, .. }) => {

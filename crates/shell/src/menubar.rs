@@ -1,7 +1,8 @@
-//! The top menu bar, like macOS's: the distro logo with the system menu, the focused app's
-//! name with its menu, and the clock.
+//! The top menu bar, like macOS's: the distro logo with the system menu and the focused app's
+//! name with its menu on the left; status items and the clock on the right.
 //!
-//! Titles have fixed widths, so [`title_rect`] knows where each one is to hang its menu under it.
+//! Titles have fixed widths, so [`Bar::titles`] knows where each one is to hang its menu under
+//! it.
 
 use std::fs;
 
@@ -14,6 +15,7 @@ use crate::apps::App;
 use crate::dock::MenuAction;
 use crate::material::{self, Shape};
 use crate::{menu, niri};
+use niri_ipc::KeyboardLayouts;
 
 pub const HEIGHT: u32 = 30;
 pub const TEXT_SIZE: f32 = 13.0;
@@ -23,6 +25,9 @@ const PADDING_X: f32 = 8.0;
 const TITLE_PADDING_X: f32 = 10.0;
 const TITLE_HEIGHT: f32 = 22.0;
 const LOGO_SIZE: f32 = 16.0;
+/// Width of a status item on the right, like the keyboard layout.
+const STATUS_WIDTH: f32 = 34.0;
+const INPUT_TEXT_SIZE: f32 = 10.0;
 /// Between the bottom of the bar and the top of a menu hanging from it.
 const MENU_GAP: i32 = 4;
 
@@ -38,6 +43,8 @@ pub enum Title {
     System,
     /// The focused app's name.
     App,
+    /// The keyboard layout.
+    Input,
 }
 
 /// How bright what's behind the bar is, which decides its text color, like on macOS.
@@ -140,33 +147,65 @@ pub fn material_shapes(width: f32) -> Vec<Shape> {
     }]
 }
 
-/// Where a title's highlight goes, in surface-local logical pixels.
-pub fn title_rect(title: Title, app_name: &str) -> Rectangle {
-    let system = Rectangle {
-        x: PADDING_X,
-        y: (HEIGHT as f32 - TITLE_HEIGHT) / 2.0,
-        width: LOGO_SIZE + 2.0 * TITLE_PADDING_X,
-        height: TITLE_HEIGHT,
-    };
-    match title {
-        Title::System => system,
-        Title::App => Rectangle {
-            x: system.x + system.width,
-            width: (menu::text_width(app_name, TEXT_SIZE, BOLD) + 2.0 * TITLE_PADDING_X).ceil(),
-            ..system
-        },
-    }
+/// What the bar shows, from the shell's state.
+pub struct Bar<'a> {
+    /// Width of the bar surface.
+    pub width: f32,
+    pub app_name: &'a str,
+    pub clock: &'a str,
+    /// The logo, in the backdrop's ink.
+    pub logo: Option<&'a image::Handle>,
+    /// The title whose menu is open.
+    pub open: Option<Title>,
+    /// `None` when the compositor can't tell how bright the background is.
+    pub backdrop: Option<Backdrop>,
+    /// Short name of the keyboard layout, when there's more than one.
+    pub input: Option<&'a str>,
 }
 
-/// Where a title's menu attaches: under its left edge, a little below the bar.
-pub fn menu_anchor(title: Title, app_name: &str) -> (i32, i32, i32, i32) {
-    let rect = title_rect(title, app_name);
-    (
-        rect.x as i32,
-        0,
-        rect.width.ceil() as i32,
-        HEIGHT as i32 + MENU_GAP,
-    )
+impl Bar<'_> {
+    /// The titles, left to right, with where their highlights go in surface-local logical
+    /// pixels.
+    pub fn titles(&self) -> Vec<(Title, Rectangle)> {
+        let y = (HEIGHT as f32 - TITLE_HEIGHT) / 2.0;
+        let rect = |x, width| Rectangle {
+            x,
+            y,
+            width,
+            height: TITLE_HEIGHT,
+        };
+
+        let system = rect(PADDING_X, LOGO_SIZE + 2.0 * TITLE_PADDING_X);
+        let app_width =
+            (menu::text_width(self.app_name, TEXT_SIZE, BOLD) + 2.0 * TITLE_PADDING_X).ceil();
+        let mut titles = vec![
+            (Title::System, system),
+            (Title::App, rect(system.x + system.width, app_width)),
+        ];
+
+        // Status items line up leftward from the clock.
+        let mut x = self.width - PADDING_X - self.clock_width();
+        if self.input.is_some() {
+            x -= STATUS_WIDTH;
+            titles.push((Title::Input, rect(x, STATUS_WIDTH)));
+        }
+        titles
+    }
+
+    fn clock_width(&self) -> f32 {
+        (menu::text_width(self.clock, TEXT_SIZE, Font::DEFAULT) + 2.0 * TITLE_PADDING_X).ceil()
+    }
+
+    /// Where a title's menu attaches: under its left edge, a little below the bar.
+    pub fn menu_anchor(&self, title: Title) -> Option<(i32, i32, i32, i32)> {
+        let (_, rect) = self.titles().into_iter().find(|(t, _)| *t == title)?;
+        Some((
+            rect.x as i32,
+            0,
+            rect.width.ceil() as i32,
+            HEIGHT as i32 + MENU_GAP,
+        ))
+    }
 }
 
 /// Icon names to try for the distro logo: the config's choice, then os-release's `LOGO`.
@@ -248,67 +287,59 @@ fn user_name() -> String {
     full_name.unwrap_or(login)
 }
 
-/// `backdrop` is `None` when the compositor can't tell how bright the background is; `logo`
-/// should match its ink.
-pub fn view<'a>(
-    app_name: &'a str,
-    clock: &'a str,
-    logo: Option<&'a image::Handle>,
-    open: Option<Title>,
-    backdrop: Option<Backdrop>,
-) -> Element<'a> {
-    let logo: Element<'a> = match logo {
-        Some(handle) => image(handle.clone())
-            .width(LOGO_SIZE)
-            .height(LOGO_SIZE)
-            .into(),
-        None => Space::new().width(LOGO_SIZE).into(),
-    };
-
+pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
     // Like macOS, the bar has no background: knowing the backdrop, its text flips between white
     // and black. Without that, a dark tint keeps white text readable on bright wallpapers.
-    let ink = backdrop.unwrap_or(Backdrop::Dark).ink();
-    let tint = match backdrop {
+    let ink = bar.backdrop.unwrap_or(Backdrop::Dark).ink();
+    let tint = match bar.backdrop {
         Some(_) => Color::TRANSPARENT,
         None => Color::from_rgba(0.0, 0.0, 0.0, 0.3),
     };
     let highlight = Color { a: 0.2, ..ink };
-    container(
-        row![
-            title(Title::System, logo, app_name, open, highlight),
-            title(
-                Title::App,
-                text(app_name).font(BOLD).into(),
-                app_name,
-                open,
-                highlight
-            ),
-            Space::new().width(Length::Fill),
-            container(text(clock)).padding([0.0, TITLE_PADDING_X]),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .padding([0.0, PADDING_X])
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .align_y(Alignment::Center)
-    .style(move |_| container::Style {
-        background: Some(Background::Color(tint)),
-        text_color: Some(ink),
-        ..Default::default()
-    })
-    .into()
+
+    let mut left = row![].align_y(Alignment::Center);
+    let mut right = row![].align_y(Alignment::Center);
+    for (title, rect) in bar.titles() {
+        let content: Element<'a> = match title {
+            Title::System => match bar.logo {
+                Some(handle) => image(handle.clone())
+                    .width(LOGO_SIZE)
+                    .height(LOGO_SIZE)
+                    .into(),
+                None => Space::new().width(LOGO_SIZE).into(),
+            },
+            Title::App => text(bar.app_name).font(BOLD).into(),
+            Title::Input => input_badge(bar.input.unwrap_or_default(), ink),
+        };
+        let item = title_item(title, content, rect, bar.open, highlight);
+        match title {
+            Title::System | Title::App => left = left.push(item),
+            Title::Input => right = right.push(item),
+        }
+    }
+    let clock = container(text(bar.clock)).center_x(bar.clock_width());
+
+    container(row![left, Space::new().width(Length::Fill), right, clock].align_y(Alignment::Center))
+        .padding([0.0, PADDING_X])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(tint)),
+            text_color: Some(ink),
+            ..Default::default()
+        })
+        .into()
 }
 
 /// A title that opens its menu on press, highlighted while the menu is open.
-fn title<'a>(
+fn title_item<'a>(
     title: Title,
     content: Element<'a>,
-    app_name: &str,
+    rect: Rectangle,
     open: Option<Title>,
     highlight: Color,
 ) -> Element<'a> {
-    let rect = title_rect(title, app_name);
     let highlighted = open == Some(title);
     // Menus open on press, like on macOS, while the press can still grab the pointer.
     mouse_area(
@@ -327,6 +358,88 @@ fn title<'a>(
     .on_press(Message::BarPressed(title))
     .on_enter(Message::BarEntered(title))
     .into()
+}
+
+/// The keyboard layout's short name in a filled box, like macOS's input source icons.
+fn input_badge<'a>(label: &str, ink: Color) -> Element<'a> {
+    let cutout = if ink.r > 0.5 {
+        Color::from_rgb(0.1, 0.1, 0.1)
+    } else {
+        Color::WHITE
+    };
+    container(
+        text(label.to_owned())
+            .size(INPUT_TEXT_SIZE)
+            .font(BOLD)
+            .color(cutout),
+    )
+    .padding([0, 3])
+    .style(move |_| container::Style {
+        background: Some(Background::Color(ink)),
+        border: Border {
+            radius: 3.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// The keyboard layout menu: every layout, with a check on the active one.
+pub fn input_menu(layouts: &KeyboardLayouts) -> Vec<menu::Entry> {
+    layouts
+        .names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            menu::Entry::item(name, Message::SwitchLayout(index as u8))
+                .checked(index == usize::from(layouts.current_idx))
+        })
+        .collect()
+}
+
+/// A two-letter name for an XKB layout name like "English (US)" or "Russian".
+pub fn input_label(name: &str) -> String {
+    let language = name.split([' ', '(']).next().unwrap_or(name);
+    let code = match language {
+        "Arabic" => "AR",
+        "Belarusian" => "BY",
+        "Bulgarian" => "BG",
+        "Chinese" => "ZH",
+        "Croatian" => "HR",
+        "Czech" => "CS",
+        "Danish" => "DA",
+        "Dutch" => "NL",
+        "English" => "EN",
+        "Estonian" => "ET",
+        "Finnish" => "FI",
+        "French" => "FR",
+        "Georgian" => "KA",
+        "German" => "DE",
+        "Greek" => "EL",
+        "Hebrew" => "HE",
+        "Hungarian" => "HU",
+        "Italian" => "IT",
+        "Japanese" => "JA",
+        "Kazakh" => "KK",
+        "Korean" => "KO",
+        "Latvian" => "LV",
+        "Lithuanian" => "LT",
+        "Norwegian" => "NO",
+        "Polish" => "PL",
+        "Portuguese" => "PT",
+        "Romanian" => "RO",
+        "Russian" => "RU",
+        "Serbian" => "SR",
+        "Slovak" => "SK",
+        "Slovenian" => "SL",
+        "Spanish" => "ES",
+        "Swedish" => "SV",
+        "Turkish" => "TR",
+        "Ukrainian" => "UK",
+        _ => return language.chars().take(2).collect::<String>().to_uppercase(),
+    };
+    code.to_owned()
 }
 
 pub fn format_clock() -> String {
