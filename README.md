@@ -7,9 +7,8 @@ The plan has two halves:
 
 - **Shell** (`crates/shell`): dock, menu bar, control center and widgets. It's built with iced on
   layer-shell and talks to KWin over Wayland protocols and D-Bus. It runs on stock KWin 6.
-- **KWin plugins**: for things the shell can't do from outside, such as the liquid glass shader,
-  titlebars with traffic lights and minimize animations. (Being ported from an earlier niri fork,
-  still at `compositor/niri`.)
+- **KWin plugins** (`kwin`): for things the shell can't do from outside, such as the liquid glass
+  shader, titlebars with traffic lights and minimize animations. So far: liquid glass.
 
 ## Development
 
@@ -57,37 +56,42 @@ The shell chooses the material behind its surfaces itself, so it needs no compos
 - **Blur** on stock KWin 6 and other compositors with `ext-background-effect-v1`.
 - **Nothing** elsewhere; the dock then keeps a faint fill and border.
 
-## Compositor
+## KWin plugin
 
-The niri fork is a git submodule at `compositor/niri`. It tracks the `macshell` branch of
-[mistychirp/niri](https://github.com/mistychirp/niri), which is based on `v26.04`. So far it adds
-liquid glass: the `macshell-glass-v1` protocol, a `glass` option for `background-effect` rules,
-and glass settings in the `blur` section. See [contrib/niri-glass.kdl](contrib/niri-glass.kdl)
-for tuning it.
+`kwin/` is a KWin effect that renders liquid glass for the shell. It serves our
+`macshell-glass-v1` protocol: clear and frosted glass shapes behind surfaces, transparent shapes
+that only measure, and brightness tracking for the menu bar's text color.
 
-The fork keeps a copy of the protocol XML in `resources/`; keep it in sync with `protocols/`.
-
-```sh
-git clone --recurse-submodules https://github.com/mistychirp/macshell-x.git
-# or, in an existing clone:
-git submodule update --init
-```
-
-Inside the submodule, `upstream` should point at niri-wm/niri for rebasing onto new releases.
-
-Build it in nixpkgs' niri build environment, not niri's own flake. The flake pins an older
-nixpkgs, so its glibc doesn't match the system's Mesa drivers, and EGL fails to load at runtime:
+KWin plugins must be built against the exact KWin they load into. The flake exposes the plugin as
+`packages.kwin-macshell`; to build it against your system's KWin, use the nixpkgs your system
+uses:
 
 ```sh
-cd compositor/niri
-nix develop nixpkgs#niri --command cargo build
+nix build .#kwin-macshell --override-input nixpkgs github:NixOS/nixpkgs/<your system's rev>
 ```
 
-To try it without leaving your session, run it nested with a test config. It opens as a window:
+KWin finds it through `QT_PLUGIN_PATH` (its `lib/qt-6/plugins`). It's enabled by default once
+found. The glass can be tuned in `kwinrc`; these are the defaults:
 
-```sh
-./target/debug/niri -c path/to/test.kdl
+```ini
+[Effect-macshell]
+# Width of the curved rim, in logical pixels.
+Bezel=20
+# How far the rim bends the background at its outer edge.
+Refraction=16
+# Strength of the specular highlight along the rim.
+Highlight=0.35
+# Tint over the glass, as R,G,B,A.
+Tint=255,255,255,0
+# The blur under frosted glass: dual Kawase passes, their sample offset, and saturation.
+FrostPasses=2
+FrostOffset=2
+FrostSaturation=1.8
 ```
+
+To try it without leaving your session, run KWin nested. KWin needs `wp_single_pixel_buffer_manager_v1`
+and pointer constraints from its host, so a nested KWin can't run inside niri, but works inside a
+nested sway.
 
 ## Notes
 

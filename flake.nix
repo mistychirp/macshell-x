@@ -13,6 +13,10 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
+      packages = forAllSystems (pkgs: {
+        kwin-macshell = pkgs.kdePackages.callPackage ./kwin/package.nix { };
+      });
+
       devShells = forAllSystems (
         pkgs:
         let

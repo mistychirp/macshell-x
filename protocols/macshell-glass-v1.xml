@@ -77,7 +77,7 @@
 
     <request name="destroy" type="destructor">
       <description summary="remove the glass">
-        The glass is removed on the next commit of the surface.
+        The glass is removed right away, without waiting for a commit.
       </description>
     </request>
 
