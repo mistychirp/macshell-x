@@ -13,6 +13,7 @@ use iced_widget::{Space, container, image, mouse_area, row, text};
 use crate::app::{Element, Message};
 use crate::apps::App;
 use crate::dock::MenuAction;
+use crate::icons::{self, Glyph};
 use crate::material::{self, Shape};
 use crate::{menu, niri};
 use niri_ipc::KeyboardLayouts;
@@ -45,6 +46,8 @@ pub enum Title {
     App,
     /// The keyboard layout.
     Input,
+    /// The Control Center's switches.
+    ControlCenter,
 }
 
 /// How bright what's behind the bar is, which decides its text color, like on macOS.
@@ -185,6 +188,8 @@ impl Bar<'_> {
 
         // Status items line up leftward from the clock.
         let mut x = self.width - PADDING_X - self.clock_width();
+        x -= STATUS_WIDTH;
+        titles.push((Title::ControlCenter, rect(x, STATUS_WIDTH)));
         if self.input.is_some() {
             x -= STATUS_WIDTH;
             titles.push((Title::Input, rect(x, STATUS_WIDTH)));
@@ -298,7 +303,7 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
     let highlight = Color { a: 0.2, ..ink };
 
     let mut left = row![].align_y(Alignment::Center);
-    let mut right = row![].align_y(Alignment::Center);
+    let mut right: Vec<Element<'a>> = Vec::new();
     for (title, rect) in bar.titles() {
         let content: Element<'a> = match title {
             Title::System => match bar.logo {
@@ -310,15 +315,18 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
             },
             Title::App => text(bar.app_name).font(BOLD).into(),
             Title::Input => input_badge(bar.input.unwrap_or_default(), ink),
+            Title::ControlCenter => icons::icon(Glyph::ControlCenter, 17.0, ink),
         };
         let item = title_item(title, content, rect, bar.open, highlight);
         match title {
             Title::System | Title::App => left = left.push(item),
-            Title::Input => right = right.push(item),
+            // Laid out right to left, so each one goes in front of the last.
+            _ => right.insert(0, item),
         }
     }
     let clock = container(text(bar.clock)).center_x(bar.clock_width());
 
+    let right = row(right).align_y(Alignment::Center);
     container(row![left, Space::new().width(Length::Fill), right, clock].align_y(Alignment::Center))
         .padding([0.0, PADDING_X])
         .width(Length::Fill)

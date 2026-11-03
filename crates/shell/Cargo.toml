@@ -16,7 +16,8 @@ iced_runtime = "0.14"
 # `wgpu-bare` is what actually selects the GPU renderer; `wgpu` alone leaves tiny-skia in charge.
 iced_renderer = { version = "0.14", features = ["wgpu", "wgpu-bare", "tiny-skia", "wayland", "web-colors"] }
 iced_widget = { version = "0.14", features = ["image", "svg"] }
-# Not used directly: enables the PNG codec for iced's images, which `iced` itself would do.
+# Decodes icons to recolor them, and enables the PNG codec for iced's images, which `iced`
+# itself would do.
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
 niri-ipc = "26.4.0"
@@ -30,3 +31,5 @@ toml_edit = "0.25"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-scanner = "0.31"
+# Already in the tree through iced_layershell; talks to NetworkManager, BlueZ and media players.
+zbus = "5.19"

@@ -24,7 +24,7 @@ use crate::config::{self, Config};
 use crate::material::{self, Material, MaterialSurface};
 use crate::niri::{self, WindowInfo};
 use crate::places::{self, Place};
-use crate::{dock, menu, menubar, stack};
+use crate::{audio, bluetooth, control, dock, media, menu, menubar, network, stack};
 use niri_ipc::KeyboardLayouts;
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -73,6 +73,16 @@ pub enum Message {
     KeyboardLayoutsChanged(KeyboardLayouts),
     /// A layout was chosen in the keyboard layout menu; carries its index.
     SwitchLayout(u8),
+    /// The Control Center's volume slider moved.
+    VolumeChanged(f32),
+    VolumeReleased,
+    ToggleMute,
+    ToggleWifi,
+    ToggleBluetooth,
+    Media(media::Control),
+    /// Time to reread what the Control Center shows.
+    ControlRefresh,
+    ControlStatus(control::Status),
     Tick,
     /// A dock icon was pressed; carries the app's id. It becomes a click or a drag.
     DockPressed(String),
@@ -128,6 +138,8 @@ struct OpenAlert {
 enum PopupContent {
     Menu(Vec<menu::Entry>),
     Downloads(Vec<stack::Tile>),
+    /// Shows [`Shell::control`].
+    ControlCenter,
 }
 
 struct Shell {
@@ -149,6 +161,10 @@ struct Shell {
     /// Whether the compositor reports the brightness behind the bar.
     bar_tracks_brightness: bool,
     keyboard_layouts: Option<KeyboardLayouts>,
+    /// What the Control Center shows, refreshed when it opens.
+    control: control::Panel,
+    /// When the volume slider last set the volume, to throttle `wpctl` while dragging.
+    volume_set_at: Option<Instant>,
     /// Short name of the active keyboard layout, when there's more than one.
     input_label: Option<String>,
     /// The distro logo in color, for alerts about the whole system.
@@ -258,6 +274,8 @@ impl Shell {
             bar_backdrop: None,
             bar_tracks_brightness: false,
             keyboard_layouts: None,
+            control: control::Panel::default(),
+            volume_set_at: None,
             input_label: None,
             system_icon,
             windows: Vec::new(),
@@ -317,6 +335,72 @@ impl Shell {
                     .flatten()
                     .map(|name| menubar::input_label(name));
                 self.keyboard_layouts = Some(layouts);
+            }
+            Message::VolumeChanged(level) => {
+                if let Some(volume) = &mut self.control.volume {
+                    volume.level = level;
+                    // Turning the volume up unmutes, like on macOS.
+                    if std::mem::replace(&mut volume.muted, false) {
+                        audio::set_muted(false);
+                    }
+                }
+                // Dragging changes the level many times a second; wpctl needn't keep up.
+                if self
+                    .volume_set_at
+                    .is_none_or(|at| at.elapsed() >= Duration::from_millis(40))
+                {
+                    self.volume_set_at = Some(Instant::now());
+                    audio::set_level(level);
+                }
+            }
+            Message::VolumeReleased => {
+                if let Some(volume) = self.control.volume {
+                    audio::set_level(volume.level);
+                }
+            }
+            Message::ToggleMute => {
+                if let Some(volume) = &mut self.control.volume {
+                    volume.muted = !volume.muted;
+                    audio::set_muted(volume.muted);
+                }
+            }
+            Message::ToggleWifi => {
+                if let Some(wifi) = &mut self.control.wifi {
+                    wifi.enabled = !wifi.enabled;
+                    let task = network::set_wifi_enabled(wifi.enabled);
+                    return Task::perform(task, |_| Message::ControlRefresh);
+                }
+            }
+            Message::ToggleBluetooth => {
+                if let Some(bluetooth) = &mut self.control.bluetooth {
+                    bluetooth.powered = !bluetooth.powered;
+                    let task = bluetooth::set_powered(bluetooth.clone(), bluetooth.powered);
+                    return Task::perform(task, |_| Message::ControlRefresh);
+                }
+            }
+            Message::Media(control) => {
+                if let Some(track) = &self.control.track {
+                    let task = media::control(track.clone(), control);
+                    return Task::perform(task, |_| Message::ControlRefresh);
+                }
+            }
+            Message::ControlRefresh => {
+                return Task::perform(control::status(), Message::ControlStatus);
+            }
+            Message::ControlStatus(status) => {
+                let art = status.track.as_ref().and_then(|track| track.art.clone());
+                if self
+                    .control
+                    .track
+                    .as_ref()
+                    .and_then(|track| track.art.as_ref())
+                    != art.as_ref()
+                {
+                    self.control.art = art.map(image::Handle::from_path);
+                }
+                self.control.wifi = status.wifi;
+                self.control.bluetooth = status.bluetooth;
+                self.control.track = status.track;
             }
             Message::SwitchLayout(index) => {
                 niri::switch_layout(index);
@@ -590,15 +674,30 @@ impl Shell {
                 Some(layouts) => menubar::input_menu(layouts),
                 None => return Task::none(),
             },
+            menubar::Title::ControlCenter => {
+                self.control.volume = audio::volume();
+                let open = self.open_bar_popup(title, control::size(), PopupContent::ControlCenter);
+                return Task::batch([open, Task::done(Message::ControlRefresh)]);
+            }
         };
         let size = menu::size(&entries);
+        self.open_bar_popup(title, size, PopupContent::Menu(entries))
+    }
+
+    /// Opens a popup under a menu bar title.
+    fn open_bar_popup(
+        &mut self,
+        title: menubar::Title,
+        size: (u32, u32),
+        content: PopupContent,
+    ) -> Task<Message> {
         let Some(anchor) = self.bar().menu_anchor(title) else {
             return Task::none();
         };
         let settings = IcedNewPopupSettings::new(self.menubar_id, size, anchor)
             .anchor(PopupAnchor::BottomLeft)
             .gravity(PopupGravity::BottomRight);
-        self.open_popup(Some(title), settings, PopupContent::Menu(entries))
+        self.open_popup(Some(title), settings, content)
     }
 
     /// Opens a popup, unless one is open: then it closes that one instead.
@@ -660,6 +759,7 @@ impl Shell {
                     let shapes = match popup.content {
                         PopupContent::Menu(_) => menu::material_shapes(popup.size),
                         PopupContent::Downloads(_) => stack::material_shapes(popup.size),
+                        PopupContent::ControlCenter => control::material_shapes(popup.size),
                     };
                     material.set_shapes(&target, &shapes);
                     popup.material = Some(target);
@@ -947,6 +1047,7 @@ impl Shell {
                 match self.popup.as_ref().map(|popup| &popup.content) {
                     Some(PopupContent::Menu(entries)) => menu::view(entries, material),
                     Some(PopupContent::Downloads(tiles)) => stack::view(tiles, material),
+                    Some(PopupContent::ControlCenter) => control::view(&self.control, material),
                     None => Space::new().into(),
                 }
             }
@@ -969,6 +1070,17 @@ impl Shell {
             Subscription::none()
         };
 
+        // What the Control Center shows can change under it, like a track ending.
+        let control_open = matches!(
+            self.popup.as_ref().map(|popup| &popup.content),
+            Some(PopupContent::ControlCenter)
+        );
+        let control_refresh = if control_open {
+            time::every(Duration::from_secs(2)).map(|_| Message::ControlRefresh)
+        } else {
+            Subscription::none()
+        };
+
         // Brightness events arrive on the material's queue, which nothing else dispatches.
         let bar_brightness = if self.bar_tracks_brightness {
             time::every(Duration::from_millis(250)).map(|_| Message::BarBrightness)
@@ -979,6 +1091,7 @@ impl Shell {
         Subscription::batch([
             dock_frames,
             bar_brightness,
+            control_refresh,
             niri::updates().map(|update| match update {
                 niri::Update::Windows(windows) => Message::WindowsChanged(windows),
                 niri::Update::KeyboardLayouts(layouts) => Message::KeyboardLayoutsChanged(layouts),
