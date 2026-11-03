@@ -9,13 +9,14 @@ mod dbus;
 mod dock;
 mod glass_protocol;
 mod icons;
+mod kwin;
 mod material;
 mod media;
 mod menu;
 mod menubar;
 mod network;
-mod niri;
 mod places;
+mod plasma_protocol;
 mod stack;
 
 fn main() -> Result<(), iced_layershell::Error> {

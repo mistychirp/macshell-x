@@ -3,9 +3,11 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
+use std::thread;
 
 use freedesktop_desktop_entry::unicase::Ascii;
 use freedesktop_desktop_entry::{DesktopEntry, find_app_by_id};
@@ -207,6 +209,20 @@ fn rasterize_svg(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
         })
         .collect();
     Some((size, size, rgba))
+}
+
+/// Starts a program apart from the shell: in its own process group, so it outlives the shell
+/// and doesn't get its signals, and reaped in the background.
+pub fn spawn(command: Vec<String>) {
+    let Some((program, args)) = command.split_first() else {
+        return;
+    };
+    match Command::new(program).args(args).process_group(0).spawn() {
+        Ok(mut child) => {
+            thread::spawn(move || child.wait());
+        }
+        Err(err) => log::error!("can't start {program}: {err}"),
+    }
 }
 
 /// The desktop entry id of the default app for `mime`, like `org.kde.dolphin` for folders.

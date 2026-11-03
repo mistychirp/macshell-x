@@ -20,7 +20,6 @@ iced_widget = { version = "0.14", features = ["image", "svg"] }
 # itself would do.
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
-niri-ipc = "26.4.0"
 raw-window-handle = "0.6"
 # Same version iced uses, to rasterize SVG icons once.
 resvg = "0.45.1"

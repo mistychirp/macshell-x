@@ -1,13 +1,15 @@
 # macshell-x
 
-A macOS Tahoe-style desktop shell for [niri](https://github.com/niri-wm/niri).
+A macOS Tahoe-style desktop for [KWin](https://invent.kde.org/plasma/kwin), KDE's compositor,
+running without the rest of Plasma.
 
 The plan has two halves:
 
 - **Shell** (`crates/shell`): dock, menu bar, control center and widgets. It's built with iced on
-  layer-shell and talks to niri over IPC and Wayland protocols. It runs on stock niri.
-- **Compositor**: a soft fork of niri, added later for things the shell can't do from outside,
-  such as the liquid glass shader, titlebars with traffic lights, minimize and window animations.
+  layer-shell and talks to KWin over Wayland protocols and D-Bus. It runs on stock KWin 6.
+- **KWin plugins**: for things the shell can't do from outside, such as the liquid glass shader,
+  titlebars with traffic lights and minimize animations. (Being ported from an earlier niri fork,
+  still at `compositor/niri`.)
 
 ## Development
 
@@ -15,6 +17,15 @@ The plan has two halves:
 nix develop
 cargo run
 ```
+
+## Running on KWin
+
+KWin only lets the shell follow and manage windows if a desktop entry grants it, with
+`X-KDE-Wayland-Interfaces=org_kde_plasma_window_management` and an `Exec` that is the absolute
+path of the shell binary. Install [contrib/macshell.desktop](contrib/macshell.desktop) with
+`@macshell@` replaced by that path, somewhere in `$XDG_DATA_DIRS/applications`.
+
+Keyboard layouts come from KWin's `org.kde.keyboard` D-Bus interface.
 
 ## Configuration
 
@@ -41,9 +52,9 @@ logo = "nix-snowflake"
 
 The shell chooses the material behind its surfaces itself, so it needs no compositor rules:
 
-- **Liquid glass** on the macshell niri fork, through our `macshell-glass-v1` protocol
+- **Liquid glass** where the compositor offers our `macshell-glass-v1` protocol
   ([protocols/macshell-glass-v1.xml](protocols/macshell-glass-v1.xml)).
-- **Blur** on stock niri 26.04+ and other compositors with `ext-background-effect-v1`.
+- **Blur** on stock KWin 6 and other compositors with `ext-background-effect-v1`.
 - **Nothing** elsewhere; the dock then keeps a faint fill and border.
 
 ## Compositor

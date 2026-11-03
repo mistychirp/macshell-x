@@ -1,5 +1,5 @@
 {
-  description = "macshell-x: a macOS Tahoe-style shell for niri";
+  description = "macshell-x: a macOS Tahoe-style desktop for KWin";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 

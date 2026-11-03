@@ -21,11 +21,10 @@ use wayland_client::protocol::wl_surface::WlSurface;
 use crate::alert::{self, Alert};
 use crate::apps::{self, App, AppIndex};
 use crate::config::{self, Config};
+use crate::kwin::{self, KeyboardLayouts, WindowInfo};
 use crate::material::{self, Material, MaterialSurface};
-use crate::niri::{self, WindowInfo};
 use crate::places::{self, Place};
 use crate::{audio, bluetooth, control, dock, media, menu, menubar, network, stack};
-use niri_ipc::KeyboardLayouts;
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
 
@@ -72,7 +71,7 @@ pub enum Message {
     WindowsChanged(Vec<WindowInfo>),
     KeyboardLayoutsChanged(KeyboardLayouts),
     /// A layout was chosen in the keyboard layout menu; carries its index.
-    SwitchLayout(u8),
+    SwitchLayout(usize),
     /// The Control Center's volume slider moved.
     VolumeChanged(f32),
     VolumeReleased,
@@ -169,7 +168,7 @@ struct Shell {
     input_label: Option<String>,
     /// The distro logo in color, for alerts about the whole system.
     system_icon: Option<image::Handle>,
-    /// The latest window list from niri.
+    /// The latest window list from KWin.
     windows: Vec<WindowInfo>,
     dock: Vec<dock::Item>,
     dock_id: IcedId,
@@ -331,7 +330,7 @@ impl Shell {
             }
             Message::KeyboardLayoutsChanged(layouts) => {
                 self.input_label = (layouts.names.len() > 1)
-                    .then(|| layouts.names.get(usize::from(layouts.current_idx)))
+                    .then(|| layouts.names.get(layouts.current))
                     .flatten()
                     .map(|name| menubar::input_label(name));
                 self.keyboard_layouts = Some(layouts);
@@ -403,8 +402,8 @@ impl Shell {
                 self.control.track = status.track;
             }
             Message::SwitchLayout(index) => {
-                niri::switch_layout(index);
-                return self.close_popup();
+                let switch = Task::future(kwin::switch_layout(index)).discard();
+                return Task::batch([self.close_popup(), switch]);
             }
             Message::Tick => {
                 self.clock = menubar::format_clock();
@@ -828,8 +827,8 @@ impl Shell {
             Place::Trash => String::from("trash:///"),
         };
         match self.apps.command_with_uris(&self.file_manager, &[&uri]) {
-            Some(command) => niri::spawn(command),
-            None => niri::spawn(vec![String::from("xdg-open"), uri]),
+            Some(command) => apps::spawn(command),
+            None => apps::spawn(vec![String::from("xdg-open"), uri]),
         }
     }
 
@@ -923,10 +922,10 @@ impl Shell {
 
     fn run_dock_action(&mut self, action: dock::MenuAction) -> Task<Message> {
         match action {
-            dock::MenuAction::FocusWindow(id) => niri::focus_window(id),
+            dock::MenuAction::FocusWindow(id) => kwin::focus_window(id),
             dock::MenuAction::Open(app_id) => return self.activate(&app_id),
-            dock::MenuAction::Launch(command) => niri::spawn(command),
-            dock::MenuAction::Quit(ids) => ids.into_iter().for_each(niri::close_window),
+            dock::MenuAction::Launch(command) => apps::spawn(command),
+            dock::MenuAction::Quit(ids) => ids.into_iter().for_each(kwin::close_window),
             dock::MenuAction::TogglePin(app_id) => {
                 if let Some(index) = self.pinned.iter().position(|id| *id == app_id) {
                     self.pinned.remove(index);
@@ -939,7 +938,7 @@ impl Shell {
                 self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
             }
             dock::MenuAction::OpenPath(path) => {
-                niri::spawn(vec![String::from("xdg-open"), path.display().to_string()]);
+                apps::spawn(vec![String::from("xdg-open"), path.display().to_string()]);
             }
             dock::MenuAction::OpenPlace(place) => self.open_place(place),
             dock::MenuAction::ConfirmEmptyTrash => {
@@ -1092,10 +1091,8 @@ impl Shell {
             dock_frames,
             bar_brightness,
             control_refresh,
-            niri::updates().map(|update| match update {
-                niri::Update::Windows(windows) => Message::WindowsChanged(windows),
-                niri::Update::KeyboardLayouts(layouts) => Message::KeyboardLayoutsChanged(layouts),
-            }),
+            kwin::windows().map(Message::WindowsChanged),
+            kwin::keyboard_layouts().map(Message::KeyboardLayoutsChanged),
             time::every(Duration::from_secs(1)).map(|_| Message::Tick),
             iced_futures::event::listen_with(|event, _, id| match event {
                 Event::Window(window::Event::Opened { size, .. }) => {

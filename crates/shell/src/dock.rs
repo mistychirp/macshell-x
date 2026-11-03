@@ -15,10 +15,11 @@ use iced_widget::core::{Background, Border, Color, Font, Length, Point, Rectangl
 use iced_widget::{Space, container, image, mouse_area, pin, stack, text};
 
 use crate::app::{Element, Message};
+use crate::apps;
 use crate::apps::{App, AppIndex};
+use crate::kwin::{self, WindowInfo};
 use crate::material::{self, Shape};
 use crate::menu;
-use crate::niri::{self, WindowInfo};
 use crate::places::Place;
 
 pub const ICON_SIZE: f32 = 48.0;
@@ -612,9 +613,9 @@ pub fn menu_anchor(layout: &Layout, index: usize) -> Option<(i32, i32, i32, i32)
 /// Focuses the app's most recent window, or launches it if nothing is open.
 pub fn activate(item: &Item) {
     if let Some(window) = item.windows.first() {
-        niri::focus_window(window.id);
+        kwin::focus_window(window.id);
     } else if let Some(command) = &item.app.command {
-        niri::spawn(command.clone());
+        apps::spawn(command.clone());
     } else {
         log::warn!("don't know how to launch {}", item.app.id);
     }

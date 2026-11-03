@@ -14,9 +14,9 @@ use crate::app::{Element, Message};
 use crate::apps::App;
 use crate::dock::MenuAction;
 use crate::icons::{self, Glyph};
+use crate::kwin::KeyboardLayouts;
 use crate::material::{self, Shape};
-use crate::{menu, niri};
-use niri_ipc::KeyboardLayouts;
+use crate::{apps, menu};
 
 pub const HEIGHT: u32 = 30;
 pub const TEXT_SIZE: f32 = 13.0;
@@ -118,14 +118,20 @@ impl SystemAction {
     }
 
     pub fn run(self) {
+        // Logging out ends the login session, which takes KWin and every app with it.
+        let session = std::env::var("XDG_SESSION_ID").unwrap_or_default();
         let command: &[&str] = match self {
             SystemAction::Sleep => &["systemctl", "suspend"],
             SystemAction::Restart => &["systemctl", "reboot"],
             SystemAction::ShutDown => &["systemctl", "poweroff"],
             SystemAction::Lock => &["loginctl", "lock-session"],
-            SystemAction::LogOut => return niri::quit(),
+            SystemAction::LogOut if session.is_empty() => {
+                log::error!("can't log out: XDG_SESSION_ID isn't set");
+                return;
+            }
+            SystemAction::LogOut => &["loginctl", "terminate-session", &session],
         };
-        niri::spawn(command.iter().map(|arg| arg.to_string()).collect());
+        apps::spawn(command.iter().map(|arg| arg.to_string()).collect());
     }
 }
 
@@ -400,8 +406,7 @@ pub fn input_menu(layouts: &KeyboardLayouts) -> Vec<menu::Entry> {
         .iter()
         .enumerate()
         .map(|(index, name)| {
-            menu::Entry::item(name, Message::SwitchLayout(index as u8))
-                .checked(index == usize::from(layouts.current_idx))
+            menu::Entry::item(name, Message::SwitchLayout(index)).checked(index == layouts.current)
         })
         .collect()
 }

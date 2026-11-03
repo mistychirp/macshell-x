@@ -1,4 +1,4 @@
-//! The material behind shell surfaces: liquid glass (macshell-glass-v1, from our niri fork) when
+//! The material behind shell surfaces: liquid glass (macshell-glass-v1, from our KWin plugin) when
 //! the compositor offers it, otherwise background blur (ext-background-effect-v1).
 //!
 //! The shell shares its Wayland connection with iced_layershell, so the `wl_surface` behind an
