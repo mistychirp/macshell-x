@@ -1,5 +1,17 @@
 # Vendored crates
 
+## iced_wgpu 0.14.0 (MIT)
+
+Copied from crates.io and patched in place. Upstream: https://github.com/iced-rs/iced
+
+Patch: skip surface formats with fewer than 8 bits of alpha (`src/window/compositor.rs`). Upstream
+takes the first format the driver lists, which on Mesa is `Rgb10a2Unorm`. That has 2 bits of alpha,
+so every translucent pixel of a surface, including the edges of text and icons, snaps to 0, 1/3, 2/3
+or 1. It doesn't show on an opaque window, but all of the shell's surfaces are translucent.
+
+The first commit that adds this directory contains the pristine 0.14.0 sources, so
+`git diff <that commit> -- vendor/iced_wgpu` shows the patch.
+
 ## iced_layershell 0.19.1 (MIT)
 
 Copied from crates.io and patched in place. Upstream: https://github.com/waycrate/exwlshelleventloop

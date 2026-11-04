@@ -104,8 +104,10 @@ impl Compositor {
 
                 log::info!("Available formats: {formats:#?}");
 
+                // macshell: 2 bits of alpha can't show a translucent surface.
                 let mut formats = formats.filter(|format| {
                     format.required_features() == wgpu::Features::empty()
+                        && *format != wgpu::TextureFormat::Rgb10a2Unorm
                 });
 
                 let format = if color::GAMMA_CORRECTION {
