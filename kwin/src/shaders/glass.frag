@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #version 140
 
-// Glass the way Tahoe draws it: a flat interior, with no glow, finished by crisp lines right at
-// the edge. Measured from macOS screenshots.
+// Glass the way Tahoe draws it, measured from macOS screenshots: a flat interior with no glow.
+// Menus finish it with crisp lines. Liquid glass has no line at all: its darkening and blur fade
+// out over the last few pixels, so the edge is the real background, which is why it follows
+// whatever is behind it and doesn't read as an outline.
 
 // The background behind the shape (frosted ones: blurred), stretched over the shape.
 uniform sampler2D sampler;
+// The same background, sharp.
+uniform sampler2D sharp;
 
 // The shape's size and corner radius, in logical pixels.
 uniform vec2 geoSize;
@@ -24,16 +28,13 @@ uniform float brightness;
 uniform mat4 colorMatrix;
 // A color laid over the background: rgb, and how opaque it is.
 uniform vec4 tint;
-// The light line along the edge is the glass's own color, brightened: multiplied by edgeBoost,
-// then mixed with white by edgeWhite. That way it takes on the color behind it. It's two device
-// pixels wide, the inner one at edgeInner strength.
-uniform float edgeBoost;
-uniform float edgeWhite;
-uniform float edgeInner;
-// How much stronger the line gets where the edge faces the light, along the top-left to
-// bottom-right diagonal, and weaker elsewhere.
-uniform float edgeLit;
-// The dark one-device-pixel line outside the light one: how strongly it darkens. 0 means none.
+// Liquid edge: how far in from the edge the glass fades to the sharp background, in logical
+// pixels (0 means it doesn't), and how much brighter that background gets right at the edge.
+uniform float fadeDepth;
+uniform float fadeGain;
+// Crisp edge lines: a two-device-pixel light line that whitens by lightAlpha, inside a
+// one-device-pixel dark line that darkens by outerAlpha. 0 means none.
+uniform float lightAlpha;
 uniform float outerAlpha;
 uniform float opacity;
 
@@ -98,14 +99,18 @@ void main(void)
     color.rgb *= brightness;
     color.rgb = mix(color.rgb, tint.rgb, tint.a);
 
-    // The edge lines, from the outside in: dark, then light, strong then weaker.
+    // Liquid glass fades to the real background at its edge, unbent, so it lines up with what's
+    // right outside.
+    if (fadeDepth > 0.0) {
+        float fade = 1.0 - smoothstep(0.0, fadeDepth, -d);
+        vec3 edge = min(texture(sharp, uv).rgb * fadeGain, vec3(1.0));
+        color.rgb = mix(color.rgb, edge, fade);
+    }
+
+    // The edge lines, from the outside in: dark, then light.
     float depth = -d * deviceScale;
     float outerWidth = outerAlpha > 0.0 ? 1.0 : 0.0;
-    float facing = abs(dot(n, normalize(vec2(-1.0, -1.0))));
-    float line = band(depth, outerWidth, outerWidth + 1.0)
-        + band(depth, outerWidth + 1.0, outerWidth + 2.0) * edgeInner;
-    vec3 bright = mix(min(color.rgb * edgeBoost, vec3(1.0)), vec3(1.0), edgeWhite);
-    color.rgb = mix(color.rgb, bright, clamp(line * (1.0 + edgeLit * (facing - 0.7)), 0.0, 1.0));
+    color.rgb = mix(color.rgb, vec3(1.0), band(depth, outerWidth, outerWidth + 2.0) * lightAlpha);
     color.rgb = mix(color.rgb, vec3(0.0), band(depth, 0.0, outerWidth) * outerAlpha);
 
     fragColor = color * coverage * opacity;

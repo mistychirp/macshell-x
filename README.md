@@ -101,14 +101,14 @@ FrostTint=0.58
 FrostEdge=0.3
 FrostOuterEdge=0.8
 # Liquid glass (the dock): width and strength of the refracting rim, how much it darkens the
-# background, saturation, and the light line along the edge, which is the glass's color multiplied
-# by the boost and mixed with white.
+# background, saturation, and its edge, which has no outline: over this many logical pixels it
+# fades to the sharp background, brightened by the gain.
 LiquidRim=6
 LiquidRefraction=5
 LiquidBrightness=0.86
 LiquidSaturation=1.15
-LiquidEdgeBoost=1.5
-LiquidEdgeWhite=0.2
+LiquidEdgeDepth=1.6
+LiquidEdgeGain=1.08
 ```
 
 To try it without leaving your session, run KWin nested. KWin needs `wp_single_pixel_buffer_manager_v1`

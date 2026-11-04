@@ -119,8 +119,8 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.liquidRefraction = group.readEntry("LiquidRefraction", defaults.liquidRefraction);
     m_settings.liquidBrightness = group.readEntry("LiquidBrightness", defaults.liquidBrightness);
     m_settings.liquidSaturation = group.readEntry("LiquidSaturation", defaults.liquidSaturation);
-    m_settings.liquidEdgeBoost = group.readEntry("LiquidEdgeBoost", defaults.liquidEdgeBoost);
-    m_settings.liquidEdgeWhite = group.readEntry("LiquidEdgeWhite", defaults.liquidEdgeWhite);
+    m_settings.liquidEdgeDepth = group.readEntry("LiquidEdgeDepth", defaults.liquidEdgeDepth);
+    m_settings.liquidEdgeGain = group.readEntry("LiquidEdgeGain", defaults.liquidEdgeGain);
     effects->addRepaintFull();
 }
 
@@ -428,15 +428,16 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("colorMatrix", saturationMatrix(saturation));
         // Measured from Tahoe's menus: a dark tint with a hint of purple, under the edge lines.
         m_glassShader->setUniform("tint", frosted ? QVector4D(0.09, 0.06, 0.1, m_settings.frostTint) : QVector4D());
-        // Menus whiten evenly along two pixels; liquid glass brightens its own color, mostly in
-        // the outer pixel, and more where it faces the light.
-        m_glassShader->setUniform("edgeBoost", frosted ? 1.0f : m_settings.liquidEdgeBoost);
-        m_glassShader->setUniform("edgeWhite", frosted ? m_settings.frostEdge : m_settings.liquidEdgeWhite);
-        m_glassShader->setUniform("edgeInner", frosted ? 1.0f : 0.35f);
-        m_glassShader->setUniform("edgeLit", frosted ? 0.0f : 0.8f);
+        m_glassShader->setUniform("sharp", 1);
+        m_glassShader->setUniform("fadeDepth", liquid ? m_settings.liquidEdgeDepth : 0.0f);
+        m_glassShader->setUniform("fadeGain", m_settings.liquidEdgeGain);
+        m_glassShader->setUniform("lightAlpha", frosted ? m_settings.frostEdge : 0.0f);
         m_glassShader->setUniform("outerAlpha", frosted ? m_settings.frostOuterEdge : 0.0f);
         m_glassShader->setUniform("opacity", opacity);
 
+        glActiveTexture(GL_TEXTURE1);
+        render.textures[0]->bind();
+        glActiveTexture(GL_TEXTURE0);
         render.textures[blurred ? 1 : 0]->bind();
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);

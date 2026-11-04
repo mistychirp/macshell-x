@@ -38,14 +38,14 @@ struct GlassSettings {
     float frostEdge = 0.3;
     float frostOuterEdge = 0.8;
 
-    /// Liquid glass, for controls like the dock: a thin refracting rim and a light line that takes
-    /// on the color behind it.
+    /// Liquid glass, for controls like the dock: a thin refracting rim, and no outline: over its
+    /// last pixels it fades to the sharp background, a little brighter.
     float liquidRim = 6.0;
     float liquidRefraction = 5.0;
     float liquidBrightness = 0.86;
     float liquidSaturation = 1.15;
-    float liquidEdgeBoost = 1.5;
-    float liquidEdgeWhite = 0.2;
+    float liquidEdgeDepth = 1.6;
+    float liquidEdgeGain = 1.08;
 };
 
 /// What one glass shape keeps between frames, per render view.
