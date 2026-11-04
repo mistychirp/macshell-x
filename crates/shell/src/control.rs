@@ -572,6 +572,7 @@ fn sound<'a>(volume: Option<Volume>) -> Element<'a> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 /// A title, then a slider between two icons. Tahoe's sliders are a thin line with no knob.
 fn slider_module<'a>(
     title: &'a str,

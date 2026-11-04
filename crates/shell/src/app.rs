@@ -29,7 +29,7 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    audio, bluetooth, brightness, control, dock, media, menu, menubar, network,
+    appmenu, audio, bluetooth, brightness, control, dbusmenu, dock, media, menu, menubar, network,
     notification_center, stack, tray, wallpaper,
 };
 
@@ -170,8 +170,10 @@ pub enum Message {
     NotificationGroupCleared(String),
     /// The session's tray icons changed.
     TrayItems(Vec<tray::Item>),
-    /// Something was chosen in a tray icon's menu: its service, menu and the item's id.
-    TrayMenuItem(String, String, i32),
+    /// Something was chosen in a menu an app exports.
+    DbusMenuItemChosen(dbusmenu::Address, i32),
+    /// One of the focused app's menus changed.
+    AppMenuChanged(dbusmenu::Address, Vec<dbusmenu::Item>),
     /// The pointer moved onto a menu's row: how many submenus deep the menu is, and which row.
     MenuRowEntered(usize, usize),
     /// A row that leads to a submenu was pressed.
@@ -299,6 +301,11 @@ struct Shell {
     /// one: the level and row of the menu it's opening from.
     next_submenu: Option<(usize, usize)>,
     tray: Vec<tray::Icon>,
+    /// Where the focused app's menus are, if it exports any.
+    app_menu_address: Option<dbusmenu::Address>,
+    /// The focused app's menus, with their names on their own for the bar.
+    app_menu: Vec<dbusmenu::Item>,
+    app_menu_titles: Vec<String>,
     alert: Option<OpenAlert>,
     /// Desktop entry id of the app that opens folders and the trash.
     file_manager: String,
@@ -434,6 +441,9 @@ impl Shell {
             menu_hover: None,
             next_submenu: None,
             tray: Vec::new(),
+            app_menu_address: None,
+            app_menu: Vec::new(),
+            app_menu_titles: Vec::new(),
             alert: None,
             file_manager,
             downloads_dir: places::downloads_dir(),
@@ -515,6 +525,15 @@ impl Shell {
                     .find(|w| w.is_focused)
                     .and_then(|w| w.app_id.as_deref())
                     .map(|app_id| self.apps.resolve(app_id));
+                let focused_menu = windows
+                    .iter()
+                    .find(|w| w.is_focused)
+                    .and_then(|w| w.menu.clone());
+                if focused_menu != self.app_menu_address {
+                    self.app_menu_address = focused_menu;
+                    self.app_menu.clear();
+                    self.app_menu_titles.clear();
+                }
                 self.windows = windows;
                 self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
                 // A window showing up is what ends a launch bounce.
@@ -958,9 +977,22 @@ impl Shell {
                     .map(|item| tray::Icon::new(item, &mut self.apps))
                     .collect();
             }
-            Message::TrayMenuItem(service, menu_path, id) => {
-                let chosen = Task::future(tray::menu_item_chosen(service, menu_path, id)).discard();
+            Message::DbusMenuItemChosen(address, id) => {
+                let chosen = Task::future(address.item_chosen(id)).discard();
                 return Task::batch([self.close_popup(), chosen]);
+            }
+            Message::AppMenuChanged(address, items) => {
+                if self.app_menu_address.as_ref() == Some(&address) {
+                    self.app_menu_titles = items
+                        .iter()
+                        .filter(|item| !item.label.is_empty())
+                        .map(|item| item.label.clone())
+                        .collect();
+                    self.app_menu = items
+                        .into_iter()
+                        .filter(|item| !item.label.is_empty())
+                        .collect();
+                }
             }
             Message::MenuRowEntered(level, row) => {
                 self.menu_hover = Some(MenuHover {
@@ -1116,6 +1148,22 @@ impl Shell {
                 .gravity(PopupGravity::BottomLeft);
                 let open = self.open_popup(Some(title), settings, PopupContent::ControlCenter);
                 return Task::batch([open, reread, Task::done(Message::ControlRefresh)]);
+            }
+            menubar::Title::AppMenu(index) => {
+                let (Some(address), Some(item)) =
+                    (&self.app_menu_address, self.app_menu.get(index))
+                else {
+                    return Task::none();
+                };
+                let entries = address.entries(&item.children);
+                let opening = Task::future(address.clone().opening(item.id)).discard();
+                // An app can hide everything in a menu for now.
+                if entries.is_empty() {
+                    return opening;
+                }
+                let size = menu::size(&entries);
+                let open = self.open_bar_popup(title, size, PopupContent::Menu(entries));
+                return Task::batch([open, opening]);
             }
             menubar::Title::Tray(index) => {
                 let Some(icon) = self.tray.get(index) else {
@@ -1400,6 +1448,7 @@ impl Shell {
             backdrop: self.bar_backdrop,
             input: self.input_label.as_deref(),
             tray: &self.tray,
+            app_menus: &self.app_menu_titles,
         }
     }
 
@@ -1878,6 +1927,12 @@ impl Shell {
             Subscription::none()
         };
 
+        let app_menu = match &self.app_menu_address {
+            Some(address) => appmenu::follow(address.clone())
+                .map(|(address, items)| Message::AppMenuChanged(address, items)),
+            None => Subscription::none(),
+        };
+
         let menu_hover = if self.menu_hover.is_some() {
             time::every(Duration::from_millis(30)).map(|_| Message::MenuHoverCheck)
         } else {
@@ -1890,6 +1945,8 @@ impl Shell {
             menu_hover,
             notifications::events().map(Message::Notification),
             tray::items().map(Message::TrayItems),
+            app_menu,
+            appmenu::registrar(),
             bar_brightness,
             control_refresh,
             kwin::windows().map(Message::WindowsChanged),

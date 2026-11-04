@@ -7,6 +7,7 @@
 use std::fs;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
+use iced_widget::core::text::Wrapping;
 use iced_widget::core::{Alignment, Background, Border, Color, Font, Length, Rectangle, font};
 use iced_widget::{Space, container, image, mouse_area, row, text};
 
@@ -54,6 +55,8 @@ pub enum Title {
     Clock,
     /// An app's tray icon; carries its place among them.
     Tray(usize),
+    /// One of the focused app's menus; carries its place among them.
+    AppMenu(usize),
 }
 
 /// How bright what's behind the bar is, which decides its text color, like on macOS.
@@ -178,6 +181,8 @@ pub struct Bar<'a> {
     /// Short name of the keyboard layout, when there's more than one.
     pub input: Option<&'a str>,
     pub tray: &'a [tray::Icon],
+    /// The names of the focused app's menus.
+    pub app_menus: &'a [String],
 }
 
 impl Bar<'_> {
@@ -199,6 +204,7 @@ impl Bar<'_> {
             (Title::System, system),
             (Title::App, rect(system.x + system.width, app_width)),
         ];
+        let mut left_end = system.x + system.width + app_width;
 
         // Status items line up leftward from the clock.
         let mut x = self.width - PADDING_X - self.clock_width();
@@ -212,6 +218,17 @@ impl Bar<'_> {
         for index in (0..self.tray.len()).rev() {
             x -= STATUS_WIDTH;
             titles.push((Title::Tray(index), rect(x, STATUS_WIDTH)));
+        }
+
+        // As many of the app's menus as fit before the status items.
+        for (index, name) in self.app_menus.iter().enumerate() {
+            let width =
+                (menu::text_width(name, TEXT_SIZE, Font::DEFAULT) + 2.0 * TITLE_PADDING_X).ceil();
+            if left_end + width > x {
+                break;
+            }
+            titles.push((Title::AppMenu(index), rect(left_end, width)));
+            left_end += width;
         }
         titles
     }
@@ -349,6 +366,9 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
                 None => Space::new().width(LOGO_SIZE).into(),
             },
             Title::App => text(bar.app_name).font(BOLD).into(),
+            Title::AppMenu(index) => text(bar.app_menus.get(index).map_or("", String::as_str))
+                .wrapping(Wrapping::None)
+                .into(),
             Title::Input => input_badge(bar.input.unwrap_or_default(), ink),
             Title::ControlCenter => icons::icon(Glyph::ControlCenter, 17.0, ink),
             Title::Clock => text(bar.clock).into(),
@@ -367,7 +387,7 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
         };
         let item = title_item(title, content, rect, bar.open, highlight);
         match title {
-            Title::System | Title::App => left = left.push(item),
+            Title::System | Title::App | Title::AppMenu(_) => left = left.push(item),
             // Laid out right to left, so each one goes in front of the last.
             _ => right.insert(0, item),
         }

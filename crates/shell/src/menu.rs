@@ -17,6 +17,7 @@ const PADDING: f32 = 5.0;
 /// Inside an item, between its highlight and its text.
 const ITEM_PADDING_X: f32 = 8.0;
 const CHECK_WIDTH: f32 = 18.0;
+const SHORTCUT_GAP: f32 = 24.0;
 const CHEVRON_SIZE: f32 = 10.0;
 /// How far a submenu overlaps its menu.
 pub const SUBMENU_OVERLAP: i32 = 4;
@@ -30,6 +31,7 @@ pub const RADIUS: f32 = 13.0;
 /// macOS's selection blue.
 pub const ACCENT: Color = Color::from_rgba(0.0, 0.45, 1.0, 0.95);
 const DISABLED_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.4);
+const SHORTCUT_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.45);
 
 #[derive(Debug, Clone)]
 pub enum Entry {
@@ -37,6 +39,8 @@ pub enum Entry {
         label: String,
         checked: bool,
         enabled: bool,
+        /// The keys that do the same, shown at its end.
+        shortcut: Option<String>,
         /// What opens to its side, if it leads to a submenu.
         submenu: Option<Vec<Entry>>,
         on_select: Message,
@@ -50,6 +54,7 @@ impl Entry {
             label: truncate(label),
             checked: false,
             enabled: true,
+            shortcut: None,
             submenu: None,
             on_select,
         }
@@ -65,6 +70,13 @@ impl Entry {
     pub fn enabled(mut self, value: bool) -> Self {
         if let Self::Item { enabled, .. } = &mut self {
             *enabled = value;
+        }
+        self
+    }
+
+    pub fn shortcut(mut self, keys: &str) -> Self {
+        if let Self::Item { shortcut, .. } = &mut self {
+            *shortcut = Some(keys.to_owned());
         }
         self
     }
@@ -104,9 +116,20 @@ pub fn size(entries: &[Entry]) -> (u32, u32) {
     let label_width = entries
         .iter()
         .filter_map(|entry| match entry {
-            Entry::Item { label, submenu, .. } => {
-                let chevron = if submenu.is_some() { CHEVRON_ROOM } else { 0.0 };
-                Some(text_width(label, TEXT_SIZE, Font::default()) + CHECK_WIDTH + chevron)
+            Entry::Item {
+                label,
+                submenu,
+                shortcut,
+                ..
+            } => {
+                let end = if submenu.is_some() {
+                    CHEVRON_ROOM
+                } else if let Some(shortcut) = shortcut {
+                    SHORTCUT_GAP + text_width(shortcut, TEXT_SIZE, Font::default())
+                } else {
+                    0.0
+                };
+                Some(text_width(label, TEXT_SIZE, Font::default()) + CHECK_WIDTH + end)
             }
             Entry::Separator => None,
         })
@@ -164,6 +187,7 @@ pub fn view(
                 label,
                 checked,
                 enabled,
+                shortcut,
                 submenu,
                 on_select,
             } => {
@@ -187,6 +211,12 @@ pub fn view(
                             .is_some()
                             .then(|| icons::icon(Glyph::Chevron, CHEVRON_SIZE, Color::WHITE)),
                     )
+                    .push(shortcut.as_deref().map(|keys| {
+                        text(keys)
+                            .size(TEXT_SIZE)
+                            .wrapping(Wrapping::None)
+                            .color(SHORTCUT_TEXT)
+                    }))
                     .align_y(Alignment::Center),
                 )
                 .on_press_maybe(enabled.then_some(on_press))

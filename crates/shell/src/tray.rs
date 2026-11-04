@@ -1,7 +1,6 @@
 //! Tray icons: apps' status items, through the StatusNotifierItem protocols, and their menus,
 //! through dbusmenu. KDE's watcher keeps the list of items when it's running; otherwise we do.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{fs, process};
@@ -10,22 +9,20 @@ use iced_futures::Subscription;
 use iced_futures::futures::channel::mpsc;
 use iced_futures::futures::{FutureExt as _, SinkExt as _, Stream, StreamExt as _, future, stream};
 use iced_widget::image;
-use serde::Deserialize;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::proxy::CacheProperties;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Type, Value};
+use zbus::zvariant::OwnedObjectPath;
 use zbus::{MatchRule, MessageStream, message};
 
-use crate::app::Message;
 use crate::apps::AppIndex;
+use crate::dbusmenu::{self, Address};
 use crate::{dbus, menu};
 
 const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
-const MENU_INTERFACE: &str = "com.canonical.dbusmenu";
 const DEFAULT_ITEM_PATH: &str = "/StatusNotifierItem";
 /// Used when an app gives neither a name nor pixels.
 const FALLBACK_ICON: &str = "application-x-executable";
@@ -66,34 +63,6 @@ trait Item {
     fn menu(&self) -> zbus::Result<OwnedObjectPath>;
 }
 
-#[zbus::proxy(interface = "com.canonical.dbusmenu")]
-trait Menu {
-    fn get_layout(
-        &self,
-        parent_id: i32,
-        recursion_depth: i32,
-        property_names: &[&str],
-    ) -> zbus::Result<(u32, RawMenuItem)>;
-    fn about_to_show(&self, id: i32) -> zbus::Result<bool>;
-    fn event(&self, id: i32, event_id: &str, data: &Value<'_>, timestamp: u32) -> zbus::Result<()>;
-}
-
-/// A menu item as it comes over the bus: its id, properties and children.
-#[derive(Debug, Deserialize, Type)]
-#[allow(dead_code)]
-struct RawMenuItem(i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
-
-/// An item in an app's menu.
-#[derive(Debug, Clone)]
-pub struct MenuItem {
-    id: i32,
-    label: String,
-    enabled: bool,
-    separator: bool,
-    checked: bool,
-    children: Vec<MenuItem>,
-}
-
 /// An app's status item, as last read.
 #[derive(Debug, Clone)]
 pub struct Item {
@@ -105,8 +74,8 @@ pub struct Item {
     attention_name: String,
     attention_pixels: Option<image::Handle>,
     theme_path: String,
-    menu_path: Option<String>,
-    menu: Vec<MenuItem>,
+    menu_address: Option<Address>,
+    menu: Vec<dbusmenu::Item>,
 }
 
 /// A status item ready for the bar.
@@ -217,136 +186,10 @@ impl Item {
 
     /// The entries of its menu.
     pub fn entries(&self) -> Vec<menu::Entry> {
-        self.entries_of(&self.menu)
+        self.menu_address
+            .as_ref()
+            .map_or_else(Vec::new, |address| address.entries(&self.menu))
     }
-
-    fn entries_of(&self, items: &[MenuItem]) -> Vec<menu::Entry> {
-        items
-            .iter()
-            .map(|item| {
-                if item.separator {
-                    return menu::Entry::Separator;
-                }
-                let on_select = Message::TrayMenuItem(
-                    self.service.clone(),
-                    self.menu_path.clone().unwrap_or_default(),
-                    item.id,
-                );
-                let entry = menu::Entry::item(&item.label, on_select)
-                    .checked(item.checked)
-                    .enabled(item.enabled);
-                if item.children.is_empty() {
-                    entry
-                } else {
-                    entry.submenu(self.entries_of(&item.children))
-                }
-            })
-            .collect()
-    }
-}
-
-/// Tells the app that an item in its menu was chosen.
-pub async fn menu_item_chosen(service: String, menu_path: String, id: i32) {
-    let result = async {
-        let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
-        let menu = MenuProxy::builder(&connection)
-            .destination(service)?
-            .path(menu_path)?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await?;
-        menu.event(id, "clicked", &Value::I32(0), 0).await
-    }
-    .await;
-    if let Err(err) = result {
-        log::warn!("can't report a tray menu choice: {err}");
-    }
-}
-
-/// `value` with any variants around it taken off.
-fn peeled<'a>(value: &'a Value<'a>) -> &'a Value<'a> {
-    match value {
-        Value::Value(inner) => peeled(inner),
-        value => value,
-    }
-}
-
-fn menu_item(id: i32, properties: &[(String, &Value<'_>)], children: Vec<MenuItem>) -> MenuItem {
-    let property = |name: &str| {
-        properties
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| peeled(value))
-    };
-    let text = |name: &str| match property(name) {
-        Some(Value::Str(text)) => text.as_str(),
-        _ => "",
-    };
-    MenuItem {
-        id,
-        label: plain_label(text("label")),
-        enabled: !matches!(property("enabled"), Some(Value::Bool(false))),
-        separator: text("type") == "separator",
-        checked: !text("toggle-type").is_empty()
-            && matches!(property("toggle-state"), Some(Value::I32(1))),
-        // Hidden ones are dropped by the caller; see `is_visible`.
-        children,
-    }
-}
-
-fn is_visible(properties: &[(String, &Value<'_>)]) -> bool {
-    !properties
-        .iter()
-        .any(|(key, value)| key == "visible" && matches!(peeled(value), Value::Bool(false)))
-}
-
-/// A menu item's children, which come as variants holding `(id, properties, children)`.
-fn parse_children(children: &[&Value<'_>]) -> Vec<MenuItem> {
-    children
-        .iter()
-        .filter_map(|child| {
-            let Value::Structure(structure) = peeled(child) else {
-                return None;
-            };
-            let [
-                Value::I32(id),
-                Value::Dict(properties),
-                Value::Array(children),
-            ] = structure.fields()
-            else {
-                return None;
-            };
-            let properties: Vec<(String, &Value<'_>)> = properties
-                .iter()
-                .filter_map(|(key, value)| match peeled(key) {
-                    Value::Str(key) => Some((key.to_string(), value)),
-                    _ => None,
-                })
-                .collect();
-            if !is_visible(&properties) {
-                return None;
-            }
-            let children: Vec<&Value<'_>> = children.iter().collect();
-            Some(menu_item(*id, &properties, parse_children(&children)))
-        })
-        .collect()
-}
-
-/// A label without its mnemonic: `_Quit` is "Quit", and `__` is a literal underscore.
-fn plain_label(label: &str) -> String {
-    let mut plain = String::with_capacity(label.len());
-    let mut chars = label.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '_' {
-            if chars.peek() == Some(&'_') {
-                plain.push('_');
-                chars.next();
-            }
-        } else {
-            plain.push(c);
-        }
-    }
-    plain
 }
 
 /// Pixels from the largest of an app's icons, which come as big-endian ARGB.
@@ -366,39 +209,6 @@ fn pixmap(mut pixmaps: Vec<(i32, i32, Vec<u8>)>) -> Option<image::Handle> {
     Some(image::Handle::from_rgba(width, height, rgba))
 }
 
-async fn read_menu(
-    connection: &zbus::Connection,
-    service: &str,
-    path: &str,
-    first_time: bool,
-) -> Vec<MenuItem> {
-    let result = async {
-        let menu = MenuProxy::builder(connection)
-            .destination(service.to_owned())?
-            .path(path.to_owned())?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await?;
-        // Some apps only fill their menus when told one's about to show. Only ever once, since
-        // an app can answer with a change to its menu, which brings us back here.
-        if first_time {
-            let _ = menu.about_to_show(0).await;
-        }
-        menu.get_layout(0, -1, &[]).await
-    }
-    .await;
-    match result {
-        Ok((_, RawMenuItem(_, _, children))) => {
-            let children: Vec<&Value<'_>> = children.iter().map(|child| &**child).collect();
-            parse_children(&children)
-        }
-        Err(err) => {
-            log::debug!("no menu from {service}: {err}");
-            Vec::new()
-        }
-    }
-}
-
 /// Splits what's registered with the watcher, `service` or `service/path`.
 fn split_address(address: &str) -> (&str, String) {
     match address.find('/') {
@@ -407,8 +217,12 @@ fn split_address(address: &str) -> (&str, String) {
     }
 }
 
-async fn read_item(connection: &zbus::Connection, address: &str, seen: &[String]) -> Option<Item> {
-    let (service, path) = split_address(address);
+async fn read_item(
+    connection: &zbus::Connection,
+    address_text: &str,
+    seen: &[String],
+) -> Option<Item> {
+    let (service, path) = split_address(address_text);
     let item = ItemProxy::builder(connection)
         .destination(service.to_owned())
         .ok()?
@@ -419,19 +233,24 @@ async fn read_item(connection: &zbus::Connection, address: &str, seen: &[String]
         .await
         .ok()?;
     let status = item.status().await.ok()?;
-    let menu_path = item
+    let menu_address = item
         .menu()
         .await
         .ok()
-        .map(|path| path.to_string())
-        .filter(|path| path != "/");
-    let menu = match &menu_path {
-        Some(menu_path) => {
-            let first_time = !seen.iter().any(|known| known == address);
-            read_menu(connection, service, menu_path, first_time).await
+        .filter(|path| path.as_str() != "/")
+        .map(|path| Address {
+            service: service.to_owned(),
+            path: path.to_string(),
+        });
+    let mut menu = Vec::new();
+    if let Some(address) = &menu_address {
+        // Some apps only fill their menus when told one's about to show. Only ever once, since an
+        // app can answer with a change to its menu, which brings us back here.
+        if !seen.iter().any(|known| known == address_text) {
+            address.about_to_show(connection, &[0]).await;
         }
-        None => Vec::new(),
-    };
+        menu = address.read(connection).await;
+    }
     // Apps with nothing to say right now ask not to be shown.
     if status == "Passive" {
         return None;
@@ -445,7 +264,7 @@ async fn read_item(connection: &zbus::Connection, address: &str, seen: &[String]
         attention_name: item.attention_icon_name().await.unwrap_or_default(),
         attention_pixels: item.attention_icon_pixmap().await.ok().and_then(pixmap),
         theme_path: item.icon_theme_path().await.unwrap_or_default(),
-        menu_path,
+        menu_address,
         menu,
     })
 }
@@ -586,7 +405,7 @@ fn follow() -> impl Stream<Item = Vec<Item>> {
         let mut changes = Vec::new();
         for interface in [
             ITEM_INTERFACE,
-            MENU_INTERFACE,
+            dbusmenu::INTERFACE,
             WATCHER_SERVICE,
             "org.freedesktop.DBus",
         ] {
@@ -594,38 +413,41 @@ fn follow() -> impl Stream<Item = Vec<Item>> {
                 changes.push(stream);
             }
         }
-        let mut changes = stream::select_all(changes);
+        let (pump, mut changes) = dbus::drain(stream::select_all(changes));
 
-        // Being a host is what tells apps there's somewhere for their icons to go.
-        let host = format!("org.kde.StatusNotifierHost-{}", process::id());
-        let _ = connection.request_name(host.as_str()).await;
-        if let Ok(watcher) = WatcherProxy::new(&connection).await
-            && let Err(err) = watcher.register_status_notifier_host(&host).await
-        {
-            log::warn!("can't register as a tray host: {err}");
-        }
-
-        let mut seen = Vec::new();
-        let mut last = read_items(&connection, &mut seen).await;
-        if output.send(last.clone()).await.is_err() {
-            return;
-        }
-        loop {
-            let Some(Ok(change)) = changes.next().await else {
-                return;
-            };
-            // Every app coming and going is announced; only ones we're showing matter.
-            if !is_relevant(&change, &last, own.as_deref()) {
-                continue;
+        let work = async move {
+            // Being a host is what tells apps there's somewhere for their icons to go.
+            let host = format!("org.kde.StatusNotifierHost-{}", process::id());
+            let _ = connection.request_name(host.as_str()).await;
+            if let Ok(watcher) = WatcherProxy::new(&connection).await
+                && let Err(err) = watcher.register_status_notifier_host(&host).await
+            {
+                log::warn!("can't register as a tray host: {err}");
             }
-            // Apps tend to change several things at once.
-            while let Some(Some(_)) = changes.next().now_or_never() {}
 
-            last = read_items(&connection, &mut seen).await;
+            let mut seen = Vec::new();
+            let mut last = read_items(&connection, &mut seen).await;
             if output.send(last.clone()).await.is_err() {
                 return;
             }
-        }
+            loop {
+                let Some(change) = changes.next().await else {
+                    return;
+                };
+                // Every app coming and going is announced; only ones we're showing matter.
+                if !is_relevant(&change, &last, own.as_deref()) {
+                    continue;
+                }
+                // Apps tend to change several things at once.
+                while let Some(Some(_)) = changes.next().now_or_never() {}
+
+                last = read_items(&connection, &mut seen).await;
+                if output.send(last.clone()).await.is_err() {
+                    return;
+                }
+            }
+        };
+        future::select(Box::pin(pump), Box::pin(work)).await;
     })
 }
 
@@ -637,6 +459,17 @@ fn is_relevant(
     own: Option<&Mutex<Vec<String>>>,
 ) -> bool {
     let header = change.header();
+    if header
+        .interface()
+        .is_some_and(|interface| interface.as_str() == dbusmenu::INTERFACE)
+    {
+        // Every app's menus are announced too. A service can be a name rather than the sender's
+        // own address, which can't be compared here.
+        let sender = header.sender().map(|sender| sender.as_str());
+        return shown
+            .iter()
+            .any(|item| !item.service.starts_with(':') || Some(item.service.as_str()) == sender);
+    }
     if header
         .member()
         .is_none_or(|member| member != "NameOwnerChanged")

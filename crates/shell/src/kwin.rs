@@ -17,6 +17,7 @@ use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, QueueHandle};
 
 use crate::dbus;
+use crate::dbusmenu::Address;
 use crate::plasma_protocol::org_kde_plasma_window::{self, OrgKdePlasmaWindow};
 use crate::plasma_protocol::org_kde_plasma_window_management::{
     self, OrgKdePlasmaWindowManagement,
@@ -34,6 +35,8 @@ pub struct WindowInfo {
     pub is_urgent: bool,
     /// When it last got focus, as an ever-increasing count, for most-recently-used ordering.
     pub focused_at: Option<u64>,
+    /// Where its app exports its menus, if it does.
+    pub menu: Option<Address>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +166,7 @@ struct Tracker {
 
 #[derive(Default)]
 struct Tracked {
+    menu: Option<Address>,
     app_id: Option<String>,
     title: Option<String>,
     state: u32,
@@ -184,6 +188,7 @@ impl Tracker {
                 is_focused: w.state & STATE_ACTIVE != 0,
                 is_urgent: w.state & STATE_DEMANDS_ATTENTION != 0,
                 focused_at: w.focused_at,
+                menu: w.menu.clone(),
             })
             .collect();
         windows.sort_by_key(|w| w.id);
@@ -224,6 +229,15 @@ impl Dispatch<OrgKdePlasmaWindow, u64> for Tracker {
         };
         match event {
             org_kde_plasma_window::Event::TitleChanged { title } => tracked.title = Some(title),
+            org_kde_plasma_window::Event::ApplicationMenu {
+                service_name,
+                object_path,
+            } => {
+                tracked.menu = (!service_name.is_empty()).then_some(Address {
+                    service: service_name,
+                    path: object_path,
+                });
+            }
             org_kde_plasma_window::Event::AppIdChanged { app_id } => {
                 tracked.app_id = (!app_id.is_empty()).then_some(app_id);
             }

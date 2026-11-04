@@ -1,5 +1,6 @@
 mod alert;
 mod app;
+mod appmenu;
 mod apps;
 mod audio;
 mod banners;
@@ -8,6 +9,7 @@ mod brightness;
 mod config;
 mod control;
 mod dbus;
+mod dbusmenu;
 mod dock;
 mod glass_protocol;
 mod icons;
