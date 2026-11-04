@@ -75,7 +75,7 @@ The shell chooses the material behind its surfaces itself, so it needs no compos
 ## KWin plugin
 
 `kwin/` is a KWin effect that renders liquid glass for the shell. It serves our
-`macshell-glass-v1` protocol: clear, liquid and frosted glass shapes behind surfaces, transparent
+`macshell-glass-v1` protocol: clear, liquid, frosted and bubble glass shapes behind surfaces, transparent
 shapes that only measure, and brightness tracking for the menu bar's text color.
 
 KWin plugins must be built against the exact KWin they load into. The flake exposes the plugin as
@@ -94,21 +94,26 @@ found. The glass can be tuned in `kwinrc`; these are the defaults:
 # The blur under frosted and liquid glass: dual Kawase passes and their sample offset.
 BlurPasses=2
 BlurOffset=2
+# The lens of liquid glass and bubbles: how far it bends the background, in logical pixels, at one
+# logical pixel from the edge, and how far in it reaches.
+LensStrength=32
+LensRadius=24
 # Frosted glass (menus, popovers, alerts): saturation, how strong its dark tint is, how much the
-# light line along the edge whitens it, and the dark line outside that.
+# light line along the edge, which otherwise shows the surroundings, whitens, and the dark line
+# outside it.
 FrostSaturation=1.5
 FrostTint=0.58
-FrostEdge=0.3
+FrostEdgeWhite=0.12
 FrostOuterEdge=0.8
-# Liquid glass (the dock): width and strength of the refracting rim, how much it darkens the
-# background, saturation, and its edge, which has no outline: over this many logical pixels it
-# fades to the sharp background, brightened by the gain.
-LiquidRim=6
-LiquidRefraction=5
-LiquidBrightness=0.86
+# Liquid glass (the dock): how much it darkens the background, saturation, and its edge, which
+# fades into the surroundings over this many logical pixels, brightened by the gain.
+LiquidBrightness=0.89
 LiquidSaturation=1.15
-LiquidEdgeDepth=1.6
-LiquidEdgeGain=1.08
+LiquidEdgeFade=2
+LiquidEdgeGain=1.06
+# Bubbles (the dock's labels): how strong the dark tint is, and how the edge is dimmed.
+BubbleTint=0.5
+BubbleEdgeGain=0.85
 ```
 
 To try it without leaving your session, run KWin nested. KWin needs `wp_single_pixel_buffer_manager_v1`

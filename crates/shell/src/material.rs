@@ -35,9 +35,11 @@ pub enum Style {
     /// A flat blurred background with crisp edge lines, macOS's "regular" glass. For menus,
     /// popovers and alerts, whose text needs a calm background.
     Frosted,
-    /// A light blur, darkened a little, with a thin refracting rim. For controls floating over
-    /// content, like the dock.
+    /// A light blur through a lens, darkened a little. For controls floating over content, like
+    /// the dock.
     Liquid,
+    /// A dark tint over a lens, for small labels like the dock's.
+    Bubble,
     /// Nothing at all, like macOS's menu bar; the shape only says where to measure brightness
     /// (see [`Material::track_brightness`]). Dropped where that isn't supported.
     Transparent,
@@ -187,7 +189,8 @@ impl Material {
                         Style::Clear => macshell_glass_v1::Style::Clear,
                         Style::Frosted => macshell_glass_v1::Style::Frosted,
                         Style::Liquid if glass.version() >= 2 => macshell_glass_v1::Style::Liquid,
-                        Style::Liquid => macshell_glass_v1::Style::Frosted,
+                        Style::Bubble if glass.version() >= 2 => macshell_glass_v1::Style::Bubble,
+                        Style::Liquid | Style::Bubble => macshell_glass_v1::Style::Frosted,
                         Style::Transparent if glass.version() >= 2 => {
                             macshell_glass_v1::Style::Transparent
                         }

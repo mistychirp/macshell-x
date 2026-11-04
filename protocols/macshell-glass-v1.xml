@@ -94,7 +94,9 @@
       <entry name="transparent" value="2" since="2"
              summary="nothing is drawn; the shape only marks where track_brightness measures"/>
       <entry name="liquid" value="3" since="2"
-             summary="a light blur, darkened a little, with a thin refracting rim; for controls floating over content"/>
+             summary="a light blur through a lens, darkened a little; for controls floating over content"/>
+      <entry name="bubble" value="4" since="2"
+             summary="a dark tint over a lens, for small labels"/>
     </enum>
 
     <request name="clear">

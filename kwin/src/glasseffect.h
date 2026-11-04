@@ -32,26 +32,36 @@ struct GlassSettings {
     int blurPasses = 2;
     float blurOffset = 2.0;
 
-    /// Frosted glass, for menus, popovers and alerts: flat, with a dark line outside a light one.
+    /// The lens of liquid glass and bubbles: how far it bends the background, in logical pixels, at
+    /// one logical pixel from the edge, and how far in it reaches.
+    float lensStrength = 32.0;
+    float lensRadius = 24.0;
+
+    /// Frosted glass, for menus, popovers and alerts: flat and tinted, with a light line that's
+    /// mostly the surroundings, inside a dark one.
     float frostSaturation = 1.5;
     float frostTint = 0.58;
-    float frostEdge = 0.3;
+    float frostEdgeWhite = 0.12;
     float frostOuterEdge = 0.8;
 
-    /// Liquid glass, for controls like the dock: a thin refracting rim, and no outline: over its
-    /// last pixels it fades to the sharp background, a little brighter.
-    float liquidRim = 6.0;
-    float liquidRefraction = 5.0;
-    float liquidBrightness = 0.86;
+    /// Liquid glass, for controls like the dock: darkened a little, its edge fading into the
+    /// surroundings, a touch brighter.
+    float liquidBrightness = 0.89;
     float liquidSaturation = 1.15;
-    float liquidEdgeDepth = 1.6;
-    float liquidEdgeGain = 1.08;
+    float liquidEdgeFade = 2.0;
+    float liquidEdgeGain = 1.06;
+
+    /// Bubbles, for small labels like the dock's: tinted like menus, with liquid glass's edge,
+    /// dimmed to stay legible.
+    float bubbleTint = 0.5;
+    float bubbleEdgeGain = 0.85;
 };
 
 /// What one glass shape keeps between frames, per render view.
 struct ShapeRender {
     /// Level 0 is the background behind the shape at device resolution, cached: only the
-    /// repainted part is copied each frame. Further levels are the frost's blur chain.
+    /// repainted part is copied each frame. Further levels are the blur chain: level 1 ends up
+    /// with the blur, and the first level after the blur's own with the very wide one.
     std::vector<std::unique_ptr<KWin::GLTexture>> textures;
     std::vector<std::unique_ptr<KWin::GLFramebuffer>> framebuffers;
 };
@@ -64,7 +74,7 @@ struct WindowGlass {
 };
 
 /// Glass behind the shapes clients ask for with macshell-glass-v1, the way Tahoe draws it: a flat
-/// interior over the background, finished by crisp lines along the edge.
+/// interior seen through a lens, with an edge that shows the surroundings.
 class GlassEffect : public KWin::Effect
 {
     Q_OBJECT

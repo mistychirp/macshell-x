@@ -433,7 +433,7 @@ pub fn material_shapes(layout: &Layout) -> Vec<Shape> {
         shapes.push(Shape {
             rect: rect_i32(label.rect),
             radius: (LABEL_HEIGHT / 2.0) as i32,
-            style: material::Style::Frosted,
+            style: material::Style::Bubble,
         });
     }
     shapes

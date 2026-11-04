@@ -111,16 +111,18 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     const GlassSettings defaults;
     m_settings.blurPasses = std::clamp(group.readEntry("BlurPasses", defaults.blurPasses), 1, 4);
     m_settings.blurOffset = group.readEntry("BlurOffset", defaults.blurOffset);
+    m_settings.lensStrength = group.readEntry("LensStrength", defaults.lensStrength);
+    m_settings.lensRadius = group.readEntry("LensRadius", defaults.lensRadius);
     m_settings.frostSaturation = group.readEntry("FrostSaturation", defaults.frostSaturation);
     m_settings.frostTint = group.readEntry("FrostTint", defaults.frostTint);
-    m_settings.frostEdge = group.readEntry("FrostEdge", defaults.frostEdge);
+    m_settings.frostEdgeWhite = group.readEntry("FrostEdgeWhite", defaults.frostEdgeWhite);
     m_settings.frostOuterEdge = group.readEntry("FrostOuterEdge", defaults.frostOuterEdge);
-    m_settings.liquidRim = group.readEntry("LiquidRim", defaults.liquidRim);
-    m_settings.liquidRefraction = group.readEntry("LiquidRefraction", defaults.liquidRefraction);
     m_settings.liquidBrightness = group.readEntry("LiquidBrightness", defaults.liquidBrightness);
     m_settings.liquidSaturation = group.readEntry("LiquidSaturation", defaults.liquidSaturation);
-    m_settings.liquidEdgeDepth = group.readEntry("LiquidEdgeDepth", defaults.liquidEdgeDepth);
+    m_settings.liquidEdgeFade = group.readEntry("LiquidEdgeFade", defaults.liquidEdgeFade);
     m_settings.liquidEdgeGain = group.readEntry("LiquidEdgeGain", defaults.liquidEdgeGain);
+    m_settings.bubbleTint = group.readEntry("BubbleTint", defaults.bubbleTint);
+    m_settings.bubbleEdgeGain = group.readEntry("BubbleEdgeGain", defaults.bubbleEdgeGain);
     effects->addRepaintFull();
 }
 
@@ -147,10 +149,10 @@ void GlassEffect::updateWindow(EffectWindow *w)
     if (!data.item) {
         data.item = std::make_unique<BackgroundEffectItem>(w->windowItem());
     }
-    // Refraction and frost read the background a little way off each pixel, so repaints
-    // under the glass have to reach that far.
+    // The lens and the blur read the background well away from each pixel, so repaints under the
+    // glass have to reach that far.
     const int blurReach = m_settings.blurOffset * (1 << m_settings.blurPasses) * 2;
-    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.liquidRefraction) + blurReach);
+    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.lensStrength * 2) + blurReach);
     data.item->setEffectBoundingRect(bounds);
     w->addRepaintFull();
 }
@@ -218,8 +220,9 @@ static void uploadQuad(GLVertexBuffer *vbo, const QSize &size)
 
 void GlassEffect::frost(ShapeRender &render)
 {
-    // Dual Kawase, as in KWin's blur: halve the background each pass, then double it back up
-    // to level 1, which the glass samples from.
+    // Dual Kawase, as in KWin's blur: halve the background each pass, then double it back up. All
+    // the way down, then back up to the first level past the blur's own for the wide blur; then
+    // from the blur's own last level, which that didn't touch, up to level 1 for the blur.
     GLVertexBuffer *vbo = GLVertexBuffer::streamingBuffer();
     uploadQuad(vbo, render.textures[0]->size());
     vbo->bindArrays();
@@ -243,14 +246,18 @@ void GlassEffect::frost(ShapeRender &render)
     ShaderManager::instance()->pushShader(m_upsampleShader.get());
     m_upsampleShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
     m_upsampleShader->setUniform("offset", m_settings.blurOffset);
-    for (size_t i = render.framebuffers.size() - 1; i > 1; --i) {
-        GLTexture *read = render.textures[i].get();
-        m_upsampleShader->setUniform("halfpixel", QVector2D(0.5 / read->width(), 0.5 / read->height()));
-        read->bind();
-        GLFramebuffer::pushFramebuffer(render.framebuffers[i - 1].get());
-        vbo->draw(GL_TRIANGLES, 0, 6);
-        GLFramebuffer::popFramebuffer();
-    }
+    const auto upsample = [&](size_t from, size_t to) {
+        for (size_t i = from; i > to; --i) {
+            GLTexture *read = render.textures[i].get();
+            m_upsampleShader->setUniform("halfpixel", QVector2D(0.5 / read->width(), 0.5 / read->height()));
+            read->bind();
+            GLFramebuffer::pushFramebuffer(render.framebuffers[i - 1].get());
+            vbo->draw(GL_TRIANGLES, 0, 6);
+            GLFramebuffer::popFramebuffer();
+        }
+    };
+    upsample(render.framebuffers.size() - 1, m_settings.blurPasses + 1);
+    upsample(m_settings.blurPasses, 1);
     ShaderManager::instance()->popShader();
 
     vbo->unbindArrays();
@@ -330,8 +337,10 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         }
 
         ShapeRender &render = renders[i];
-        const bool blurred = shape.style == Style::Frosted || shape.style == Style::Liquid;
-        const int levels = blurred ? m_settings.blurPasses + 1 : 1;
+        const bool blurred = shape.style != Style::Clear && shape.style != Style::Transparent;
+        // Beyond the blur's own levels: four more halvings for the wide blur.
+        const int wideLevel = m_settings.blurPasses + 1;
+        const int levels = blurred ? wideLevel + 4 : 1;
         const bool fresh = render.textures.empty() || render.textures[0]->size() != deviceRect.size();
         if (!ensureTextures(render, deviceRect.size(), format, levels)) {
             continue;
@@ -415,34 +424,38 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
 
         const bool frosted = shape.style == Style::Frosted;
         const bool liquid = shape.style == Style::Liquid;
-        const float saturation = frosted ? m_settings.frostSaturation : liquid ? m_settings.liquidSaturation : 1.0f;
+        const bool bubble = shape.style == Style::Bubble;
+        const float saturation = liquid ? m_settings.liquidSaturation : blurred ? m_settings.frostSaturation : 1.0f;
+        const float tintAlpha = frosted ? m_settings.frostTint : bubble ? m_settings.bubbleTint : 0.0f;
         ShaderManager::instance()->pushShader(m_glassShader.get());
         m_glassShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
         m_glassShader->setUniform("geoSize", QVector2D(logical.width(), logical.height()));
         m_glassShader->setUniform("cornerRadius", float(shape.radius * scale));
         m_glassShader->setUniform("deviceScale", float(viewport.scale()));
-        // Clear glass is liquid glass without the blur or the darkening.
-        m_glassShader->setUniform("rimWidth", frosted ? 0.0f : m_settings.liquidRim);
-        m_glassShader->setUniform("refraction", m_settings.liquidRefraction);
+        m_glassShader->setUniform("wide", 1);
+        m_glassShader->setUniform("lensStrength", frosted ? 0.0f : m_settings.lensStrength);
+        m_glassShader->setUniform("lensRadius", m_settings.lensRadius);
         m_glassShader->setUniform("brightness", liquid ? m_settings.liquidBrightness : 1.0f);
         m_glassShader->setUniform("colorMatrix", saturationMatrix(saturation));
-        // Measured from Tahoe's menus: a dark tint with a hint of purple, under the edge lines.
-        m_glassShader->setUniform("tint", frosted ? QVector4D(0.09, 0.06, 0.1, m_settings.frostTint) : QVector4D());
-        m_glassShader->setUniform("sharp", 1);
-        m_glassShader->setUniform("fadeDepth", liquid ? m_settings.liquidEdgeDepth : 0.0f);
-        m_glassShader->setUniform("fadeGain", m_settings.liquidEdgeGain);
-        m_glassShader->setUniform("lightAlpha", frosted ? m_settings.frostEdge : 0.0f);
+        // Measured from Tahoe's menus: a dark tint with a hint of purple, under the edge.
+        m_glassShader->setUniform("tint", QVector4D(0.09, 0.06, 0.1, tintAlpha));
+        m_glassShader->setUniform("edgeFade", frosted ? 0.0f : m_settings.liquidEdgeFade);
+        m_glassShader->setUniform("edgeGain", bubble ? m_settings.bubbleEdgeGain : frosted ? 1.0f : m_settings.liquidEdgeGain);
+        m_glassShader->setUniform("edgeWhite", frosted ? m_settings.frostEdgeWhite : 0.0f);
         m_glassShader->setUniform("outerAlpha", frosted ? m_settings.frostOuterEdge : 0.0f);
         m_glassShader->setUniform("opacity", opacity);
 
         glActiveTexture(GL_TEXTURE1);
-        render.textures[0]->bind();
+        render.textures[blurred ? wideLevel : 0]->bind();
         glActiveTexture(GL_TEXTURE0);
         render.textures[blurred ? 1 : 0]->bind();
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         vbo->draw(GL_TRIANGLES, 0, vertexCount);
         glDisable(GL_BLEND);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
         ShaderManager::instance()->popShader();
         vbo->unbindArrays();
     }
