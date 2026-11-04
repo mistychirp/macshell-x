@@ -19,9 +19,9 @@ const CHECK_WIDTH: f32 = 18.0;
 const MIN_WIDTH: f32 = 160.0;
 /// Labels longer than this many characters are cut short with an ellipsis.
 const MAX_LABEL_CHARS: usize = 48;
-pub const RADIUS: f32 = 10.0;
+pub const RADIUS: f32 = 13.0;
 /// Opacity of the dark tint over glass, shared by the shell's other popups.
-pub const TINT: f32 = 0.35;
+pub const TINT: f32 = 0.45;
 
 /// macOS's selection blue.
 const ACCENT: Color = Color::from_rgba(0.0, 0.45, 1.0, 0.95);
@@ -147,11 +147,7 @@ pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> 
         .height(Length::Fill)
         .style(move |_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.1, 0.1, 0.12, tint))),
-            border: Border {
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
-                width: 1.0,
-                radius: RADIUS.into(),
-            },
+            border: material::panel_border(material, RADIUS),
             ..Default::default()
         })
         .into()

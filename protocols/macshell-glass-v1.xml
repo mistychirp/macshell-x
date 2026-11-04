@@ -26,9 +26,9 @@
   <description summary="liquid glass behind surfaces">
     This protocol lets a client ask the compositor to render liquid glass
     behind parts of its surfaces: the background is refracted along a curved
-    rim, optionally frosted, and lit by a specular highlight. The look of the
-    glass (rim width, refraction strength, highlight, tint) is compositor
-    policy; clients only describe where the glass goes.
+    rim, or frosted, and finished by crisp lines along its edge. The look of
+    each style is compositor policy; clients only describe where the glass
+    goes and which style it is.
 
     The presence of the macshell_glass_manager_v1 global tells clients that
     glass is available.
@@ -90,9 +90,11 @@
       <entry name="clear" value="0"
              summary="refraction only; the background stays sharp"/>
       <entry name="frosted" value="1"
-             summary="refraction over a blurred background"/>
+             summary="a flat blurred background with crisp edge lines; for menus, popovers and alerts"/>
       <entry name="transparent" value="2" since="2"
              summary="nothing is drawn; the shape only marks where track_brightness measures"/>
+      <entry name="liquid" value="3" since="2"
+             summary="a light blur, darkened a little, with a thin refracting rim; for controls floating over content"/>
     </enum>
 
     <request name="clear">

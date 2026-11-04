@@ -109,13 +109,16 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     Q_UNUSED(flags)
     const KConfigGroup group = KSharedConfig::openConfig(QStringLiteral("kwinrc"))->group(QStringLiteral("Effect-macshell"));
     const GlassSettings defaults;
-    m_settings.bezel = group.readEntry("Bezel", defaults.bezel);
-    m_settings.refraction = group.readEntry("Refraction", defaults.refraction);
-    m_settings.highlight = group.readEntry("Highlight", defaults.highlight);
-    m_settings.tint = group.readEntry("Tint", defaults.tint);
-    m_settings.frostPasses = std::clamp(group.readEntry("FrostPasses", defaults.frostPasses), 1, 4);
-    m_settings.frostOffset = group.readEntry("FrostOffset", defaults.frostOffset);
+    m_settings.blurPasses = std::clamp(group.readEntry("BlurPasses", defaults.blurPasses), 1, 4);
+    m_settings.blurOffset = group.readEntry("BlurOffset", defaults.blurOffset);
     m_settings.frostSaturation = group.readEntry("FrostSaturation", defaults.frostSaturation);
+    m_settings.frostEdge = group.readEntry("FrostEdge", defaults.frostEdge);
+    m_settings.frostOuterEdge = group.readEntry("FrostOuterEdge", defaults.frostOuterEdge);
+    m_settings.liquidRim = group.readEntry("LiquidRim", defaults.liquidRim);
+    m_settings.liquidRefraction = group.readEntry("LiquidRefraction", defaults.liquidRefraction);
+    m_settings.liquidBrightness = group.readEntry("LiquidBrightness", defaults.liquidBrightness);
+    m_settings.liquidSaturation = group.readEntry("LiquidSaturation", defaults.liquidSaturation);
+    m_settings.liquidEdge = group.readEntry("LiquidEdge", defaults.liquidEdge);
     effects->addRepaintFull();
 }
 
@@ -144,8 +147,8 @@ void GlassEffect::updateWindow(EffectWindow *w)
     }
     // Refraction and frost read the background a little way off each pixel, so repaints
     // under the glass have to reach that far.
-    const int frostReach = m_settings.frostOffset * (1 << m_settings.frostPasses) * 2;
-    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.refraction) + frostReach);
+    const int blurReach = m_settings.blurOffset * (1 << m_settings.blurPasses) * 2;
+    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.liquidRefraction) + blurReach);
     data.item->setEffectBoundingRect(bounds);
     w->addRepaintFull();
 }
@@ -224,7 +227,7 @@ void GlassEffect::frost(ShapeRender &render)
 
     ShaderManager::instance()->pushShader(m_downsampleShader.get());
     m_downsampleShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
-    m_downsampleShader->setUniform("offset", m_settings.frostOffset);
+    m_downsampleShader->setUniform("offset", m_settings.blurOffset);
     for (size_t i = 1; i < render.framebuffers.size(); ++i) {
         GLTexture *read = render.textures[i - 1].get();
         m_downsampleShader->setUniform("halfpixel", QVector2D(0.5 / read->width(), 0.5 / read->height()));
@@ -237,7 +240,7 @@ void GlassEffect::frost(ShapeRender &render)
 
     ShaderManager::instance()->pushShader(m_upsampleShader.get());
     m_upsampleShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
-    m_upsampleShader->setUniform("offset", m_settings.frostOffset);
+    m_upsampleShader->setUniform("offset", m_settings.blurOffset);
     for (size_t i = render.framebuffers.size() - 1; i > 1; --i) {
         GLTexture *read = render.textures[i].get();
         m_upsampleShader->setUniform("halfpixel", QVector2D(0.5 / read->width(), 0.5 / read->height()));
@@ -325,7 +328,8 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         }
 
         ShapeRender &render = renders[i];
-        const int levels = shape.style == Style::Frosted ? m_settings.frostPasses + 1 : 1;
+        const bool blurred = shape.style == Style::Frosted || shape.style == Style::Liquid;
+        const int levels = blurred ? m_settings.blurPasses + 1 : 1;
         const bool fresh = render.textures.empty() || render.textures[0]->size() != deviceRect.size();
         if (!ensureTextures(render, deviceRect.size(), format, levels)) {
             continue;
@@ -367,7 +371,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
             continue;
         }
 
-        if (shape.style == Style::Frosted) {
+        if (blurred) {
             frost(render);
         }
 
@@ -408,20 +412,26 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         projection.translate(deviceRect.x(), deviceRect.y());
 
         const bool frosted = shape.style == Style::Frosted;
-        const QColor tint = m_settings.tint;
+        const bool liquid = shape.style == Style::Liquid;
+        const float saturation = frosted ? m_settings.frostSaturation : liquid ? m_settings.liquidSaturation : 1.0f;
         ShaderManager::instance()->pushShader(m_glassShader.get());
         m_glassShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
         m_glassShader->setUniform("geoSize", QVector2D(logical.width(), logical.height()));
         m_glassShader->setUniform("cornerRadius", float(shape.radius * scale));
         m_glassShader->setUniform("deviceScale", float(viewport.scale()));
-        m_glassShader->setUniform("bezel", m_settings.bezel);
-        m_glassShader->setUniform("refraction", m_settings.refraction);
-        m_glassShader->setUniform("highlight", m_settings.highlight);
-        m_glassShader->setUniform("glassTint", QVector4D(tint.redF() * tint.alphaF(), tint.greenF() * tint.alphaF(), tint.blueF() * tint.alphaF(), tint.alphaF()));
-        m_glassShader->setUniform("colorMatrix", frosted ? saturationMatrix(m_settings.frostSaturation) : QMatrix4x4());
+        // Clear glass is liquid glass without the blur or the darkening.
+        m_glassShader->setUniform("rimWidth", frosted ? 0.0f : m_settings.liquidRim);
+        m_glassShader->setUniform("refraction", m_settings.liquidRefraction);
+        m_glassShader->setUniform("brightness", liquid ? m_settings.liquidBrightness : 1.0f);
+        m_glassShader->setUniform("colorMatrix", saturationMatrix(saturation));
+        m_glassShader->setUniform("edgeAlpha", frosted ? m_settings.frostEdge : m_settings.liquidEdge);
+        m_glassShader->setUniform("edgeWidth", 2.0f);
+        // Tahoe's dock catches more light along the bottom; its menus are even all around.
+        m_glassShader->setUniform("edgeLit", frosted ? 0.0f : 0.6f);
+        m_glassShader->setUniform("outerAlpha", frosted ? m_settings.frostOuterEdge : 0.0f);
         m_glassShader->setUniform("opacity", opacity);
 
-        render.textures[frosted ? 1 : 0]->bind();
+        render.textures[blurred ? 1 : 0]->bind();
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         vbo->draw(GL_TRIANGLES, 0, vertexCount);

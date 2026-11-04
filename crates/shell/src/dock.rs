@@ -427,7 +427,7 @@ pub fn material_shapes(layout: &Layout) -> Vec<Shape> {
     let mut shapes = vec![Shape {
         rect: rect_i32(layout.pill),
         radius: RADIUS as i32,
-        style: material::Style::Clear,
+        style: material::Style::Liquid,
     }];
     if let Some(label) = &layout.label {
         shapes.push(Shape {

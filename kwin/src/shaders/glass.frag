@@ -2,25 +2,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #version 140
 
+// Glass the way Tahoe draws it: a flat interior, with no glow, finished by crisp lines right at
+// the edge. Measured from macOS screenshots.
+
 // The background behind the shape (frosted ones: blurred), stretched over the shape.
 uniform sampler2D sampler;
 
 // The shape's size and corner radius, in logical pixels.
 uniform vec2 geoSize;
 uniform float cornerRadius;
-// Device pixels per logical pixel, for antialiasing.
+// Device pixels per logical pixel. The edge lines are sized in device pixels, to stay crisp.
 uniform float deviceScale;
 
-// Width of the curved rim, in logical pixels.
-uniform float bezel;
-// How far the rim bends the background inward at its outer edge, in logical pixels.
+// Width of the band along the edge that bends the background, in logical pixels, and how far it
+// bends it at the outer edge. A width of 0 means none.
+uniform float rimWidth;
 uniform float refraction;
-// Strength of the specular highlight along the rim.
-uniform float highlight;
-// Premultiplied tint layered over the glass.
-uniform vec4 glassTint;
-// Saturation for frosted glass; identity otherwise.
+// Multiplies the background's color; below 1 darkens it.
+uniform float brightness;
+// Saturation of the background.
 uniform mat4 colorMatrix;
+// The light line along the edge: how strongly it whitens, its width in device pixels, and how much
+// stronger it gets along the bottom edge (and weaker along the top).
+uniform float edgeAlpha;
+uniform float edgeWidth;
+uniform float edgeLit;
+// The dark one-device-pixel line outside the light one: how strongly it darkens. 0 means none.
+uniform float outerAlpha;
 uniform float opacity;
 
 // Texture coordinates: 0 to 1 across the shape, with y pointing up.
@@ -39,6 +47,12 @@ float sdRoundedBox(vec2 p, vec2 halfSize, float r)
 vec4 sampleGeo(vec2 geo)
 {
     return texture(sampler, vec2(geo.x, 1.0 - geo.y));
+}
+
+// 1 between two distances from the edge, in device pixels, antialiased.
+float band(float depth, float from, float to)
+{
+    return clamp(depth - from + 0.5, 0.0, 1.0) * clamp(to - depth + 0.5, 0.0, 1.0);
 }
 
 void main(void)
@@ -62,39 +76,27 @@ void main(void)
         sdRoundedBox(p + e.yx, halfSize, cornerRadius) - sdRoundedBox(p - e.yx, halfSize, cornerRadius));
     n = length(n) > 0.0 ? normalize(n) : vec2(0.0);
 
-    // Thin shapes, like a menu bar, get a proportionally thinner rim, so it doesn't swallow
-    // the whole shape.
-    float rimWidth = max(min(bezel, 0.3 * min(geoSize.x, geoSize.y)), 0.001);
-    float rimRefraction = refraction * rimWidth / max(bezel, 0.001);
+    // Light refracts toward the center, so the band shows content from further in, bending most
+    // at the edge. Thin shapes get a proportionally thinner band.
+    vec2 refracted = geo;
+    if (rimWidth > 0.0) {
+        float width = max(min(rimWidth, 0.3 * min(geoSize.x, geoSize.y)), 0.001);
+        float t = clamp(-d / width, 0.0, 1.0);
+        float bend = refraction * (width / rimWidth) * pow(1.0 - t, 2.5);
+        refracted = geo - n * bend / geoSize;
+    }
 
-    // 0 at the outer edge, 1 where the rim meets the flat top.
-    float t = clamp(-d / rimWidth, 0.0, 1.0);
-    // A convex rim is steepest at the edge, so it bends light the most there.
-    float bend = rimRefraction * pow(1.0 - t, 2.5);
-
-    // Light refracts toward the center, so the rim shows content from further in.
-    // Channels bend slightly differently for a hint of dispersion.
-    vec2 offset = -n * bend / geoSize;
-    vec4 color;
-    color.r = sampleGeo(geo + offset * 1.06).r;
-    color.ga = sampleGeo(geo + offset).ga;
-    color.b = sampleGeo(geo + offset * 0.94).b;
-    color = color * colorMatrix;
+    vec4 color = sampleGeo(refracted) * colorMatrix;
     // The copied background is opaque wherever there's anything behind it.
     color.a = 1.0;
+    color.rgb *= brightness;
 
-    // Tint, premultiplied over the background.
-    color = glassTint + color * (1.0 - glassTint.a);
-
-    // Specular highlight: light from the top-left catches the rim, plus a faint bounce on the
-    // opposite side.
-    vec2 light = normalize(vec2(-1.0, -1.4));
-    float facing = dot(n, light);
-    float rim = pow(1.0 - t, 3.0);
-    float spec = rim * (max(facing, 0.0) + 0.35 * max(-facing, 0.0));
-    // A crisp one-pixel line right at the edge.
-    float edge = clamp(1.0 - (-d * deviceScale), 0.0, 1.0);
-    color.rgb += vec3(highlight * (spec + 0.5 * edge));
+    // The edge lines, from the outside in: dark, then light.
+    float depth = -d * deviceScale;
+    float outerWidth = outerAlpha > 0.0 ? 1.0 : 0.0;
+    float light = band(depth, outerWidth, outerWidth + edgeWidth) * edgeAlpha * (1.0 + edgeLit * n.y);
+    color.rgb = mix(color.rgb, vec3(1.0), clamp(light, 0.0, 1.0));
+    color.rgb = mix(color.rgb, vec3(0.0), band(depth, 0.0, outerWidth) * outerAlpha);
 
     fragColor = color * coverage * opacity;
 }

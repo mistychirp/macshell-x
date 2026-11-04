@@ -31,6 +31,7 @@ enum class Style {
     Frosted,
     /// Nothing is drawn; the shape only marks where brightness is measured.
     Transparent,
+    Liquid,
 };
 
 struct Shape {

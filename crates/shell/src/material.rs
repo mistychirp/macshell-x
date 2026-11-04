@@ -29,11 +29,15 @@ pub type Rect = (i32, i32, i32, i32);
 /// Like macOS's Liquid Glass variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Style {
-    /// Refraction only; the background stays sharp. For the dock and the menu bar.
+    /// A refracting rim over a sharp background.
+    #[allow(dead_code)]
     Clear,
-    /// Refraction over a blurred background, macOS's "regular" glass. For menus, popovers and
-    /// alerts, whose text needs a calm background.
+    /// A flat blurred background with crisp edge lines, macOS's "regular" glass. For menus,
+    /// popovers and alerts, whose text needs a calm background.
     Frosted,
+    /// A light blur, darkened a little, with a thin refracting rim. For controls floating over
+    /// content, like the dock.
+    Liquid,
     /// Nothing at all, like macOS's menu bar; the shape only says where to measure brightness
     /// (see [`Material::track_brightness`]). Dropped where that isn't supported.
     Transparent,
@@ -51,6 +55,21 @@ pub struct Shape {
 pub enum Kind {
     Glass,
     Blur,
+}
+
+/// The border a panel draws for itself: glass draws its own edge lines, but blur or nothing leaves
+/// the panel needing one.
+pub fn panel_border(material: Option<Kind>, radius: f32) -> iced_widget::core::Border {
+    let width = if material == Some(Kind::Glass) {
+        0.0
+    } else {
+        1.0
+    };
+    iced_widget::core::Border {
+        color: iced_widget::core::Color::from_rgba(1.0, 1.0, 1.0, 0.12),
+        width,
+        radius: radius.into(),
+    }
 }
 
 pub struct Material {
@@ -157,6 +176,8 @@ impl Material {
                     let style = match shape.style {
                         Style::Clear => macshell_glass_v1::Style::Clear,
                         Style::Frosted => macshell_glass_v1::Style::Frosted,
+                        Style::Liquid if glass.version() >= 2 => macshell_glass_v1::Style::Liquid,
+                        Style::Liquid => macshell_glass_v1::Style::Frosted,
                         Style::Transparent if glass.version() >= 2 => {
                             macshell_glass_v1::Style::Transparent
                         }

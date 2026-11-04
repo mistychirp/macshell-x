@@ -75,8 +75,8 @@ The shell chooses the material behind its surfaces itself, so it needs no compos
 ## KWin plugin
 
 `kwin/` is a KWin effect that renders liquid glass for the shell. It serves our
-`macshell-glass-v1` protocol: clear and frosted glass shapes behind surfaces, transparent shapes
-that only measure, and brightness tracking for the menu bar's text color.
+`macshell-glass-v1` protocol: clear, liquid and frosted glass shapes behind surfaces, transparent
+shapes that only measure, and brightness tracking for the menu bar's text color.
 
 KWin plugins must be built against the exact KWin they load into. The flake exposes the plugin as
 `packages.kwin-macshell`; to build it against your system's KWin, use the nixpkgs your system
@@ -91,18 +91,21 @@ found. The glass can be tuned in `kwinrc`; these are the defaults:
 
 ```ini
 [Effect-macshell]
-# Width of the curved rim, in logical pixels.
-Bezel=20
-# How far the rim bends the background at its outer edge.
-Refraction=16
-# Strength of the specular highlight along the rim.
-Highlight=0.35
-# Tint over the glass, as R,G,B,A.
-Tint=255,255,255,0
-# The blur under frosted glass: dual Kawase passes, their sample offset, and saturation.
-FrostPasses=2
-FrostOffset=2
+# The blur under frosted and liquid glass: dual Kawase passes and their sample offset.
+BlurPasses=2
+BlurOffset=2
+# Frosted glass (menus, popovers, alerts): saturation, the light line along the edge, and the dark
+# line outside it.
 FrostSaturation=1.8
+FrostEdge=0.72
+FrostOuterEdge=0.88
+# Liquid glass (the dock): width and strength of the refracting rim, how much it darkens the
+# background, saturation, and the light line along the edge.
+LiquidRim=6
+LiquidRefraction=5
+LiquidBrightness=0.86
+LiquidSaturation=1.15
+LiquidEdge=0.16
 ```
 
 To try it without leaving your session, run KWin nested. KWin needs `wp_single_pixel_buffer_manager_v1`

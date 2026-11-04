@@ -9,8 +9,6 @@
 #include "effect/effect.h"
 #include "opengl/glutils.h"
 
-#include <QColor>
-
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -27,21 +25,24 @@ namespace Macshell
 
 class GlassManager;
 
-/// Look of the glass, from the `Effect-macshell` group of kwinrc.
+/// Look of the glass, from the `Effect-macshell` group of kwinrc. The defaults are measured from
+/// Tahoe's menus and dock.
 struct GlassSettings {
-    /// Width of the curved rim, in logical pixels.
-    float bezel = 20.0;
-    /// How far the rim bends the background at its outer edge, in logical pixels.
-    float refraction = 16.0;
-    /// Strength of the specular highlight along the rim.
-    float highlight = 0.35;
-    /// Tint layered over the glass.
-    QColor tint = QColor(255, 255, 255, 0);
+    /// The blur under frosted and liquid glass: dual Kawase passes and their sample offset.
+    int blurPasses = 2;
+    float blurOffset = 2.0;
 
-    /// The blur under frosted glass: dual Kawase passes and their sample offset.
-    int frostPasses = 2;
-    float frostOffset = 2.0;
+    /// Frosted glass, for menus, popovers and alerts: flat, with a dark line outside a light one.
     float frostSaturation = 1.8;
+    float frostEdge = 0.72;
+    float frostOuterEdge = 0.88;
+
+    /// Liquid glass, for controls like the dock: a thin refracting rim and a faint light line.
+    float liquidRim = 6.0;
+    float liquidRefraction = 5.0;
+    float liquidBrightness = 0.86;
+    float liquidSaturation = 1.15;
+    float liquidEdge = 0.16;
 };
 
 /// What one glass shape keeps between frames, per render view.
@@ -59,8 +60,8 @@ struct WindowGlass {
     bool probeScheduled = false;
 };
 
-/// Liquid glass behind the shapes clients ask for with macshell-glass-v1: the background is
-/// refracted along a curved rim, optionally frosted, and lit by a specular highlight.
+/// Glass behind the shapes clients ask for with macshell-glass-v1, the way Tahoe draws it: a flat
+/// interior over the background, finished by crisp lines along the edge.
 class GlassEffect : public KWin::Effect
 {
     Q_OBJECT

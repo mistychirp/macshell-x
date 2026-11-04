@@ -101,11 +101,7 @@ pub fn view(tiles: &[Tile], material: Option<material::Kind>) -> Element<'_> {
     .height(Length::Fill)
     .style(move |_| container::Style {
         background: Some(Background::Color(Color::from_rgba(0.1, 0.1, 0.12, tint))),
-        border: Border {
-            color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
-            width: 1.0,
-            radius: RADIUS.into(),
-        },
+        border: material::panel_border(material, RADIUS),
         ..Default::default()
     })
     .into()

@@ -2,12 +2,12 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fs;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::thread;
+use std::{env, fs};
 
 use freedesktop_desktop_entry::unicase::Ascii;
 use freedesktop_desktop_entry::{DesktopEntry, find_app_by_id};
@@ -48,7 +48,7 @@ impl AppIndex {
     pub fn load() -> Self {
         let locales = freedesktop_desktop_entry::get_languages_from_env();
         let entries = freedesktop_desktop_entry::desktop_entries(&locales);
-        let icon_theme = icon_theme().unwrap_or_else(|| String::from("hicolor"));
+        let icon_theme = icon_theme();
         log::info!(
             "indexed {} desktop entries, icon theme {icon_theme}",
             entries.len()
@@ -236,9 +236,32 @@ pub fn default_app(mime: &str) -> Option<String> {
     (!id.is_empty()).then(|| id.to_owned())
 }
 
-/// The id of the GTK icon theme, like `breeze-dark`. (freedesktop_icons' `default_theme_gtk`
-/// returns the theme's display name, which lookups don't accept.)
-fn icon_theme() -> Option<String> {
+/// The id of the icon theme, like `breeze-dark`: KDE's setting, then GTK's, then KDE's default.
+fn icon_theme() -> String {
+    kde_icon_theme()
+        .or_else(gtk_icon_theme)
+        .unwrap_or_else(|| String::from("breeze"))
+}
+
+/// `[Icons] Theme` from kdeglobals, where KDE only writes it if it differs from the default.
+fn kde_icon_theme() -> Option<String> {
+    let config = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from(env::var_os("HOME")?).join(".config")))?;
+    ["kdeglobals", "kdedefaults/kdeglobals"]
+        .iter()
+        .find_map(|file| {
+            let text = fs::read_to_string(config.join(file)).ok()?;
+            let group = text.split("[Icons]").nth(1)?;
+            let group = group.split("\n[").next()?;
+            let theme = group.lines().find_map(|line| line.strip_prefix("Theme="))?;
+            (!theme.trim().is_empty()).then(|| theme.trim().to_owned())
+        })
+}
+
+/// freedesktop_icons' `default_theme_gtk` returns the theme's display name, which lookups don't
+/// accept, so this asks for its id.
+fn gtk_icon_theme() -> Option<String> {
     let output = Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "icon-theme"])
         .output()
