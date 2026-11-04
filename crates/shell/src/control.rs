@@ -6,15 +6,18 @@ use iced_widget::core::text::Wrapping;
 use iced_widget::core::{
     Alignment, Background, Border, Color, Font, Length, Padding, Rectangle, alignment, font,
 };
-use iced_widget::{Space, column, container, image, mouse_area, pin, row, slider, stack, text};
+use iced_widget::scrollable::{Direction, Scrollbar};
+use iced_widget::{
+    Space, button, column, container, image, mouse_area, pin, row, scrollable, slider, stack, text,
+};
 
 use crate::app::{Element, Message};
-use crate::audio::Volume;
-use crate::bluetooth::Bluetooth;
+use crate::audio::{self, Output, Volume};
+use crate::bluetooth::{Bluetooth, Device};
 use crate::icons::{self, Glyph};
 use crate::kwin::KeyboardLayouts;
 use crate::media::{Control, Track};
-use crate::network::Wifi;
+use crate::network::{Network, Wifi};
 use crate::{bluetooth, material, media, menu, menubar, network};
 
 const CELL: f32 = 63.0;
@@ -52,6 +55,20 @@ const DIM: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.65);
 const FAINT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.3);
 const OFF_FILL: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.25);
 const INK_ON_WHITE: Color = Color::from_rgb(0.1, 0.1, 0.12);
+const OUTPUTS_SIZE: f32 = 26.0;
+const DETAIL_HEADER: f32 = 42.0;
+const DETAIL_FOOTER: f32 = 36.0;
+const DETAIL_SEPARATOR: f32 = 1.0;
+const DETAIL_ROW: f32 = 30.0;
+/// Between a detail panel's edge and its rows' highlights.
+const DETAIL_INSET: f32 = 5.0;
+/// Between a row's highlight and what's in it.
+const DETAIL_ROW_PADDING: f32 = 9.0;
+const DETAIL_PADDING_X: f32 = DETAIL_INSET + DETAIL_ROW_PADDING;
+const DETAIL_ICON: f32 = 22.0;
+const SWITCH_WIDTH: f32 = 36.0;
+const SWITCH_HEIGHT: f32 = 20.0;
+const SWITCH_KNOB: f32 = 16.0;
 
 /// What the panel shows, from the shell's state. Each is `None` when its service or hardware is
 /// missing.
@@ -65,6 +82,41 @@ pub struct Panel {
     pub track: Option<Track>,
     /// The track's cover art, loaded.
     pub art: Option<image::Handle>,
+    /// The module whose detail is showing, instead of the bubbles.
+    pub detail: Option<Detail>,
+    pub networks: Vec<Network>,
+    pub devices: Vec<Device>,
+    pub outputs: Vec<Output>,
+}
+
+/// What a module opens to: a panel with what it's connected to, in place of the bubbles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    Wifi,
+    Bluetooth,
+    Keyboard,
+    Sound,
+}
+
+impl Detail {
+    fn title(self) -> &'static str {
+        match self {
+            Detail::Wifi => "Wi-Fi",
+            Detail::Bluetooth => "Bluetooth",
+            Detail::Keyboard => "Keyboard",
+            Detail::Sound => "Sound Output",
+        }
+    }
+
+    /// The row that leads to the system's settings for it.
+    fn settings(self) -> (&'static str, &'static str) {
+        match self {
+            Detail::Wifi => ("Wi-Fi Settings…", "kcm_networkmanagement"),
+            Detail::Bluetooth => ("Bluetooth Settings…", "kcm_bluetooth"),
+            Detail::Keyboard => ("Keyboard Settings…", "kcm_keyboard"),
+            Detail::Sound => ("Sound Settings…", "kcm_pulseaudio"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +192,14 @@ pub fn size(panel: &Panel) -> (u32, u32) {
     )
 }
 
+/// How much room the bubbles take, top to bottom.
+fn bubbles_height(panel: &Panel) -> f32 {
+    modules(panel)
+        .iter()
+        .map(|(_, rect, _)| rect.y + rect.height)
+        .fold(0.0, f32::max)
+}
+
 pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
     let (width, height) = size(panel);
     let backdrop = material::Shape {
@@ -152,6 +212,21 @@ pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
             BLUR_BOTTOM as u32,
         ]),
     };
+    if panel.detail.is_some() {
+        return vec![
+            backdrop,
+            material::Shape {
+                rect: (
+                    BLUR_LEFT as i32,
+                    0,
+                    WIDTH as i32,
+                    detail_height(panel) as i32,
+                ),
+                radius: menu::RADIUS as i32,
+                style: material::Style::Frosted,
+            },
+        ];
+    }
     std::iter::once(backdrop)
         .chain(
             modules(panel)
@@ -171,6 +246,12 @@ pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
 }
 
 pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
+    if let Some(detail) = panel.detail {
+        return container(pin(detail_view(detail, panel, material)).x(BLUR_LEFT))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    }
     let layers: Vec<Element<'_>> = modules(panel)
         .into_iter()
         .map(|(module, rect, radius)| {
@@ -218,7 +299,7 @@ fn bubble_style(material: Option<material::Kind>, radius: f32) -> container::Sty
 
 fn wifi(panel: &Panel) -> Element<'_> {
     let Some(wifi) = &panel.wifi else {
-        return capsule(Glyph::WifiOff, "Wi-Fi", "Unavailable", false, None);
+        return capsule(Glyph::WifiOff, "Wi-Fi", "Unavailable", false, None, None);
     };
     let status = match (&wifi.network, wifi.enabled) {
         (Some(network), true) => network.as_str(),
@@ -236,12 +317,20 @@ fn wifi(panel: &Panel) -> Element<'_> {
         status,
         wifi.network.is_some(),
         Some(Message::ToggleWifi),
+        Some(Detail::Wifi),
     )
 }
 
 fn bluetooth_toggle(panel: &Panel) -> Element<'_> {
     let Some(bluetooth) = &panel.bluetooth else {
-        return capsule(Glyph::BluetoothOff, "Bluetooth", "Unavailable", false, None);
+        return capsule(
+            Glyph::BluetoothOff,
+            "Bluetooth",
+            "Unavailable",
+            false,
+            None,
+            None,
+        );
     };
     let status = match (bluetooth.connected.first(), bluetooth.powered) {
         (Some(device), true) => device.as_str(),
@@ -259,45 +348,57 @@ fn bluetooth_toggle(panel: &Panel) -> Element<'_> {
         status,
         bluetooth.powered,
         Some(Message::ToggleBluetooth),
+        Some(Detail::Bluetooth),
     )
 }
 
-/// The keyboard layout: pressing it moves to the next one.
+/// The keyboard layout: its circle moves to the next one, and the rest lists them.
 fn keyboard(panel: &Panel) -> Element<'_> {
     let layouts = panel.keyboard.as_ref();
     let name = layouts
         .and_then(|layouts| layouts.names.get(layouts.current))
         .map_or("Unavailable", String::as_str);
-    let on_press = layouts
-        .filter(|layouts| layouts.names.len() > 1)
-        .map(|_| Message::NextLayout);
+    let several = layouts.is_some_and(|layouts| layouts.names.len() > 1);
 
     let circle = container(text(menubar::input_label(name)).size(13).font(BOLD))
         .center(TOGGLE_SIZE)
         .style(|_| toggle_style(false));
-    capsule_row(circle.into(), "Keyboard", name, on_press)
+    capsule_row(
+        pressable(circle.into(), several.then_some(Message::NextLayout)),
+        "Keyboard",
+        name,
+        several.then_some(Detail::Keyboard),
+    )
 }
 
-/// A capsule toggle: a round icon, a name and a status.
+/// A capsule toggle: a round icon that toggles it, and a name and a status that open its detail.
 fn capsule<'a>(
     glyph: Glyph,
     name: &'a str,
     status: &str,
     on: bool,
-    on_press: Option<Message>,
+    on_toggle: Option<Message>,
+    detail: Option<Detail>,
 ) -> Element<'a> {
     let ink = if on { INK_ON_WHITE } else { Color::WHITE };
     let circle = container(icons::icon(glyph, 18.0, ink))
         .center(TOGGLE_SIZE)
         .style(move |_| toggle_style(on));
-    capsule_row(circle.into(), name, status, on_press)
+    capsule_row(pressable(circle.into(), on_toggle), name, status, detail)
+}
+
+fn pressable(content: Element<'_>, on_press: Option<Message>) -> Element<'_> {
+    match on_press {
+        Some(message) => mouse_area(content).on_press(message).into(),
+        None => content,
+    }
 }
 
 fn capsule_row<'a>(
     circle: Element<'a>,
     name: &'a str,
     status: &str,
-    on_press: Option<Message>,
+    detail: Option<Detail>,
 ) -> Element<'a> {
     let content = container(
         row![
@@ -327,18 +428,22 @@ fn capsule_row<'a>(
     .width(Length::Fill)
     .align_y(alignment::Vertical::Center);
 
-    match on_press {
-        Some(message) => mouse_area(content).on_press(message).into(),
-        None => content.into(),
-    }
+    pressable(
+        content.into(),
+        detail.map(|detail| Message::ControlDetail(Some(detail))),
+    )
 }
 
 /// White when active, like Tahoe's toggles; a translucent grey otherwise.
 fn toggle_style(on: bool) -> container::Style {
+    toggle_style_of(TOGGLE_SIZE, on)
+}
+
+fn toggle_style_of(size: f32, on: bool) -> container::Style {
     container::Style {
         background: Some(Background::Color(if on { Color::WHITE } else { OFF_FILL })),
         border: Border {
-            radius: (TOGGLE_SIZE / 2.0).into(),
+            radius: (size / 2.0).into(),
             ..Default::default()
         },
         ..Default::default()
@@ -438,6 +543,7 @@ fn display<'a>(level: f32) -> Element<'a> {
         Message::BrightnessChanged,
         Message::BrightnessReleased,
         Glyph::SunHigh,
+        None,
     )
 }
 
@@ -462,6 +568,7 @@ fn sound<'a>(volume: Option<Volume>) -> Element<'a> {
         Message::VolumeChanged,
         Message::VolumeReleased,
         Glyph::SpeakerHigh,
+        Some(Message::ControlDetail(Some(Detail::Sound))),
     )
 }
 
@@ -474,6 +581,7 @@ fn slider_module<'a>(
     on_change: fn(f32) -> Message,
     on_release: Message,
     high: Glyph,
+    on_outputs: Option<Message>,
 ) -> Element<'a> {
     let line = slider(0.0..=1.0, level, on_change)
         .on_release(on_release)
@@ -509,6 +617,14 @@ fn slider_module<'a>(
         column![
             text(title).size(TITLE_SIZE).font(BOLD),
             row![low_icon, line, icons::icon(high, 18.0, Color::WHITE)]
+                .push(on_outputs.map(|message| {
+                    mouse_area(
+                        container(icons::icon(Glyph::Outputs, 15.0, Color::WHITE))
+                            .center(OUTPUTS_SIZE)
+                            .style(|_| toggle_style_of(OUTPUTS_SIZE, false)),
+                    )
+                    .on_press(message)
+                }))
                 .spacing(8)
                 .align_y(Alignment::Center),
         ]
@@ -519,18 +635,356 @@ fn slider_module<'a>(
     .into()
 }
 
+/// How many rows a detail panel has: what it lists, or a line saying there's nothing.
+fn detail_rows(panel: &Panel, detail: Detail) -> usize {
+    let listed = match detail {
+        Detail::Wifi => {
+            let known = panel
+                .networks
+                .iter()
+                .filter(|network| network.known)
+                .count();
+            let others = panel.networks.len() - known;
+            // A heading above each group.
+            panel.networks.len() + usize::from(known > 0) + usize::from(others > 0)
+        }
+        Detail::Bluetooth => panel.devices.len(),
+        Detail::Keyboard => panel.keyboard.as_ref().map_or(0, |list| list.names.len()),
+        Detail::Sound => panel.outputs.len(),
+    };
+    listed.max(1)
+}
+
+fn detail_height(panel: &Panel) -> f32 {
+    let rows = panel.detail.map_or(1, |detail| detail_rows(panel, detail));
+    let full = DETAIL_HEADER + 2.0 * DETAIL_SEPARATOR + rows as f32 * DETAIL_ROW + DETAIL_FOOTER;
+    full.min(bubbles_height(panel))
+}
+
+fn detail_view<'a>(
+    detail: Detail,
+    panel: &'a Panel,
+    material: Option<material::Kind>,
+) -> Element<'a> {
+    let (settings_label, settings_page) = detail.settings();
+    let header = container(
+        row![
+            text(detail.title()).size(TITLE_SIZE).font(BOLD),
+            Space::new().width(Length::Fill),
+        ]
+        .push(switch_for(detail, panel))
+        .align_y(Alignment::Center),
+    )
+    .height(DETAIL_HEADER)
+    .padding([0.0, DETAIL_PADDING_X])
+    .align_y(alignment::Vertical::Center);
+
+    let list = scrollable(column(detail_list(detail, panel)).padding([0.0, DETAIL_INSET]))
+        .direction(Direction::Vertical(
+            Scrollbar::new().width(0).scroller_width(0),
+        ))
+        .height(Length::Fill)
+        .width(Length::Fill);
+
+    let settings = detail_button(
+        container(text(settings_label).size(TITLE_SIZE))
+            .padding([0.0, DETAIL_ROW_PADDING])
+            .height(Length::Fill)
+            .align_y(alignment::Vertical::Center)
+            .into(),
+        Some(Message::ControlSettings(settings_page)),
+    );
+
+    // Pressing the panel itself shouldn't count as pressing outside it.
+    mouse_area(
+        container(column![
+            header,
+            detail_separator(),
+            list,
+            detail_separator(),
+            container(settings)
+                .height(DETAIL_FOOTER)
+                .padding([4.0, DETAIL_INSET]),
+        ])
+        .width(WIDTH)
+        .height(detail_height(panel))
+        .style(move |_| {
+            let mut style = container::Style {
+                background: Some(Background::Color(Color::from_rgba(
+                    0.1,
+                    0.1,
+                    0.12,
+                    material::panel_tint(material),
+                ))),
+                border: material::panel_border(material, menu::RADIUS),
+                ..Default::default()
+            };
+            style.text_color = Some(Color::WHITE);
+            style
+        }),
+    )
+    .on_press(Message::ControlPanelPressed)
+    .into()
+}
+
+/// The switch at the top of a detail panel, for what can be turned off.
+fn switch_for(detail: Detail, panel: &Panel) -> Option<Element<'_>> {
+    let (on, message) = match detail {
+        Detail::Wifi => (panel.wifi.as_ref()?.enabled, Message::ToggleWifi),
+        Detail::Bluetooth => (panel.bluetooth.as_ref()?.powered, Message::ToggleBluetooth),
+        Detail::Keyboard | Detail::Sound => return None,
+    };
+    let knob = container(Space::new())
+        .width(SWITCH_KNOB)
+        .height(SWITCH_KNOB)
+        .style(|_| toggle_style_of(SWITCH_KNOB, true));
+    let spacer = Space::new().width(Length::Fill);
+    let content: Element<'_> = if on {
+        row![spacer, knob].into()
+    } else {
+        row![knob, spacer].into()
+    };
+    let track = container(content)
+        .width(SWITCH_WIDTH)
+        .height(SWITCH_HEIGHT)
+        .padding((SWITCH_HEIGHT - SWITCH_KNOB) / 2.0)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(if on {
+                menu::ACCENT
+            } else {
+                Color::from_rgba(1.0, 1.0, 1.0, 0.15)
+            })),
+            border: Border {
+                radius: (SWITCH_HEIGHT / 2.0).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    Some(mouse_area(track).on_press(message).into())
+}
+
+fn detail_list(detail: Detail, panel: &Panel) -> Vec<Element<'_>> {
+    let mut rows: Vec<Element<'_>> = Vec::new();
+    match detail {
+        Detail::Wifi => {
+            let mut heading = None;
+            for network in &panel.networks {
+                let wanted = if network.known {
+                    "Known Networks"
+                } else {
+                    "Other Networks"
+                };
+                if heading != Some(wanted) {
+                    heading = Some(wanted);
+                    rows.push(detail_heading(wanted));
+                }
+                let glyph = match network.strength {
+                    0..=33 => Glyph::WifiWeak,
+                    34..=66 => Glyph::WifiMedium,
+                    _ => Glyph::Wifi,
+                };
+                let lock = network
+                    .secured
+                    .then(|| icons::icon(Glyph::LockSmall, 13.0, DIM));
+                rows.push(detail_row(
+                    Some(glyph),
+                    &network.ssid,
+                    network.connected,
+                    lock,
+                    (!network.connected).then(|| Message::WifiConnect(network.ssid.clone())),
+                ));
+            }
+            if rows.is_empty() {
+                let enabled = panel.wifi.as_ref().is_some_and(|wifi| wifi.enabled);
+                rows.push(detail_note(if enabled {
+                    "No networks found"
+                } else {
+                    "Wi-Fi is off"
+                }));
+            }
+        }
+        Detail::Bluetooth => {
+            for device in &panel.devices {
+                let status = device
+                    .connected
+                    .then(|| text("Connected").size(DETAIL_SIZE).color(DIM).into());
+                rows.push(detail_row(
+                    Some(Glyph::Bluetooth),
+                    &device.name,
+                    device.connected,
+                    status,
+                    Some(Message::BluetoothConnect(
+                        device.path.clone(),
+                        !device.connected,
+                    )),
+                ));
+            }
+            if rows.is_empty() {
+                rows.push(detail_note("No paired devices"));
+            }
+        }
+        Detail::Keyboard => {
+            if let Some(layouts) = &panel.keyboard {
+                for (index, name) in layouts.names.iter().enumerate() {
+                    rows.push(detail_row(
+                        None,
+                        name,
+                        index == layouts.current,
+                        None,
+                        Some(Message::ControlLayout(index)),
+                    ));
+                }
+            }
+        }
+        Detail::Sound => {
+            for (index, output) in panel.outputs.iter().enumerate() {
+                rows.push(detail_row(
+                    Some(Glyph::SpeakerHigh),
+                    &output.name,
+                    output.current,
+                    None,
+                    Some(Message::ControlOutput(index)),
+                ));
+            }
+            if rows.is_empty() {
+                rows.push(detail_note("No sound outputs"));
+            }
+        }
+    }
+    rows
+}
+
+fn detail_heading(heading: &str) -> Element<'_> {
+    container(text(heading).size(DETAIL_SIZE).font(BOLD).color(DIM))
+        .height(DETAIL_ROW)
+        .padding([0.0, DETAIL_ROW_PADDING])
+        .align_y(alignment::Vertical::Center)
+        .into()
+}
+
+fn detail_note(note: &str) -> Element<'_> {
+    container(text(note).size(TITLE_SIZE).color(DIM))
+        .height(DETAIL_ROW)
+        .padding([0.0, DETAIL_ROW_PADDING])
+        .align_y(alignment::Vertical::Center)
+        .into()
+}
+
+/// A row with a round icon, or a check mark without one; `active` lights it.
+fn detail_row<'a>(
+    glyph: Option<Glyph>,
+    name: &str,
+    active: bool,
+    trailing: Option<Element<'a>>,
+    on_press: Option<Message>,
+) -> Element<'a> {
+    let lead: Element<'a> = match glyph {
+        Some(glyph) => {
+            let ink = if active { INK_ON_WHITE } else { Color::WHITE };
+            container(icons::icon(glyph, 13.0, ink))
+                .center(DETAIL_ICON)
+                .style(move |_| toggle_style_of(DETAIL_ICON, active))
+                .into()
+        }
+        None => text(if active { "✓" } else { "" })
+            .size(TITLE_SIZE)
+            .width(DETAIL_ICON)
+            .into(),
+    };
+    let room = WIDTH
+        - 2.0 * DETAIL_INSET
+        - 2.0 * DETAIL_ROW_PADDING
+        - DETAIL_ICON
+        - 8.0
+        - if trailing.is_some() { 74.0 } else { 0.0 };
+    let label = menu::fit(name, TITLE_SIZE, Font::DEFAULT, room);
+    detail_button(
+        container(
+            row![
+                lead,
+                text(label).size(TITLE_SIZE).wrapping(Wrapping::None),
+                Space::new().width(Length::Fill),
+            ]
+            .push(trailing)
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([0.0, DETAIL_ROW_PADDING])
+        .height(DETAIL_ROW)
+        .align_y(alignment::Vertical::Center)
+        .into(),
+        on_press,
+    )
+}
+
+/// A row that lights up under the pointer, like a menu's. Without a message, it doesn't.
+fn detail_button(content: Element<'_>, on_press: Option<Message>) -> Element<'_> {
+    button(content)
+        .on_press_maybe(on_press)
+        .width(Length::Fill)
+        .padding(0)
+        .style(|_, status| button::Style {
+            background: matches!(status, button::Status::Hovered | button::Status::Pressed)
+                .then_some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.12))),
+            text_color: Color::WHITE,
+            border: Border {
+                radius: (menu::RADIUS - DETAIL_INSET).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn detail_separator<'a>() -> Element<'a> {
+    container(
+        container(Space::new())
+            .width(Length::Fill)
+            .height(1)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.15))),
+                ..Default::default()
+            }),
+    )
+    .height(DETAIL_SEPARATOR)
+    .padding([0.0, DETAIL_PADDING_X])
+    .align_y(alignment::Vertical::Center)
+    .into()
+}
+
 /// The panel's slower state, read off the UI thread.
 #[derive(Debug, Clone)]
 pub struct Status {
     pub wifi: Option<Wifi>,
     pub bluetooth: Option<Bluetooth>,
     pub track: Option<Track>,
+    pub networks: Vec<Network>,
+    pub devices: Vec<Device>,
+    pub outputs: Vec<Output>,
 }
 
-pub async fn status() -> Status {
+/// Reads what's shown, including the lists of the detail that's open.
+pub async fn status(detail: Option<Detail>) -> Status {
+    let wifi = network::wifi().await;
+    let wifi_on = wifi.as_ref().is_some_and(|wifi| wifi.enabled);
     Status {
-        wifi: network::wifi().await,
+        wifi,
         bluetooth: bluetooth::bluetooth().await,
         track: media::now_playing().await,
+        networks: if detail == Some(Detail::Wifi) && wifi_on {
+            network::networks().await
+        } else {
+            Vec::new()
+        },
+        devices: if detail == Some(Detail::Bluetooth) {
+            bluetooth::devices().await
+        } else {
+            Vec::new()
+        },
+        outputs: if detail == Some(Detail::Sound) {
+            audio::outputs()
+        } else {
+            Vec::new()
+        },
     }
 }

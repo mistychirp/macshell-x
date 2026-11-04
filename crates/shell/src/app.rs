@@ -99,6 +99,20 @@ pub enum Message {
     Media(media::Control),
     /// Time to reread what the Control Center shows.
     ControlRefresh,
+    /// A module's detail was opened, or left.
+    ControlDetail(Option<control::Detail>),
+    /// A detail panel was pressed somewhere that does nothing.
+    ControlPanelPressed,
+    /// A detail panel's settings row was pressed; carries the settings page.
+    ControlSettings(&'static str),
+    /// A keyboard layout was chosen in the Keyboard detail; carries its index.
+    ControlLayout(usize),
+    /// A sound output was chosen; carries its place in the list.
+    ControlOutput(usize),
+    /// A Wi-Fi network was chosen; carries its name.
+    WifiConnect(String),
+    /// A Bluetooth device was chosen; carries its path, and whether to connect.
+    BluetoothConnect(zbus::zvariant::OwnedObjectPath, bool),
     ControlStatus(control::Status),
     Tick,
     /// A dock icon was pressed; carries the app's id. It becomes a click or a drag.
@@ -458,7 +472,7 @@ impl Shell {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.apply(message);
-        self.update_center_shapes();
+        self.update_panel_shapes();
         self.mark_changed_surfaces();
         task
     }
@@ -527,6 +541,17 @@ impl Shell {
                     self.popup.as_ref().map(|popup| &popup.content),
                     Some(PopupContent::NotificationCenter | PopupContent::ControlCenter)
                 );
+                // Pressing outside a Control Center module's detail goes back to the modules.
+                if self.control.detail.is_some()
+                    && matches!(
+                        self.popup.as_ref().map(|popup| &popup.content),
+                        Some(PopupContent::ControlCenter)
+                    )
+                    && self.surfaces.get(&id) == Some(&Surface::Popup)
+                {
+                    self.control.detail = None;
+                    return Task::none();
+                }
                 // The surfaces of these panels are mostly empty.
                 if matches!(
                     self.surfaces.get(&id),
@@ -609,7 +634,36 @@ impl Shell {
                 }
             }
             Message::ControlRefresh => {
-                return Task::perform(control::status(), Message::ControlStatus);
+                return Task::perform(control::status(self.control.detail), Message::ControlStatus);
+            }
+            Message::ControlDetail(detail) => {
+                self.control.detail = detail;
+                let refresh = Task::done(Message::ControlRefresh);
+                if detail == Some(control::Detail::Wifi) {
+                    let scan = Task::future(network::scan()).discard();
+                    return Task::batch([refresh, scan]);
+                }
+                return refresh;
+            }
+            Message::ControlSettings(page) => {
+                apps::spawn(vec![String::from("kcmshell6"), page.to_owned()]);
+                return self.close_popup();
+            }
+            Message::ControlLayout(index) => {
+                return Task::future(kwin::switch_layout(index)).discard();
+            }
+            Message::ControlOutput(index) => {
+                if let Some(output) = self.control.outputs.get(index) {
+                    output.select();
+                }
+                return Task::done(Message::ControlRefresh);
+            }
+            Message::WifiConnect(ssid) => {
+                return Task::perform(network::connect(ssid), |_| Message::ControlRefresh);
+            }
+            Message::BluetoothConnect(device, connect) => {
+                let task = bluetooth::set_connected(device, connect);
+                return Task::perform(task, |_| Message::ControlRefresh);
             }
             Message::ControlStatus(status) => {
                 let art = status.track.as_ref().and_then(|track| track.art.clone());
@@ -625,6 +679,9 @@ impl Shell {
                 self.control.wifi = status.wifi;
                 self.control.bluetooth = status.bluetooth;
                 self.control.track = status.track;
+                self.control.networks = status.networks;
+                self.control.devices = status.devices;
+                self.control.outputs = status.outputs;
             }
             Message::SwitchLayout(index) => {
                 let switch = Task::future(kwin::switch_layout(index)).discard();
@@ -1046,6 +1103,7 @@ impl Shell {
                 None => return Task::none(),
             },
             menubar::Title::ControlCenter => {
+                self.control.detail = None;
                 self.control.volume = audio::volume();
                 let reread = Task::perform(brightness::level(), Message::BrightnessRead);
                 let anchor = self.bar().screen_edge_anchor();
@@ -1462,21 +1520,22 @@ impl Shell {
         })
     }
 
-    /// Keeps Notification Center's glass under its cards.
-    fn update_center_shapes(&mut self) {
+    /// Keeps the glass of the panels whose content changes while they're open under that content.
+    fn update_panel_shapes(&mut self) {
         let Some(popup) = &mut self.popup else {
             return;
         };
-        if !matches!(popup.content, PopupContent::NotificationCenter) {
-            return;
-        }
-        let shapes = notification_center::material_shapes(
-            &self.notifications,
-            &self.open_groups,
-            self.center_scroll as usize,
-            self.notification_hovered,
-            popup.size.1 as f32,
-        );
+        let shapes = match popup.content {
+            PopupContent::NotificationCenter => notification_center::material_shapes(
+                &self.notifications,
+                &self.open_groups,
+                self.center_scroll as usize,
+                self.notification_hovered,
+                popup.size.1 as f32,
+            ),
+            PopupContent::ControlCenter => control::material_shapes(&self.control),
+            _ => return,
+        };
         if shapes != popup.shapes
             && let (Some(material), Some(target)) = (&self.material, &popup.material)
         {

@@ -28,7 +28,7 @@ const MAX_LABEL_CHARS: usize = 48;
 pub const RADIUS: f32 = 13.0;
 
 /// macOS's selection blue.
-const ACCENT: Color = Color::from_rgba(0.0, 0.45, 1.0, 0.95);
+pub const ACCENT: Color = Color::from_rgba(0.0, 0.45, 1.0, 0.95);
 const DISABLED_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.4);
 
 #[derive(Debug, Clone)]

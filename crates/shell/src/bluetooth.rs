@@ -83,3 +83,71 @@ pub async fn set_powered(bluetooth: Bluetooth, powered: bool) {
         );
     }
 }
+
+/// A device that's been paired with the adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    pub path: OwnedObjectPath,
+    pub name: String,
+    pub connected: bool,
+}
+
+/// The paired devices: connected ones first, then by name.
+pub async fn devices() -> Vec<Device> {
+    async {
+        let connection = dbus::system().await?;
+        let objects = ObjectManagerProxy::builder(&connection)
+            .destination(SERVICE)
+            .ok()?
+            .path("/")
+            .ok()?
+            .build()
+            .await
+            .ok()?
+            .get_managed_objects()
+            .await
+            .ok()?;
+        let flag = |value: Option<&OwnedValue>| {
+            value
+                .and_then(|value| bool::try_from(value).ok())
+                .unwrap_or(false)
+        };
+        let mut devices: Vec<Device> = objects
+            .iter()
+            .filter_map(|(path, interfaces)| {
+                let device = interfaces.get(DEVICE)?;
+                flag(device.get("Paired")).then(|| Device {
+                    path: path.clone(),
+                    name: device
+                        .get("Alias")
+                        .or_else(|| device.get("Name"))
+                        .and_then(|name| String::try_from(name.clone()).ok())
+                        .unwrap_or_else(|| String::from("Device")),
+                    connected: flag(device.get("Connected")),
+                })
+            })
+            .collect();
+        devices.sort_by_key(|device| (!device.connected, device.name.clone()));
+        Some(devices)
+    }
+    .await
+    .unwrap_or_default()
+}
+
+/// Connects to a device, or disconnects from it.
+pub async fn set_connected(device: OwnedObjectPath, connected: bool) {
+    let result = async {
+        let connection = dbus::system().await.ok_or(zbus::Error::Unsupported)?;
+        let device = zbus::Proxy::new(&connection, SERVICE, device, DEVICE).await?;
+        let method = if connected { "Connect" } else { "Disconnect" };
+        device.call_method(method, &()).await?;
+        zbus::Result::Ok(())
+    }
+    .await;
+    if let Err(err) = result {
+        log::warn!(
+            "can't {} a Bluetooth device: {err}",
+            if connected { "connect" } else { "disconnect" }
+        );
+    }
+}

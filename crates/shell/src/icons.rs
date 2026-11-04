@@ -11,6 +11,8 @@ pub enum Glyph {
     /// Two switches: the Control Center's icon.
     ControlCenter,
     Wifi,
+    WifiMedium,
+    WifiWeak,
     WifiOff,
     Bluetooth,
     BluetoothOff,
@@ -26,6 +28,10 @@ pub enum Glyph {
     Previous,
     Next,
     Close,
+    /// Where sound goes: a screen with sound coming from it, like AirPlay's.
+    Outputs,
+    /// A network that wants a password.
+    LockSmall,
     /// What marks a menu item that opens a submenu.
     Chevron,
 }
@@ -47,6 +53,32 @@ impl Glyph {
                 <path d="M5.4 12.7a9.6 9.6 0 0 1 13.2 0"/>
                 <path d="M8.8 16.2a4.7 4.7 0 0 1 6.4 0"/>
                 <circle cx="12" cy="19.6" r="1.7" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::WifiMedium => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round">
+                <path d="M5.4 12.7a9.6 9.6 0 0 1 13.2 0"/>
+                <path d="M8.8 16.2a4.7 4.7 0 0 1 6.4 0"/>
+                <circle cx="12" cy="19.6" r="1.7" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::WifiWeak => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round">
+                <path d="M8.8 16.2a4.7 4.7 0 0 1 6.4 0"/>
+                <circle cx="12" cy="19.6" r="1.7" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::Outputs => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6.6 17.2a8.4 8.4 0 1 1 10.8 0"/>
+                <path d="M8.9 14.2a4.6 4.6 0 1 1 6.2 0"/>
+                <path d="M12 15.2l5 6H7z" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::LockSmall => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <rect x="6" y="11" width="12" height="9" rx="2" fill="#000"/>
+                <path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3" fill="none" stroke="#000" stroke-width="2"/>
                 </svg>"##
             }
             Glyph::WifiOff => {
