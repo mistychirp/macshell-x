@@ -34,6 +34,8 @@ namespace Macshell
 
 /// Brightness probes downsample the background to this many pixels before reading it back.
 static constexpr QSize s_probeSize(32, 4);
+/// How far past the edges of glass to repaint when it changes, in logical pixels.
+static constexpr int s_edgeRepaint = 2;
 
 /// Saturation as a color matrix, applied to row vectors like KWin's blur does.
 static QMatrix4x4 saturationMatrix(float saturation)
@@ -81,6 +83,7 @@ GlassEffect::GlassEffect()
         if (auto it = m_windows.find(w); it != m_windows.end()) {
             effects->makeOpenGLContextCurrent();
             m_windows.erase(it);
+            effects->addRepaintFull();
         }
     });
     connect(effects, &EffectsHandler::viewRemoved, this, [this](RenderView *view) {
@@ -139,6 +142,9 @@ void GlassEffect::updateWindow(EffectWindow *w)
             effects->makeOpenGLContextCurrent();
             m_windows.erase(it);
             w->addRepaintFull();
+            // At a fractional scale, the edge of glass can land in a row of device pixels that the
+            // window's own repaint misses, and stay on screen until something else repaints there.
+            effects->addRepaintFull();
         }
         return;
     }
@@ -160,6 +166,12 @@ void GlassEffect::updateWindow(EffectWindow *w)
     data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.lensStrength * 2) + blurReach);
     data.item->setEffectBoundingRect(bounds);
     w->addRepaintFull();
+
+    // Past the edges of where the glass was and now is, for the same reason as when it goes away.
+    const Rect now = bounds.translated(w->pos()).roundedOut();
+    const Rect touched = data.lastBounds.isEmpty() ? now : now | data.lastBounds;
+    data.lastBounds = now;
+    effects->addRepaint(Rect(touched.x() - s_edgeRepaint, touched.y() - s_edgeRepaint, touched.width() + 2 * s_edgeRepaint, touched.height() + 2 * s_edgeRepaint));
 }
 
 void GlassEffect::prePaintScreen(ScreenPrePaintData &data)

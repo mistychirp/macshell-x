@@ -82,6 +82,8 @@ struct WindowGlass {
     std::unordered_map<KWin::RenderView *, std::vector<ShapeRender>> render;
     /// A repaint is scheduled for when the next brightness measurement is due.
     bool probeScheduled = false;
+    /// Where the glass last was, in global logical coordinates.
+    KWin::Rect lastBounds;
 };
 
 /// Glass behind the shapes clients ask for with macshell-glass-v1, the way Tahoe draws it: a flat
