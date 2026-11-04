@@ -25,12 +25,17 @@ let
 
     ${polkit-kde-agent-1}/libexec/polkit-kde-authentication-agent-1 &
 
-    # The shell, restarted if it crashes.
-    until ${macshell}/bin/macshell; do
+    # The shell, restarted if it crashes, for as long as this KWin lives. If KWin itself crashes,
+    # its wrapper starts a new one on the same socket, which runs a new copy of this script; this
+    # copy has to bow out, or there would be two shells.
+    kwin_pid=$PPID
+    while kill -0 "$kwin_pid" 2>/dev/null; do
+      if ${macshell}/bin/macshell; then
+        systemctl --user stop macshell-session.target
+        exit 0
+      fi
       sleep 1
     done
-
-    systemctl --user stop macshell-session.target
   '';
 
   session-script = pkgs.writeShellScript "macshell-session" ''
