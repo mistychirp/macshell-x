@@ -17,6 +17,10 @@ Patch: set the cursor whenever the pointer enters a surface (`restore_cursor` in
 `src/multi_window.rs`). Upstream only sets it when a surface's interaction changes, so after a window
 edge's resize cursor, the desktop and the bars went on showing it.
 
+Patch: map cursors the way the shell wants them (`mouse_interaction` in `src/conversion.rs`). The hand
+and grab cursors of iced's buttons, sliders and mouse areas stay the arrow, like on macOS, and `Idle`
+is the arrow rather than upstream's busy cursor.
+
 The first commit that adds this directory contains the pristine 0.19.1 sources, so
 `git diff <that commit> -- vendor/iced_layershell` shows the patch. Drop the vendored copy
 once upstream ships the fix.

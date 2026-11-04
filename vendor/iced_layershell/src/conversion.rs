@@ -171,14 +171,14 @@ pub(crate) fn mouse_interaction(interaction: mouse::Interaction) -> String {
     use layershellev::reexport::wp_cursor_shape_device_v1::{Shape, ShapeName};
     use mouse::Interaction;
     match interaction {
-        Interaction::None => Shape::Default.name().to_owned(),
-        Interaction::Idle => Shape::Wait.name().to_owned(),
+        Interaction::None | Interaction::Idle => Shape::Default.name().to_owned(),
         Interaction::Wait => Shape::Wait.name().to_owned(),
-        Interaction::Pointer => Shape::Pointer.name().to_owned(),
-        Interaction::Grab => Shape::Grab.name().to_owned(),
+        // Like macOS, the arrow stays over things you can click or drag.
+        Interaction::Pointer | Interaction::Grab | Interaction::Grabbing => {
+            Shape::Default.name().to_owned()
+        }
         Interaction::Text => Shape::Text.name().to_owned(),
         Interaction::ZoomIn => Shape::ZoomIn.name().to_owned(),
-        Interaction::Grabbing => Shape::Grabbing.name().to_owned(),
         Interaction::Crosshair => Shape::Crosshair.name().to_owned(),
         Interaction::NotAllowed => Shape::NotAllowed.name().to_owned(),
         Interaction::ResizingVertically => Shape::NsResize.name().to_owned(),

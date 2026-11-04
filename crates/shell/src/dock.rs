@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
-use iced_widget::core::{Background, Border, Color, Font, Length, Point, Rectangle, Vector, mouse};
+use iced_widget::core::{Background, Border, Color, Font, Length, Point, Rectangle, Vector};
 use iced_widget::{Space, container, image, mouse_area, pin, stack, text};
 
 use crate::app::{Element, Message};
@@ -658,8 +658,7 @@ pub fn view<'a>(
         // A press becomes a click or a drag depending on what the pointer does next.
         let icon = mouse_area(icon(&item.app, rect.width))
             .on_press(Message::DockPressed(item.app.id.clone()))
-            .on_right_press(Message::DockMenuRequested(item.app.id.clone()))
-            .interaction(mouse::Interaction::Pointer);
+            .on_right_press(Message::DockMenuRequested(item.app.id.clone()));
         layers.push(pin(icon).x(rect.x).y(rect.y - lift).into());
 
         if !item.windows.is_empty() {
@@ -681,8 +680,7 @@ pub fn view<'a>(
         // pointer grab needs the press to still be held.
         let icon = mouse_area(icon_image(handle, place.name(), rect.width))
             .on_press(Message::PlaceClicked(place))
-            .on_right_press(Message::PlaceMenuRequested(place))
-            .interaction(mouse::Interaction::Pointer);
+            .on_right_press(Message::PlaceMenuRequested(place));
         layers.push(pin(icon).x(rect.x).y(rect.y).into());
     }
 
