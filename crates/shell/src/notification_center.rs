@@ -7,14 +7,14 @@ use std::collections::{HashMap, HashSet};
 
 use iced_widget::core::mouse::ScrollDelta;
 use iced_widget::core::text::{Shaping, Wrapping};
-use iced_widget::core::{Alignment, Background, Border, Color, Font, Length, font};
+use iced_widget::core::{Alignment, Color, Font, Length, font};
 use iced_widget::graphics::text::cosmic_text::{self, Attrs, Buffer, Metrics, SwashCache, Weight};
 use iced_widget::{Space, container, image, mouse_area, pin, row, stack, text};
 
 use crate::app::{Element, Message};
 use crate::notifications::{
     CARD_WIDTH, CLOSE_SIZE, Notification, OVERHANG, RADIUS, card, close_button, close_shape,
-    panel_style,
+    control_shape, control_style, panel_style,
 };
 use crate::{dock, material, menu, menubar};
 
@@ -25,7 +25,6 @@ const CARD_X: f32 = WIDTH - RIGHT_PADDING - CARD_WIDTH;
 const GAP: f32 = 8.0;
 const HEADER_HEIGHT: f32 = 26.0;
 const SHOW_LESS_WIDTH: f32 = 76.0;
-const CONTROL_HEIGHT: f32 = 22.0;
 /// The edge of the group's next card, under its first.
 const PEEK_INSET: f32 = 14.0;
 const PEEK_HEIGHT: f32 = 9.0;
@@ -160,12 +159,10 @@ pub fn material_shapes(
         match row {
             Row::Header { .. } => {
                 let close_x = CARD_X + CARD_WIDTH - CLOSE_SIZE;
-                shapes.push(shape(
+                shapes.push(control_shape(
                     close_x - 6.0 - SHOW_LESS_WIDTH,
                     y,
                     SHOW_LESS_WIDTH,
-                    CONTROL_HEIGHT,
-                    CONTROL_HEIGHT / 2.0,
                 ));
                 shapes.push(close_shape(close_x, y));
             }
@@ -406,20 +403,8 @@ fn header<'a>(app_key: &str, material: Option<material::Kind>) -> Element<'a> {
     let show_less = mouse_area(
         container(text("Show less").size(12).color(Color::WHITE))
             .center_x(SHOW_LESS_WIDTH)
-            .center_y(CONTROL_HEIGHT)
-            .style(move |_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(
-                    1.0,
-                    1.0,
-                    1.0,
-                    if material.is_some() { 0.08 } else { 0.2 },
-                ))),
-                border: Border {
-                    radius: (CONTROL_HEIGHT / 2.0).into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
+            .center_y(CLOSE_SIZE)
+            .style(move |_| control_style(material, CLOSE_SIZE / 2.0)),
     )
     .on_press(Message::NotificationGroupClosed(app_key.to_owned()));
 

@@ -363,15 +363,7 @@ pub fn close_button<'a>(on_press: Message, material: Option<material::Kind>) -> 
     mouse_area(
         container(icons::icon(Glyph::Close, 9.0, CLOSE_INK))
             .center(CLOSE_SIZE)
-            .style(move |_| {
-                let mut style = panel_style(material, CLOSE_SIZE / 2.0);
-                // Tahoe's is a little lighter than what's behind it.
-                if material == Some(material::Kind::Glass) {
-                    style.background =
-                        Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.06)));
-                }
-                style
-            }),
+            .style(move |_| control_style(material, CLOSE_SIZE / 2.0)),
     )
     .on_press(on_press)
     .into()
@@ -379,12 +371,26 @@ pub fn close_button<'a>(on_press: Message, material: Option<material::Kind>) -> 
 
 /// The glass of a [`close_button`] at this position.
 pub fn close_shape(x: f32, y: f32) -> material::Shape {
+    control_shape(x, y, CLOSE_SIZE)
+}
+
+/// The glass of a small control like a [`close_button`], [`CLOSE_SIZE`] tall.
+pub fn control_shape(x: f32, y: f32, width: f32) -> material::Shape {
     material::Shape {
-        rect: (x as i32, y as i32, CLOSE_SIZE as i32, CLOSE_SIZE as i32),
+        rect: (x as i32, y as i32, width as i32, CLOSE_SIZE as i32),
         radius: (CLOSE_SIZE / 2.0) as i32,
-        // Untinted: it sits on top of a card, whose tint would double up.
+        // Untinted: it can sit on top of a card, whose tint would double up.
         style: material::Style::Liquid,
     }
+}
+
+/// A small control's own fill. Tahoe's are a little lighter than what's behind them.
+pub fn control_style(material: Option<material::Kind>, radius: f32) -> container::Style {
+    let mut style = panel_style(material, radius);
+    if material == Some(material::Kind::Glass) {
+        style.background = Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.06)));
+    }
+    style
 }
 
 /// A panel's own fill: nothing over glass, enough to read its text otherwise.
