@@ -28,6 +28,7 @@ const TITLE_HEIGHT: f32 = 22.0;
 const LOGO_SIZE: f32 = 16.0;
 /// Width of a status item on the right, like the keyboard layout.
 const STATUS_WIDTH: f32 = 34.0;
+const CONTROL_CENTER_WIDTH: f32 = 44.0;
 const INPUT_TEXT_SIZE: f32 = 10.0;
 /// Between the bottom of the bar and the top of a menu hanging from it.
 const MENU_GAP: i32 = 4;
@@ -195,8 +196,8 @@ impl Bar<'_> {
 
         // Status items line up leftward from the clock.
         let mut x = self.width - PADDING_X - self.clock_width();
-        x -= STATUS_WIDTH;
-        titles.push((Title::ControlCenter, rect(x, STATUS_WIDTH)));
+        x -= CONTROL_CENTER_WIDTH;
+        titles.push((Title::ControlCenter, rect(x, CONTROL_CENTER_WIDTH)));
         if self.input.is_some() {
             x -= STATUS_WIDTH;
             titles.push((Title::Input, rect(x, STATUS_WIDTH)));
@@ -318,7 +319,7 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
         Some(_) => Color::TRANSPARENT,
         None => Color::from_rgba(0.0, 0.0, 0.0, 0.3),
     };
-    let highlight = Color { a: 0.2, ..ink };
+    let highlight = Color { a: 0.3, ..ink };
 
     let mut left = row![].align_y(Alignment::Center);
     let mut right: Vec<Element<'a>> = Vec::new();
@@ -375,7 +376,7 @@ fn title_item<'a>(
             .style(move |_| container::Style {
                 background: highlighted.then_some(Background::Color(highlight)),
                 border: Border {
-                    radius: 7.0.into(),
+                    radius: (rect.height / 2.0).into(),
                     ..Default::default()
                 },
                 ..Default::default()
