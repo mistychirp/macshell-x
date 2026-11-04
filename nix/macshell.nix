@@ -18,6 +18,7 @@ rustPlatform.buildRustPackage {
     fileset = lib.fileset.unions [
       ../Cargo.toml
       ../Cargo.lock
+      ../assets
       ../crates
       ../vendor
       ../protocols
