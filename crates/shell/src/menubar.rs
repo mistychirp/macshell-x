@@ -157,6 +157,7 @@ pub fn material_shapes(width: f32) -> Vec<Shape> {
 }
 
 /// What the bar shows, from the shell's state.
+#[derive(Debug)]
 pub struct Bar<'a> {
     /// Width of the bar surface.
     pub width: f32,

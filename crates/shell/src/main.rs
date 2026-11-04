@@ -18,6 +18,7 @@ mod network;
 mod places;
 mod plasma_protocol;
 mod stack;
+mod wallpaper;
 
 fn main() -> Result<(), iced_layershell::Error> {
     env_logger::Builder::from_env(

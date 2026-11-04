@@ -59,6 +59,7 @@ const LAUNCH_HEIGHT: f32 = ICON_SIZE * 0.5;
 const ATTENTION_HOP: f32 = 0.6;
 const ATTENTION_HEIGHT: f32 = ICON_SIZE * 0.6;
 
+#[derive(Debug)]
 pub struct Item {
     pub app: Rc<App>,
     /// Open windows of this app, most recently focused first.

@@ -952,7 +952,6 @@ where
         }
 
         if !self.messages.is_empty() {
-            ev.request_refresh_all(RefreshRequest::NextFrame);
             let (caches, application) = self.user_interfaces.extract_all();
 
             // Update application
@@ -963,8 +962,12 @@ where
                 &mut self.waiting_layer_shell_actions,
             );
 
-            for (_, window) in self.window_manager.iter_mut() {
+            // macshell patch: only the windows the update changed, rather than all of them.
+            for (iced_id, window) in self.window_manager.iter_mut() {
                 window.state.synchronize(application);
+                if crate::redraw::take_changed(iced_id) {
+                    ev.request_refresh(window.id, RefreshRequest::NextFrame);
+                }
             }
             iced_debug::theme_changed(|| {
                 self.window_manager

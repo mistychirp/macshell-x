@@ -46,6 +46,11 @@ Keyboard layouts come from KWin's `org.kde.keyboard` D-Bus interface.
 # default app for folders (`xdg-mime query default inode/directory`).
 file_manager = "org.kde.dolphin"
 
+[desktop]
+# Wallpaper image (PNG or JPEG), filling the screen. Without one, the shell leaves the background
+# to whatever else draws it; KWin doesn't draw one itself.
+wallpaper = "~/Pictures/wallpaper.png"
+
 [dock]
 # Desktop entry ids (the .desktop file name without the extension), in dock order.
 # The dock rewrites this when you drag icons around or use Keep in Dock.

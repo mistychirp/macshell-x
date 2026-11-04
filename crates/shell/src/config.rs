@@ -8,11 +8,20 @@ use serde::Deserialize;
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub desktop: DesktopConfig,
     pub dock: DockConfig,
     pub menubar: MenuBarConfig,
     /// Desktop entry id of the app that opens folders and the trash. Defaults to the system's
     /// default app for folders.
     pub file_manager: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DesktopConfig {
+    /// Path of the wallpaper image, which may start with `~/`. Without one, the shell leaves the
+    /// background to whatever else draws it.
+    pub wallpaper: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

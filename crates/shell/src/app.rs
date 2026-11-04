@@ -24,7 +24,7 @@ use crate::config::{self, Config};
 use crate::kwin::{self, KeyboardLayouts, WindowInfo};
 use crate::material::{self, Material, MaterialSurface};
 use crate::places::{self, Place};
-use crate::{audio, bluetooth, control, dock, media, menu, menubar, network, stack};
+use crate::{audio, bluetooth, control, dock, media, menu, menubar, network, stack, wallpaper};
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
 
@@ -59,6 +59,7 @@ pub fn run() -> Result<(), iced_layershell::Error> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Surface {
+    Wallpaper,
     MenuBar,
     Dock,
     Popup,
@@ -95,6 +96,8 @@ pub enum Message {
     DockFrame(Instant),
     SurfaceOpened(IcedId, Size),
     SurfaceResized(IcedId, Size),
+    /// The wallpaper finished uploading to the GPU.
+    WallpaperLoaded(Result<iced_runtime::image::Allocation, iced_runtime::image::Error>),
     /// A surface's `wl_surface`, if it could be reached, to put material behind.
     SurfaceReached(IcedId, Option<WlSurface>),
     /// A menu bar title was pressed.
@@ -143,6 +146,12 @@ enum PopupContent {
 
 struct Shell {
     surfaces: HashMap<IcedId, Surface>,
+    /// A description of what each surface last showed, to tell when it needs a redraw.
+    surface_contents: HashMap<IcedId, String>,
+    wallpaper: Option<image::Handle>,
+    /// Keeps the wallpaper on the GPU. Big images upload in the background and draw as nothing
+    /// until they're ready, and the wallpaper doesn't otherwise redraw to catch up.
+    wallpaper_loaded: Option<iced_runtime::image::Allocation>,
     apps: AppIndex,
     pinned: Vec<String>,
     /// The app of the focused window.
@@ -261,6 +270,13 @@ impl Shell {
 
         let shell = Self {
             surfaces: HashMap::from([(menubar_id, Surface::MenuBar), (dock_id, Surface::Dock)]),
+            surface_contents: HashMap::new(),
+            wallpaper_loaded: None,
+            wallpaper: config
+                .desktop
+                .wallpaper
+                .as_deref()
+                .and_then(wallpaper::load),
             apps,
             pinned: config.dock.pinned,
             focused_app: None,
@@ -306,10 +322,53 @@ impl Shell {
         let mut shell = shell;
         shell.update_place_icons();
 
-        (shell, Task::batch([open_menubar, open_dock]))
+        let mut opening = vec![open_menubar, open_dock];
+        if shell.wallpaper.is_some() {
+            let (id, open) = Message::layershell_open(wallpaper::settings());
+            shell.surfaces.insert(id, Surface::Wallpaper);
+            opening.push(open);
+        }
+
+        (shell, Task::batch(opening))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.apply(message);
+        self.mark_changed_surfaces();
+        task
+    }
+
+    /// Asks for a redraw of the surfaces whose content changed, so that a clock tick doesn't
+    /// redraw the wallpaper.
+    fn mark_changed_surfaces(&mut self) {
+        let surfaces = &self.surfaces;
+        self.surface_contents
+            .retain(|id, _| surfaces.contains_key(id));
+
+        for (&id, &surface) in &self.surfaces {
+            let content = match surface {
+                Surface::Wallpaper => self.wallpaper_loaded.is_some().to_string(),
+                Surface::MenuBar => format!("{:?}", self.bar()),
+                Surface::Dock => {
+                    format!(
+                        "{:?} {:?} {:?}",
+                        self.dock, self.place_icons, self.dock_layout
+                    )
+                }
+                // Short-lived, with live content.
+                Surface::Popup | Surface::Alert => {
+                    iced_layershell::redraw::mark_changed(id);
+                    continue;
+                }
+            };
+            if self.surface_contents.get(&id) != Some(&content) {
+                iced_layershell::redraw::mark_changed(id);
+                self.surface_contents.insert(id, content);
+            }
+        }
+    }
+
+    fn apply(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::WindowsChanged(windows) => {
                 self.focused_app = windows
@@ -493,6 +552,16 @@ impl Shell {
                 }
                 return relayout;
             }
+            Message::SurfaceOpened(id, _)
+                if self.surfaces.get(&id) == Some(&Surface::Wallpaper) =>
+            {
+                if let Some(handle) = &self.wallpaper {
+                    return iced_runtime::image::allocate(handle.clone())
+                        .map(Message::WallpaperLoaded);
+                }
+            }
+            Message::WallpaperLoaded(Ok(allocation)) => self.wallpaper_loaded = Some(allocation),
+            Message::WallpaperLoaded(Err(err)) => log::error!("can't load the wallpaper: {err}"),
             Message::SurfaceOpened(id, size) if id == self.menubar_id => {
                 self.menubar_width = size.width;
                 if self.menubar_material.is_none() {
@@ -772,8 +841,8 @@ impl Shell {
                 }
                 _ => target.destroy(),
             },
-            // Closed before it could be reached.
-            None => target.destroy(),
+            // Closed before it could be reached, or not a surface with material.
+            Some(Surface::Wallpaper) | None => target.destroy(),
         }
     }
 
@@ -1034,6 +1103,10 @@ impl Shell {
 
     fn view(&self, id: IcedId) -> Element<'_> {
         match self.surfaces.get(&id) {
+            Some(Surface::Wallpaper) => match &self.wallpaper {
+                Some(handle) => wallpaper::view(handle),
+                None => Space::new().into(),
+            },
             Some(Surface::MenuBar) => menubar::view(&self.bar()),
             Some(Surface::Dock) => dock::view(
                 &self.dock,
