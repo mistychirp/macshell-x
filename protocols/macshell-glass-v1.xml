@@ -97,6 +97,8 @@
              summary="a light blur through a lens, darkened a little; for controls floating over content"/>
       <entry name="bubble" value="4" since="2"
              summary="a dark tint over a lens, for small labels"/>
+      <entry name="control" value="5" since="2"
+             summary="a lens with a visible edge and a slight veil, for control modules"/>
     </enum>
 
     <request name="clear">

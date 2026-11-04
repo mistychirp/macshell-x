@@ -35,6 +35,9 @@ uniform float edgeFade;
 uniform float edgeGain;
 uniform float edgeWhite;
 uniform float outerAlpha;
+// A visible line on top of a fading edge: how much its outer device pixel whitens. The next one
+// does about a third as much. 0 means none.
+uniform float edgeLine;
 uniform float opacity;
 
 // Texture coordinates: 0 to 1 across the shape, with y pointing up.
@@ -102,6 +105,9 @@ void main(void)
     vec3 edge = mix(min(texture(wide, uv).rgb * edgeGain, vec3(1.0)), vec3(1.0), edgeWhite);
     if (edgeFade > 0.0) {
         color.rgb = mix(color.rgb, edge, 1.0 - smoothstep(0.0, edgeFade, -d));
+        float pixels = -d * deviceScale;
+        float line = band(pixels, 0.0, 1.0) + band(pixels, 1.0, 2.0) * 0.33;
+        color.rgb = mix(color.rgb, vec3(1.0), line * edgeLine);
     } else {
         float pixels = -d * deviceScale;
         color.rgb = mix(color.rgb, edge, band(pixels, 1.0, 3.0));

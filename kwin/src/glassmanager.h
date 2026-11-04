@@ -33,6 +33,7 @@ enum class Style {
     Transparent,
     Liquid,
     Bubble,
+    Control,
 };
 
 struct Shape {

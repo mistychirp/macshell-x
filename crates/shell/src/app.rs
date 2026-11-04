@@ -12,7 +12,7 @@ use iced_layershell::daemon;
 use iced_layershell::reexport::{IcedId, PopupAnchor, PopupGravity, Task, WithConnection};
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
-use iced_widget::core::{Color, Event, Point, Size, Theme, mouse, theme, window};
+use iced_widget::core::{Color, Event, Point, Size, Theme, event, mouse, theme, window};
 use iced_widget::renderer::Renderer;
 use iced_widget::{Space, image};
 use wayland_client::Connection;
@@ -24,7 +24,9 @@ use crate::config::{self, Config};
 use crate::kwin::{self, KeyboardLayouts, WindowInfo};
 use crate::material::{self, Material, MaterialSurface};
 use crate::places::{self, Place};
-use crate::{audio, bluetooth, control, dock, media, menu, menubar, network, stack, wallpaper};
+use crate::{
+    audio, bluetooth, brightness, control, dock, media, menu, menubar, network, stack, wallpaper,
+};
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
 
@@ -73,6 +75,15 @@ pub enum Message {
     KeyboardLayoutsChanged(KeyboardLayouts),
     /// A layout was chosen in the keyboard layout menu; carries its index.
     SwitchLayout(usize),
+    /// The Control Center's keyboard module was pressed.
+    NextLayout,
+    Screenshot,
+    LockScreen,
+    /// The Control Center's display slider moved.
+    BrightnessChanged(f32),
+    BrightnessReleased,
+    /// The monitor's brightness was read, if it could be.
+    BrightnessRead(Option<f32>),
     /// The Control Center's volume slider moved.
     VolumeChanged(f32),
     VolumeReleased,
@@ -90,6 +101,8 @@ pub enum Message {
     PointerMoved(IcedId, Point),
     /// The left button was released over (or while grabbed by) a surface.
     PointerReleased(IcedId),
+    /// A button was pressed on a surface, and no widget there took it.
+    SurfacePressed(IcedId),
     DockPointerMoved(Point),
     DockPointerLeft,
     /// An animation frame for dock magnification.
@@ -322,7 +335,12 @@ impl Shell {
         let mut shell = shell;
         shell.update_place_icons();
 
-        let mut opening = vec![open_menubar, open_dock];
+        // Read now, so Control Center knows its size when it opens; the read takes a while.
+        let mut opening = vec![
+            open_menubar,
+            open_dock,
+            Task::perform(brightness::level(), Message::BrightnessRead),
+        ];
         if shell.wallpaper.is_some() {
             let (id, open) = Message::layershell_open(wallpaper::settings());
             shell.surfaces.insert(id, Surface::Wallpaper);
@@ -392,8 +410,43 @@ impl Shell {
                     .then(|| layouts.names.get(layouts.current))
                     .flatten()
                     .map(|name| menubar::input_label(name));
+                self.control.keyboard = Some(layouts.clone());
                 self.keyboard_layouts = Some(layouts);
             }
+            // A popup's grab only closes it for clicks on other apps. The wallpaper, the bar and the
+            // dock are ours, so they have to do it themselves.
+            Message::SurfacePressed(id) => {
+                if matches!(
+                    self.surfaces.get(&id),
+                    Some(Surface::Wallpaper | Surface::MenuBar | Surface::Dock)
+                ) {
+                    return self.close_popup();
+                }
+            }
+            Message::NextLayout => {
+                if let Some(layouts) = &self.keyboard_layouts {
+                    let next = (layouts.current + 1) % layouts.names.len().max(1);
+                    return Task::future(kwin::switch_layout(next)).discard();
+                }
+            }
+            Message::Screenshot => {
+                apps::spawn(vec![String::from("spectacle")]);
+                return self.close_popup();
+            }
+            Message::LockScreen => {
+                menubar::SystemAction::Lock.run();
+                return self.close_popup();
+            }
+            Message::BrightnessChanged(level) => {
+                self.control.brightness = Some(level);
+                brightness::set_level(level);
+            }
+            Message::BrightnessReleased => {
+                if let Some(level) = self.control.brightness {
+                    brightness::set_level(level);
+                }
+            }
+            Message::BrightnessRead(level) => self.control.brightness = level,
             Message::VolumeChanged(level) => {
                 if let Some(volume) = &mut self.control.volume {
                     volume.level = level;
@@ -744,8 +797,17 @@ impl Shell {
             },
             menubar::Title::ControlCenter => {
                 self.control.volume = audio::volume();
-                let open = self.open_bar_popup(title, control::size(), PopupContent::ControlCenter);
-                return Task::batch([open, Task::done(Message::ControlRefresh)]);
+                let reread = Task::perform(brightness::level(), Message::BrightnessRead);
+                let anchor = self.bar().right_edge_anchor();
+                let settings = IcedNewPopupSettings::new(
+                    self.menubar_id,
+                    control::size(&self.control),
+                    anchor,
+                )
+                .anchor(PopupAnchor::BottomRight)
+                .gravity(PopupGravity::BottomLeft);
+                let open = self.open_popup(Some(title), settings, PopupContent::ControlCenter);
+                return Task::batch([open, reread, Task::done(Message::ControlRefresh)]);
             }
         };
         let size = menu::size(&entries);
@@ -827,7 +889,7 @@ impl Shell {
                     let shapes = match popup.content {
                         PopupContent::Menu(_) => menu::material_shapes(popup.size),
                         PopupContent::Downloads(_) => stack::material_shapes(popup.size),
-                        PopupContent::ControlCenter => control::material_shapes(popup.size),
+                        PopupContent::ControlCenter => control::material_shapes(&self.control),
                     };
                     material.set_shapes(&target, &shapes);
                     popup.material = Some(target);
@@ -1167,7 +1229,7 @@ impl Shell {
             kwin::windows().map(Message::WindowsChanged),
             kwin::keyboard_layouts().map(Message::KeyboardLayoutsChanged),
             time::every(Duration::from_secs(1)).map(|_| Message::Tick),
-            iced_futures::event::listen_with(|event, _, id| match event {
+            iced_futures::event::listen_with(|event, status, id| match event {
                 Event::Window(window::Event::Opened { size, .. }) => {
                     Some(Message::SurfaceOpened(id, size))
                 }
@@ -1177,6 +1239,11 @@ impl Shell {
                 Event::Window(window::Event::Closed) => Some(Message::SurfaceClosed(id)),
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
                     Some(Message::PointerMoved(id, position))
+                }
+                Event::Mouse(mouse::Event::ButtonPressed(_))
+                    if status == event::Status::Ignored =>
+                {
+                    Some(Message::SurfacePressed(id))
                 }
                 Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                     Some(Message::PointerReleased(id))

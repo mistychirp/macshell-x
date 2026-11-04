@@ -51,6 +51,11 @@ struct GlassSettings {
     float liquidEdgeFade = 2.0;
     float liquidEdgeGain = 1.06;
 
+    /// Control modules, like Control Center's capsules: liquid glass with a slight white veil, and
+    /// a visible line along the edge.
+    float controlVeil = 0.1;
+    float controlEdgeLine = 0.5;
+
     /// Bubbles, for small labels like the dock's: tinted like menus, with liquid glass's edge,
     /// dimmed to stay legible.
     float bubbleTint = 0.5;

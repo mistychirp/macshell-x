@@ -40,6 +40,8 @@ pub enum Style {
     Liquid,
     /// A dark tint over a lens, for small labels like the dock's.
     Bubble,
+    /// A lens with a visible edge and a slight veil, for Control Center's modules.
+    Control,
     /// Nothing at all, like macOS's menu bar; the shape only says where to measure brightness
     /// (see [`Material::track_brightness`]). Dropped where that isn't supported.
     Transparent,
@@ -190,7 +192,10 @@ impl Material {
                         Style::Frosted => macshell_glass_v1::Style::Frosted,
                         Style::Liquid if glass.version() >= 2 => macshell_glass_v1::Style::Liquid,
                         Style::Bubble if glass.version() >= 2 => macshell_glass_v1::Style::Bubble,
-                        Style::Liquid | Style::Bubble => macshell_glass_v1::Style::Frosted,
+                        Style::Control if glass.version() >= 2 => macshell_glass_v1::Style::Control,
+                        Style::Liquid | Style::Bubble | Style::Control => {
+                            macshell_glass_v1::Style::Frosted
+                        }
                         Style::Transparent if glass.version() >= 2 => {
                             macshell_glass_v1::Style::Transparent
                         }

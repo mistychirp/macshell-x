@@ -75,7 +75,7 @@ The shell chooses the material behind its surfaces itself, so it needs no compos
 ## KWin plugin
 
 `kwin/` is a KWin effect that renders liquid glass for the shell. It serves our
-`macshell-glass-v1` protocol: clear, liquid, frosted and bubble glass shapes behind surfaces, transparent
+`macshell-glass-v1` protocol: clear, liquid, frosted, bubble and control glass shapes behind surfaces, transparent
 shapes that only measure, and brightness tracking for the menu bar's text color.
 
 KWin plugins must be built against the exact KWin they load into. The flake exposes the plugin as
@@ -111,6 +111,9 @@ LiquidBrightness=0.89
 LiquidSaturation=1.15
 LiquidEdgeFade=2
 LiquidEdgeGain=1.06
+# Control modules (Control Center): a white veil, and a visible line along the edge.
+ControlVeil=0.1
+ControlEdgeLine=0.5
 # Bubbles (the dock's labels): how strong the dark tint is, and how the edge is dimmed.
 BubbleTint=0.5
 BubbleEdgeGain=0.85

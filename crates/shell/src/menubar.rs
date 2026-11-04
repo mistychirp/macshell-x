@@ -208,6 +208,17 @@ impl Bar<'_> {
         (menu::text_width(self.clock, TEXT_SIZE, Font::DEFAULT) + 2.0 * TITLE_PADDING_X).ceil()
     }
 
+    /// Where Control Center attaches: under the bar's right end, like on macOS, rather than under
+    /// its icon.
+    pub fn right_edge_anchor(&self) -> (i32, i32, i32, i32) {
+        (
+            (self.width - PADDING_X) as i32 - 1,
+            0,
+            1,
+            HEIGHT as i32 + MENU_GAP,
+        )
+    }
+
     /// Where a title's menu attaches: under its left edge, a little below the bar.
     pub fn menu_anchor(&self, title: Title) -> Option<(i32, i32, i32, i32)> {
         let (_, rect) = self.titles().into_iter().find(|(t, _)| *t == title)?;

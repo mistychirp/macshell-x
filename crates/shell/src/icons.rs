@@ -11,11 +11,16 @@ pub enum Glyph {
     /// Two switches: the Control Center's icon.
     ControlCenter,
     Wifi,
+    WifiOff,
     Bluetooth,
+    BluetoothOff,
+    SunLow,
+    SunHigh,
+    Camera,
+    Lock,
     SpeakerLow,
     SpeakerHigh,
     SpeakerMuted,
-    Music,
     Play,
     Pause,
     Previous,
@@ -39,6 +44,45 @@ impl Glyph {
                 <path d="M5.4 12.7a9.6 9.6 0 0 1 13.2 0"/>
                 <path d="M8.8 16.2a4.7 4.7 0 0 1 6.4 0"/>
                 <circle cx="12" cy="19.6" r="1.7" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::WifiOff => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round">
+                <path d="M2 9.2a14.5 14.5 0 0 1 20 0"/>
+                <path d="M5.4 12.7a9.6 9.6 0 0 1 13.2 0"/>
+                <path d="M8.8 16.2a4.7 4.7 0 0 1 6.4 0"/>
+                <circle cx="12" cy="19.6" r="1.7" fill="#000" stroke="none"/>
+                <path d="M4 3l16 18"/>
+                </svg>"##
+            }
+            Glyph::BluetoothOff => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6.5 7l11 10-5.5 5V2l5.5 5-11 10"/>
+                <path d="M4 3l16 18"/>
+                </svg>"##
+            }
+            Glyph::SunLow => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round">
+                <circle cx="12" cy="12" r="4.5" fill="#000" stroke="none"/>
+                <path d="M12 4v1M12 19v1M4 12h1M19 12h1M6.3 6.3l.7.7M17 17l.7.7M6.3 17.7l.7-.7M17 7l.7-.7"/>
+                </svg>"##
+            }
+            Glyph::SunHigh => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round">
+                <circle cx="12" cy="12" r="4.5" fill="#000" stroke="none"/>
+                <path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1"/>
+                </svg>"##
+            }
+            Glyph::Camera => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>
+                <path d="M7 10.5a1 1 0 0 1 1-1h1.5l1-1.5h3l1 1.5H16a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1z" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::Lock => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <rect x="5" y="10.5" width="14" height="10.5" rx="2.2" fill="#000"/>
+                <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" fill="none" stroke="#000" stroke-width="2"/>
                 </svg>"##
             }
             Glyph::Bluetooth => {
@@ -66,13 +110,6 @@ impl Glyph {
                 r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
                 <path d="M2 9h4l5-4.5v15L6 15H2z" fill="#000"/>
                 <path d="M15 9l6 6M21 9l-6 6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round"/>
-                </svg>"##
-            }
-            Glyph::Music => {
-                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                <path d="M9 17.5V5.5l11-2.5v12" fill="none" stroke="#000" stroke-width="2" stroke-linejoin="round"/>
-                <circle cx="6.5" cy="17.5" r="3" fill="#000"/>
-                <circle cx="17.5" cy="15" r="3" fill="#000"/>
                 </svg>"##
             }
             Glyph::Play => {

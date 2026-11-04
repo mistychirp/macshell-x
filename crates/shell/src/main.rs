@@ -3,6 +3,7 @@ mod app;
 mod apps;
 mod audio;
 mod bluetooth;
+mod brightness;
 mod config;
 mod control;
 mod dbus;

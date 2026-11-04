@@ -149,6 +149,8 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect(Resource *resource, int32_
         shapeStyle = Style::Liquid;
     } else if (style == style_bubble) {
         shapeStyle = Style::Bubble;
+    } else if (style == style_control) {
+        shapeStyle = Style::Control;
     }
     m_pending.append(Shape{
         .rect = QRect(x, y, width, height),
