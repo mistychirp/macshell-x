@@ -118,7 +118,8 @@ pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> 
                 .then_some(Background::Color(ACCENT)),
             text_color: Color::WHITE,
             border: Border {
-                radius: 5.0.into(),
+                // Concentric with the menu's corners.
+                radius: (RADIUS - PADDING).into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -147,6 +148,40 @@ pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> 
             ..Default::default()
         })
         .into()
+}
+
+/// `name`, cut short with an ellipsis if it's too wide to fit on one line.
+pub fn fit(name: &str, size: f32, font: Font, width: f32) -> String {
+    if text_width(name, size, font) <= width {
+        return name.to_owned();
+    }
+    let chars: Vec<char> = name.chars().collect();
+    (1..chars.len())
+        .rev()
+        .map(|keep| {
+            let mut short: String = chars[..keep].iter().collect();
+            short.push('…');
+            short
+        })
+        .find(|short| text_width(short, size, font) <= width)
+        .unwrap_or_else(|| String::from("…"))
+}
+
+/// Height of `text` wrapped to `width`, in logical pixels.
+pub fn text_height(text: &str, size: f32, line_height: f32, font: Font, width: f32) -> f32 {
+    iced_widget::graphics::text::Paragraph::with_text(iced_widget::core::Text {
+        content: text,
+        bounds: Size::new(width, f32::INFINITY),
+        size: size.into(),
+        line_height: LineHeight::Absolute(line_height.into()),
+        font,
+        align_x: Default::default(),
+        align_y: alignment::Vertical::Top,
+        shaping: Shaping::Advanced,
+        wrapping: Wrapping::default(),
+    })
+    .min_bounds()
+    .height
 }
 
 /// Width of `text` on one line, in logical pixels.

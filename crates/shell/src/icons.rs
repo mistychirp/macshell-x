@@ -25,6 +25,7 @@ pub enum Glyph {
     Pause,
     Previous,
     Next,
+    Close,
 }
 
 impl Glyph {
@@ -127,6 +128,11 @@ impl Glyph {
                 r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000">
                 <path d="M11.5 6.2v11.6a.8.8 0 0 1-1.2.7L1.6 12.7a.8.8 0 0 1 0-1.4l8.7-5.8a.8.8 0 0 1 1.2.7z"/>
                 <path d="M22 6.2v11.6a.8.8 0 0 1-1.2.7l-8.7-5.8a.8.8 0 0 1 0-1.4l8.7-5.8a.8.8 0 0 1 1.2.7z"/>
+                </svg>"##
+            }
+            Glyph::Close => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round">
+                <path d="M4 4l16 16M20 4L4 20"/>
                 </svg>"##
             }
             Glyph::Next => {

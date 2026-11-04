@@ -20,12 +20,15 @@ use wayland_client::protocol::wl_surface::WlSurface;
 
 use crate::alert::{self, Alert};
 use crate::apps::{self, App, AppIndex};
+use crate::banners::{self, Banners};
 use crate::config::{self, Config};
 use crate::kwin::{self, KeyboardLayouts, WindowInfo};
 use crate::material::{self, Material, MaterialSurface};
+use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    audio, bluetooth, brightness, control, dock, media, menu, menubar, network, stack, wallpaper,
+    audio, bluetooth, brightness, control, dock, media, menu, menubar, network,
+    notification_center, stack, wallpaper,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -66,6 +69,7 @@ enum Surface {
     Dock,
     Popup,
     Alert,
+    Banners,
 }
 
 #[to_layer_message(multi)]
@@ -132,6 +136,24 @@ pub enum Message {
     /// The alert was answered: confirmed, or cancelled.
     AlertAnswered(bool),
     SurfaceClosed(IcedId),
+    /// An app sent or took back a notification.
+    Notification(notifications::Event),
+    /// An animation frame for banners, or a check on whether one has expired.
+    BannerFrame(Instant),
+    NotificationEntered(u32),
+    NotificationLeft(u32),
+    /// A notification's card was pressed.
+    NotificationPressed(u32),
+    /// One of a notification's buttons was pressed; carries the action's key.
+    NotificationAction(u32, String),
+    /// A notification's ✕ was pressed.
+    NotificationDismissed(u32),
+    /// A group in Notification Center was opened, closed or cleared; carries the app's key.
+    NotificationGroupOpened(String),
+    NotificationGroupClosed(String),
+    NotificationGroupCleared(String),
+    /// Scrolled over Notification Center, in rows.
+    NotificationCenterScrolled(f32),
 }
 
 /// A popup that's open, or opening: a menu, or the Downloads stack.
@@ -142,6 +164,8 @@ struct Popup {
     content: PopupContent,
     size: (u32, u32),
     material: Option<MaterialSurface>,
+    /// Shapes last sent, for content that changes while it's open.
+    shapes: Vec<material::Shape>,
 }
 
 struct OpenAlert {
@@ -155,6 +179,8 @@ enum PopupContent {
     Downloads(Vec<stack::Tile>),
     /// Shows [`Shell::control`].
     ControlCenter,
+    /// Shows [`Shell::notifications`].
+    NotificationCenter,
 }
 
 struct Shell {
@@ -228,6 +254,23 @@ struct Shell {
     trash_count: usize,
     /// The current icon of each of [`Place::ALL`].
     place_icons: Vec<Option<image::Handle>>,
+    /// Height of the screen, once the wallpaper's surface has said.
+    screen_height: f32,
+    /// What Notification Center holds, most recent first.
+    notifications: Vec<Notification>,
+    /// The notification the pointer is over.
+    notification_hovered: Option<u32>,
+    /// Groups opened in Notification Center, by app.
+    open_groups: HashSet<String>,
+    /// How far Notification Center is scrolled, in rows.
+    center_scroll: f32,
+    banners: Banners,
+    banners_surface: Option<IcedId>,
+    /// The surface was asked to close, and hasn't yet.
+    banners_closing: bool,
+    banners_material: Option<MaterialSurface>,
+    banners_shapes: Vec<material::Shape>,
+    banners_region: Vec<(i32, i32, i32, i32)>,
 }
 
 /// A dock icon a popup can be anchored to.
@@ -251,6 +294,11 @@ const DRAG_THRESHOLD: f32 = 4.0;
 
 /// How long a launch bounces before the dock gives up waiting for a window.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// The screen's height until the wallpaper's surface says, if there is one.
+const FALLBACK_SCREEN_HEIGHT: f32 = 700.0;
+/// How many past notifications Notification Center keeps.
+const MAX_NOTIFICATIONS: usize = 100;
 
 impl Shell {
     fn new(material: Option<Rc<Material>>) -> (Self, Task<Message>) {
@@ -331,6 +379,17 @@ impl Shell {
             trash_dir,
             trash_count,
             place_icons: Vec::new(),
+            screen_height: FALLBACK_SCREEN_HEIGHT,
+            notifications: Vec::new(),
+            notification_hovered: None,
+            open_groups: HashSet::new(),
+            center_scroll: 0.0,
+            banners: Banners::default(),
+            banners_surface: None,
+            banners_closing: false,
+            banners_material: None,
+            banners_shapes: Vec::new(),
+            banners_region: Vec::new(),
         };
         let mut shell = shell;
         shell.update_place_icons();
@@ -352,6 +411,7 @@ impl Shell {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.apply(message);
+        self.update_center_shapes();
         self.mark_changed_surfaces();
         task
     }
@@ -374,7 +434,7 @@ impl Shell {
                     )
                 }
                 // Short-lived, with live content.
-                Surface::Popup | Surface::Alert => {
+                Surface::Popup | Surface::Alert | Surface::Banners => {
                     iced_layershell::redraw::mark_changed(id);
                     continue;
                 }
@@ -416,10 +476,16 @@ impl Shell {
             // A popup's grab only closes it for clicks on other apps. The wallpaper, the bar and the
             // dock are ours, so they have to do it themselves.
             Message::SurfacePressed(id) => {
+                let center_open = matches!(
+                    self.popup.as_ref().map(|popup| &popup.content),
+                    Some(PopupContent::NotificationCenter)
+                );
+                // Notification Center's surface runs down the screen, mostly empty.
                 if matches!(
                     self.surfaces.get(&id),
                     Some(Surface::Wallpaper | Surface::MenuBar | Surface::Dock)
-                ) {
+                ) || (center_open && self.surfaces.get(&id) == Some(&Surface::Popup))
+                {
                     return self.close_popup();
                 }
             }
@@ -605,9 +671,10 @@ impl Shell {
                 }
                 return relayout;
             }
-            Message::SurfaceOpened(id, _)
+            Message::SurfaceOpened(id, size)
                 if self.surfaces.get(&id) == Some(&Surface::Wallpaper) =>
             {
+                self.screen_height = size.height;
                 if let Some(handle) = &self.wallpaper {
                     return iced_runtime::image::allocate(handle.clone())
                         .map(Message::WallpaperLoaded);
@@ -719,6 +786,78 @@ impl Shell {
             Message::SurfaceOpened(id, _) if self.popup.as_ref().is_some_and(|p| p.id == id) => {
                 return self.reach_surface(id);
             }
+            Message::SurfaceOpened(id, _) if self.banners_surface == Some(id) => {
+                self.banners_region.clear();
+                return Task::batch([self.reach_surface(id), self.sync_banners()]);
+            }
+            Message::Notification(event) => return self.handle_notification(event),
+            Message::BannerFrame(now) => {
+                let over = self.banners.frame(now, self.notification_hovered);
+                let mut tasks = vec![self.sync_banners()];
+                tasks.extend(over.into_iter().map(|id| {
+                    Task::future(notifications::report_closed(
+                        id,
+                        notifications::CLOSED_EXPIRED,
+                    ))
+                    .discard()
+                }));
+                return Task::batch(tasks);
+            }
+            Message::NotificationEntered(id) => {
+                self.notification_hovered = Some(id);
+                return self.sync_banners();
+            }
+            Message::NotificationLeft(id) => {
+                if self.notification_hovered == Some(id) {
+                    self.notification_hovered = None;
+                }
+                self.banners.pointer_left(id, Instant::now());
+                return self.sync_banners();
+            }
+            Message::NotificationPressed(id) => {
+                let Some(notification) = self.find_notification(id) else {
+                    return Task::none();
+                };
+                let app_key = notification.app_key.clone();
+                let has_default_action = notification.has_default_action;
+                self.focus_app(&app_key);
+                let action = has_default_action.then(|| {
+                    Task::future(notifications::invoke_action(
+                        id,
+                        notifications::DEFAULT_ACTION.to_owned(),
+                    ))
+                    .discard()
+                });
+                let dismiss = self.dismiss_notification(id);
+                let close = self.close_popup();
+                return Task::batch(action.into_iter().chain([dismiss, close]));
+            }
+            Message::NotificationAction(id, key) => {
+                let invoke = Task::future(notifications::invoke_action(id, key)).discard();
+                return Task::batch([invoke, self.dismiss_notification(id)]);
+            }
+            Message::NotificationDismissed(id) => return self.dismiss_notification(id),
+            Message::NotificationGroupOpened(app_key) => {
+                self.open_groups.insert(app_key);
+            }
+            Message::NotificationGroupClosed(app_key) => {
+                self.open_groups.remove(&app_key);
+            }
+            Message::NotificationGroupCleared(app_key) => {
+                let ids: Vec<u32> = self
+                    .notifications
+                    .iter()
+                    .filter(|notification| notification.app_key == app_key)
+                    .map(|notification| notification.id)
+                    .collect();
+                self.open_groups.remove(&app_key);
+                return Task::batch(ids.into_iter().map(|id| self.dismiss_notification(id)));
+            }
+            Message::NotificationCenterScrolled(amount) => {
+                let rows = notification_center::row_count(&self.notifications, &self.open_groups);
+                self.center_scroll =
+                    (self.center_scroll - amount).clamp(0.0, rows.saturating_sub(1) as f32);
+            }
             Message::SurfaceClosed(id) => {
                 self.surfaces.remove(&id);
                 if self.popup.as_ref().is_some_and(|popup| popup.id == id)
@@ -738,6 +877,15 @@ impl Shell {
                     && let Some(material) = open.material
                 {
                     material.destroy();
+                }
+                if self.banners_surface == Some(id) {
+                    self.banners_surface = None;
+                    self.banners_closing = false;
+                    if let Some(material) = self.banners_material.take() {
+                        material.destroy();
+                    }
+                    // Something new came in while it was closing.
+                    return self.sync_banners();
                 }
             }
             _ => {}
@@ -809,6 +957,25 @@ impl Shell {
                 let open = self.open_popup(Some(title), settings, PopupContent::ControlCenter);
                 return Task::batch([open, reread, Task::done(Message::ControlRefresh)]);
             }
+            menubar::Title::Clock => {
+                self.center_scroll = 0.0;
+                self.open_groups.clear();
+                let size = (
+                    notification_center::WIDTH as u32,
+                    notification_center::height(self.screen_height) as u32,
+                );
+                let settings = IcedNewPopupSettings::new(
+                    self.menubar_id,
+                    size,
+                    self.bar().right_edge_anchor(),
+                )
+                .anchor(PopupAnchor::BottomRight)
+                .gravity(PopupGravity::BottomLeft);
+                let open = self.open_popup(Some(title), settings, PopupContent::NotificationCenter);
+                // Everything's in the panel now, and a banner would sit on top of it.
+                self.banners.dismiss_all();
+                return Task::batch([open, self.sync_banners()]);
+            }
         };
         let size = menu::size(&entries);
         self.open_bar_popup(title, size, PopupContent::Menu(entries))
@@ -851,6 +1018,7 @@ impl Shell {
             content,
             size: settings.size,
             material: None,
+            shapes: Vec::new(),
         });
         Task::batch([
             self.relayout_dock(),
@@ -890,8 +1058,16 @@ impl Shell {
                         PopupContent::Menu(_) => menu::material_shapes(popup.size),
                         PopupContent::Downloads(_) => stack::material_shapes(popup.size),
                         PopupContent::ControlCenter => control::material_shapes(&self.control),
+                        PopupContent::NotificationCenter => notification_center::material_shapes(
+                            &self.notifications,
+                            &self.open_groups,
+                            self.center_scroll as usize,
+                            self.notification_hovered,
+                            popup.size.1 as f32,
+                        ),
                     };
                     material.set_shapes(&target, &shapes);
+                    popup.shapes = shapes;
                     popup.material = Some(target);
                 }
                 _ => target.destroy(),
@@ -903,6 +1079,11 @@ impl Shell {
                 }
                 _ => target.destroy(),
             },
+            Some(Surface::Banners) => {
+                self.banners_shapes = self.banners.material_shapes(self.notification_hovered);
+                material.set_shapes(&target, &self.banners_shapes);
+                self.banners_material = Some(target);
+            }
             // Closed before it could be reached, or not a surface with material.
             Some(Surface::Wallpaper) | None => target.destroy(),
         }
@@ -920,6 +1101,146 @@ impl Shell {
             open: self.popup.as_ref().and_then(|popup| popup.title),
             backdrop: self.bar_backdrop,
             input: self.input_label.as_deref(),
+        }
+    }
+
+    fn find_notification(&self, id: u32) -> Option<&Notification> {
+        self.notifications
+            .iter()
+            .find(|notification| notification.id == id)
+            .or_else(|| self.banners.find(id))
+    }
+
+    fn handle_notification(&mut self, event: notifications::Event) -> Task<Message> {
+        let now = Instant::now();
+        match event {
+            notifications::Event::Notified(incoming) => {
+                let replaces = incoming.replaces;
+                let notification = Notification::new(incoming, &mut self.apps);
+                let known = replaces
+                    && self
+                        .notifications
+                        .iter_mut()
+                        .find(|known| known.id == notification.id)
+                        .map(|known| *known = notification.clone())
+                        .is_some();
+                if !known && !notification.transient {
+                    self.notifications.insert(0, notification.clone());
+                    self.notifications.truncate(MAX_NOTIFICATIONS);
+                }
+                let center_open = matches!(
+                    self.popup.as_ref().map(|popup| &popup.content),
+                    Some(PopupContent::NotificationCenter)
+                );
+                if !self.banners.replace(&notification, now)
+                    && (!center_open || notification.transient)
+                {
+                    self.banners.show(notification, now);
+                }
+            }
+            notifications::Event::Closed(id) => {
+                self.notifications.retain(|known| known.id != id);
+                self.banners.dismiss(id);
+            }
+        }
+        self.sync_banners()
+    }
+
+    /// Takes a notification away, and tells its app.
+    fn dismiss_notification(&mut self, id: u32) -> Task<Message> {
+        self.notifications.retain(|known| known.id != id);
+        self.banners.dismiss(id);
+        if self.notification_hovered == Some(id) {
+            self.notification_hovered = None;
+        }
+        Task::batch([
+            self.sync_banners(),
+            Task::future(notifications::report_closed(
+                id,
+                notifications::CLOSED_DISMISSED,
+            ))
+            .discard(),
+        ])
+    }
+
+    /// Brings the app's most recently used window forward, if it has one.
+    fn focus_app(&mut self, app_key: &str) {
+        let window = self
+            .windows
+            .iter()
+            .filter(|window| {
+                window.app_id.as_deref().is_some_and(|app_id| {
+                    app_id.eq_ignore_ascii_case(app_key) || self.apps.resolve(app_id).id == app_key
+                })
+            })
+            .max_by_key(|window| window.focused_at);
+        if let Some(window) = window {
+            kwin::focus_window(window.id);
+        }
+    }
+
+    /// Opens or closes the banners' surface as needed, and keeps its glass and input region with
+    /// the banners.
+    fn sync_banners(&mut self) -> Task<Message> {
+        let Some(id) = self.banners_surface else {
+            if self.banners.is_empty() {
+                return Task::none();
+            }
+            let (id, open) = Message::layershell_open(banners::settings());
+            self.surfaces.insert(id, Surface::Banners);
+            self.banners_surface = Some(id);
+            return open;
+        };
+        if self.banners.is_empty() {
+            if std::mem::replace(&mut self.banners_closing, true) {
+                return Task::none();
+            }
+            return iced_runtime::window::close(id);
+        }
+
+        let shapes = self.banners.material_shapes(self.notification_hovered);
+        if shapes != self.banners_shapes
+            && let (Some(material), Some(target)) = (&self.material, &self.banners_material)
+        {
+            material.set_shapes(target, &shapes);
+            self.banners_shapes = shapes;
+        }
+
+        let region = self.banners.input_region();
+        if region == self.banners_region {
+            return Task::none();
+        }
+        self.banners_region.clone_from(&region);
+        Task::done(Message::SetInputRegion {
+            id,
+            callback: ActionCallback::new(move |wl_region| {
+                for &(x, y, width, height) in &region {
+                    wl_region.add(x, y, width, height);
+                }
+            }),
+        })
+    }
+
+    /// Keeps Notification Center's glass under its cards.
+    fn update_center_shapes(&mut self) {
+        let Some(popup) = &mut self.popup else {
+            return;
+        };
+        if !matches!(popup.content, PopupContent::NotificationCenter) {
+            return;
+        }
+        let shapes = notification_center::material_shapes(
+            &self.notifications,
+            &self.open_groups,
+            self.center_scroll as usize,
+            self.notification_hovered,
+            popup.size.1 as f32,
+        );
+        if shapes != popup.shapes
+            && let (Some(material), Some(target)) = (&self.material, &popup.material)
+        {
+            material.set_shapes(target, &shapes);
+            popup.shapes = shapes;
         }
     }
 
@@ -1182,6 +1503,14 @@ impl Shell {
                     Some(PopupContent::Menu(entries)) => menu::view(entries, material),
                     Some(PopupContent::Downloads(tiles)) => stack::view(tiles, material),
                     Some(PopupContent::ControlCenter) => control::view(&self.control, material),
+                    Some(PopupContent::NotificationCenter) => notification_center::view(
+                        &self.notifications,
+                        &self.open_groups,
+                        self.center_scroll as usize,
+                        self.notification_hovered,
+                        self.popup.as_ref().map_or(0.0, |popup| popup.size.1 as f32),
+                        material,
+                    ),
                     None => Space::new().into(),
                 }
             }
@@ -1189,6 +1518,10 @@ impl Shell {
                 Some(open) => alert::view(&open.alert, self.material.as_ref().map(|m| m.kind())),
                 None => Space::new().into(),
             },
+            Some(Surface::Banners) => self.banners.view(
+                self.notification_hovered,
+                self.material.as_ref().map(|m| m.kind()),
+            ),
             None => Space::new().into(),
         }
     }
@@ -1222,8 +1555,19 @@ impl Shell {
             Subscription::none()
         };
 
+        // Banners take frames while they move, and otherwise only need watching to expire.
+        let banner_frames = if self.banners.animating() {
+            time::every(Duration::from_millis(16)).map(Message::BannerFrame)
+        } else if self.banners.counting_down() {
+            time::every(Duration::from_millis(250)).map(Message::BannerFrame)
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             dock_frames,
+            banner_frames,
+            notifications::events().map(Message::Notification),
             bar_brightness,
             control_refresh,
             kwin::windows().map(Message::WindowsChanged),

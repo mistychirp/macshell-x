@@ -31,6 +31,8 @@ const SPACING: f32 = 4.0;
 const RADIUS: f32 = 20.0;
 const MARGIN: f32 = 6.0;
 const PILL_HEIGHT: f32 = ICON_SIZE + DOT_GAP + DOT_SIZE + 2.0 * PADDING;
+/// What the dock keeps windows out of, at the bottom of the screen.
+pub const RESERVED_HEIGHT: f32 = PILL_HEIGHT + MARGIN;
 
 /// Extra room between the apps and the places, where the separator line goes.
 const SEPARATOR_GAP: f32 = 12.0;
@@ -173,7 +175,7 @@ pub fn settings(max_icon: f32) -> NewLayerShellSettings {
         size: Some((0, height.ceil() as u32)),
         // Only the pill reserves space; the room above it overlaps windows, and the input
         // region lets clicks there through.
-        exclusive_zone: Some((PILL_HEIGHT + MARGIN) as i32),
+        exclusive_zone: Some(RESERVED_HEIGHT as i32),
         keyboard_interactivity: KeyboardInteractivity::None,
         namespace: Some(String::from("macshell-dock")),
         ..Default::default()

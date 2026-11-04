@@ -49,6 +49,8 @@ pub enum Title {
     Input,
     /// The Control Center's switches.
     ControlCenter,
+    /// The clock, which opens Notification Center.
+    Clock,
 }
 
 /// How bright what's behind the bar is, which decides its text color, like on macOS.
@@ -196,6 +198,7 @@ impl Bar<'_> {
 
         // Status items line up leftward from the clock.
         let mut x = self.width - PADDING_X - self.clock_width();
+        titles.push((Title::Clock, rect(x, self.clock_width())));
         x -= CONTROL_CENTER_WIDTH;
         titles.push((Title::ControlCenter, rect(x, CONTROL_CENTER_WIDTH)));
         if self.input.is_some() {
@@ -319,7 +322,7 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
         Some(_) => Color::TRANSPARENT,
         None => Color::from_rgba(0.0, 0.0, 0.0, 0.3),
     };
-    let highlight = Color { a: 0.3, ..ink };
+    let highlight = Color { a: 0.28, ..ink };
 
     let mut left = row![].align_y(Alignment::Center);
     let mut right: Vec<Element<'a>> = Vec::new();
@@ -335,6 +338,7 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
             Title::App => text(bar.app_name).font(BOLD).into(),
             Title::Input => input_badge(bar.input.unwrap_or_default(), ink),
             Title::ControlCenter => icons::icon(Glyph::ControlCenter, 17.0, ink),
+            Title::Clock => text(bar.clock).into(),
         };
         let item = title_item(title, content, rect, bar.open, highlight);
         match title {
@@ -343,10 +347,9 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
             _ => right.insert(0, item),
         }
     }
-    let clock = container(text(bar.clock)).center_x(bar.clock_width());
 
     let right = row(right).align_y(Alignment::Center);
-    container(row![left, Space::new().width(Length::Fill), right, clock].align_y(Alignment::Center))
+    container(row![left, Space::new().width(Length::Fill), right].align_y(Alignment::Center))
         .padding([0.0, PADDING_X])
         .width(Length::Fill)
         .height(Length::Fill)

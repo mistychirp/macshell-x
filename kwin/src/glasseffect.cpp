@@ -124,6 +124,10 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.controlBrightness = group.readEntry("ControlBrightness", defaults.controlBrightness);
     m_settings.controlSaturation = group.readEntry("ControlSaturation", defaults.controlSaturation);
     m_settings.controlRim = group.readEntry("ControlRim", defaults.controlRim);
+    m_settings.backdropFadeLeft = group.readEntry("BackdropFadeLeft", defaults.backdropFadeLeft);
+    m_settings.backdropFadeTop = group.readEntry("BackdropFadeTop", defaults.backdropFadeTop);
+    m_settings.backdropFadeRight = group.readEntry("BackdropFadeRight", defaults.backdropFadeRight);
+    m_settings.backdropFadeBottom = group.readEntry("BackdropFadeBottom", defaults.backdropFadeBottom);
     m_settings.bubbleTint = group.readEntry("BubbleTint", defaults.bubbleTint);
     m_settings.bubbleEdgeGain = group.readEntry("BubbleEdgeGain", defaults.bubbleEdgeGain);
     effects->addRepaintFull();
@@ -430,7 +434,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         const bool bubble = shape.style == Style::Bubble;
         const bool control = shape.style == Style::Control;
         const float saturation = control ? m_settings.controlSaturation : liquid ? m_settings.liquidSaturation : blurred ? m_settings.frostSaturation : 1.0f;
-        const float tintAlpha = frosted ? m_settings.frostTint : bubble ? m_settings.bubbleTint : 0.0f;
+        const float tintAlpha = frosted || shape.style == Style::Card ? m_settings.frostTint : bubble ? m_settings.bubbleTint : 0.0f;
         ShaderManager::instance()->pushShader(m_glassShader.get());
         m_glassShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
         m_glassShader->setUniform("geoSize", QVector2D(logical.width(), logical.height()));
@@ -444,6 +448,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         // Measured from Tahoe's menus: a dark tint with a hint of purple, under the edge.
         m_glassShader->setUniform("tint", QVector4D(0.09, 0.06, 0.1, tintAlpha));
         m_glassShader->setUniform("rim", control ? m_settings.controlRim : 0.0f);
+        m_glassShader->setUniform("softEdges", shape.style == Style::Backdrop ? QVector4D(m_settings.backdropFadeLeft, m_settings.backdropFadeTop, m_settings.backdropFadeRight, m_settings.backdropFadeBottom) : QVector4D());
         m_glassShader->setUniform("edgeFade", frosted ? 0.0f : m_settings.liquidEdgeFade);
         m_glassShader->setUniform("edgeGain", bubble ? m_settings.bubbleEdgeGain : frosted ? 1.0f : m_settings.liquidEdgeGain);
         m_glassShader->setUniform("edgeWhite", frosted ? m_settings.frostEdgeWhite : 0.0f);

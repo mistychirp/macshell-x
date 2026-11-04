@@ -34,6 +34,8 @@ enum class Style {
     Liquid,
     Bubble,
     Control,
+    Backdrop,
+    Card,
 };
 
 struct Shape {

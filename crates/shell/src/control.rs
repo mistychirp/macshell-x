@@ -43,7 +43,7 @@ const BOLD: Font = Font {
 };
 const DIM: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.65);
 const FAINT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.3);
-const OFF_FILL: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.27);
+const OFF_FILL: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.25);
 const INK_ON_WHITE: Color = Color::from_rgb(0.1, 0.1, 0.12);
 
 /// What the panel shows, from the shell's state. Each is `None` when its service or hardware is
@@ -280,10 +280,15 @@ fn capsule_row<'a>(
             circle,
             column![
                 text(name).size(TITLE_SIZE).font(BOLD),
-                text(fit(status, DETAIL_SIZE, Font::DEFAULT, CAPSULE_TEXT_WIDTH))
-                    .size(DETAIL_SIZE)
-                    .wrapping(Wrapping::None)
-                    .color(DIM),
+                text(menu::fit(
+                    status,
+                    DETAIL_SIZE,
+                    Font::DEFAULT,
+                    CAPSULE_TEXT_WIDTH
+                ))
+                .size(DETAIL_SIZE)
+                .wrapping(Wrapping::None)
+                .color(DIM),
             ],
         ]
         .spacing(TEXT_GAP)
@@ -350,8 +355,8 @@ fn now_playing(panel: &Panel) -> Element<'_> {
 
     let (title, artist, play_glyph) = match &panel.track {
         Some(track) => (
-            fit(&track.title, TITLE_SIZE, BOLD, TILE_TEXT_WIDTH),
-            fit(
+            menu::fit(&track.title, TITLE_SIZE, BOLD, TILE_TEXT_WIDTH),
+            menu::fit(
                 track.artist.as_deref().unwrap_or_default(),
                 DETAIL_SIZE,
                 Font::DEFAULT,
@@ -488,23 +493,6 @@ fn slider_module<'a>(
     .padding([9.0, 16.0])
     .width(Length::Fill)
     .into()
-}
-
-/// `name`, cut short with an ellipsis if it's too wide to fit on one line.
-fn fit(name: &str, size: f32, font: Font, width: f32) -> String {
-    if menu::text_width(name, size, font) <= width {
-        return name.to_owned();
-    }
-    let chars: Vec<char> = name.chars().collect();
-    (1..chars.len())
-        .rev()
-        .map(|keep| {
-            let mut short: String = chars[..keep].iter().collect();
-            short.push('…');
-            short
-        })
-        .find(|short| menu::text_width(short, size, font) <= width)
-        .unwrap_or_else(|| String::from("…"))
 }
 
 /// The panel's slower state, read off the UI thread.

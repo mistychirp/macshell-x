@@ -38,6 +38,9 @@ uniform float outerAlpha;
 // A rim instead of an edge, for control modules: how much its outer device pixel whitens where it's
 // lit. The next one does about a third as much. 0 means no rim.
 uniform float rim;
+// A backdrop instead of a shape: just the blur, fading in from each side over this many logical
+// pixels (left, top, right, bottom), with no edge. All 0 means it isn't one.
+uniform vec4 softEdges;
 uniform float opacity;
 
 // Texture coordinates: 0 to 1 across the shape, with y pointing up.
@@ -69,6 +72,15 @@ void main(void)
     vec2 geo = vec2(uv.x, 1.0 - uv.y);
     vec2 halfSize = geoSize * 0.5;
     vec2 p = geo * geoSize - halfSize;
+
+    if (softEdges != vec4(0.0)) {
+        vec2 near = geo * geoSize;
+        vec2 far = geoSize - near;
+        float amount = smoothstep(0.0, softEdges.x, near.x) * smoothstep(0.0, softEdges.y, near.y)
+            * smoothstep(0.0, softEdges.z, far.x) * smoothstep(0.0, softEdges.w, far.y);
+        fragColor = vec4(sampleGeo(geo).rgb, 1.0) * amount * opacity;
+        return;
+    }
 
     float d = sdRoundedBox(p, halfSize, cornerRadius);
 

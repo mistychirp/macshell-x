@@ -37,7 +37,7 @@
     their glass is, to pick a text color that stays legible over it.
   </description>
 
-  <interface name="macshell_glass_manager_v1" version="2">
+  <interface name="macshell_glass_manager_v1" version="3">
     <description summary="glass factory">
       Creates glass objects for surfaces.
     </description>
@@ -63,7 +63,7 @@
     </request>
   </interface>
 
-  <interface name="macshell_glass_v1" version="2">
+  <interface name="macshell_glass_v1" version="3">
     <description summary="glass shapes behind a surface">
       Holds a list of glass shapes rendered behind the surface. The list is
       double-buffered state, applied on the next wl_surface.commit, and starts
@@ -98,7 +98,11 @@
       <entry name="bubble" value="4" since="2"
              summary="a dark tint over a lens, for small labels"/>
       <entry name="control" value="5" since="2"
-             summary="a lens with a visible edge and a slight veil, for control modules"/>
+             summary="a brightened lens inside a rim that catches the light, for control modules"/>
+      <entry name="card" value="7" since="3"
+             summary="a tint like frosted glass's over a lens like liquid glass's, for notifications"/>
+      <entry name="backdrop" value="6" since="3"
+             summary="a blur that fades out on every side instead of ending at an edge; the radius is ignored"/>
     </enum>
 
     <request name="clear">
