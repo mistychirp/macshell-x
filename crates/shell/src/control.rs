@@ -43,7 +43,7 @@ const BOLD: Font = Font {
 };
 const DIM: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.65);
 const FAINT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.3);
-const OFF_FILL: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.2);
+const OFF_FILL: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.27);
 const INK_ON_WHITE: Color = Color::from_rgb(0.1, 0.1, 0.12);
 
 /// What the panel shows, from the shell's state. Each is `None` when its service or hardware is
@@ -210,7 +210,7 @@ fn wifi(panel: &Panel) -> Element<'_> {
         glyph,
         "Wi-Fi",
         status,
-        wifi.enabled,
+        wifi.network.is_some(),
         Some(Message::ToggleWifi),
     )
 }
@@ -304,7 +304,7 @@ fn capsule_row<'a>(
     }
 }
 
-/// White when on, like Tahoe's toggles; a translucent white otherwise.
+/// White when active, like Tahoe's toggles; a translucent grey otherwise.
 fn toggle_style(on: bool) -> container::Style {
     container::Style {
         background: Some(Background::Color(if on { Color::WHITE } else { OFF_FILL })),
@@ -366,8 +366,8 @@ fn now_playing(panel: &Panel) -> Element<'_> {
         None => (String::from("Not Playing"), String::new(), Glyph::Play),
     };
     let active = panel.track.is_some();
-    let ink = if active { Color::WHITE } else { FAINT };
-    let control = |glyph, control| -> Element<'_> {
+    let control = |glyph, control, idle_ink| -> Element<'_> {
+        let ink = if active { Color::WHITE } else { idle_ink };
         let icon = container(icons::icon(glyph, 20.0, ink)).center(30.0);
         if active {
             mouse_area(icon).on_press(Message::Media(control)).into()
@@ -381,17 +381,19 @@ fn now_playing(panel: &Panel) -> Element<'_> {
             art,
             Space::new().height(Length::Fill),
             text(title).size(TITLE_SIZE).font(BOLD),
-            text(artist).size(DETAIL_SIZE).color(DIM),
-            Space::new().height(4),
+        ]
+        .push(active.then(|| text(artist).size(DETAIL_SIZE).color(DIM)))
+        .push(Space::new().height(4))
+        .push(
             row![
-                control(Glyph::Previous, Control::Previous),
+                control(Glyph::Previous, Control::Previous, FAINT),
                 Space::new().width(Length::Fill),
-                control(play_glyph, Control::PlayPause),
+                control(play_glyph, Control::PlayPause, DIM),
                 Space::new().width(Length::Fill),
-                control(Glyph::Next, Control::Next),
+                control(Glyph::Next, Control::Next, FAINT),
             ]
             .align_y(Alignment::Center),
-        ]
+        )
         .height(Length::Fill),
     )
     .padding(TILE_PADDING)

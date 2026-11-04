@@ -121,8 +121,9 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.liquidSaturation = group.readEntry("LiquidSaturation", defaults.liquidSaturation);
     m_settings.liquidEdgeFade = group.readEntry("LiquidEdgeFade", defaults.liquidEdgeFade);
     m_settings.liquidEdgeGain = group.readEntry("LiquidEdgeGain", defaults.liquidEdgeGain);
-    m_settings.controlVeil = group.readEntry("ControlVeil", defaults.controlVeil);
-    m_settings.controlEdgeLine = group.readEntry("ControlEdgeLine", defaults.controlEdgeLine);
+    m_settings.controlBrightness = group.readEntry("ControlBrightness", defaults.controlBrightness);
+    m_settings.controlSaturation = group.readEntry("ControlSaturation", defaults.controlSaturation);
+    m_settings.controlRim = group.readEntry("ControlRim", defaults.controlRim);
     m_settings.bubbleTint = group.readEntry("BubbleTint", defaults.bubbleTint);
     m_settings.bubbleEdgeGain = group.readEntry("BubbleEdgeGain", defaults.bubbleEdgeGain);
     effects->addRepaintFull();
@@ -428,7 +429,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         const bool liquid = shape.style == Style::Liquid;
         const bool bubble = shape.style == Style::Bubble;
         const bool control = shape.style == Style::Control;
-        const float saturation = liquid || control ? m_settings.liquidSaturation : blurred ? m_settings.frostSaturation : 1.0f;
+        const float saturation = control ? m_settings.controlSaturation : liquid ? m_settings.liquidSaturation : blurred ? m_settings.frostSaturation : 1.0f;
         const float tintAlpha = frosted ? m_settings.frostTint : bubble ? m_settings.bubbleTint : 0.0f;
         ShaderManager::instance()->pushShader(m_glassShader.get());
         m_glassShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
@@ -438,11 +439,11 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("wide", 1);
         m_glassShader->setUniform("lensStrength", frosted ? 0.0f : m_settings.lensStrength);
         m_glassShader->setUniform("lensRadius", m_settings.lensRadius);
-        m_glassShader->setUniform("brightness", liquid ? m_settings.liquidBrightness : 1.0f);
+        m_glassShader->setUniform("brightness", control ? m_settings.controlBrightness : liquid ? m_settings.liquidBrightness : 1.0f);
         m_glassShader->setUniform("colorMatrix", saturationMatrix(saturation));
         // Measured from Tahoe's menus: a dark tint with a hint of purple, under the edge.
-        m_glassShader->setUniform("tint", control ? QVector4D(1, 1, 1, m_settings.controlVeil) : QVector4D(0.09, 0.06, 0.1, tintAlpha));
-        m_glassShader->setUniform("edgeLine", control ? m_settings.controlEdgeLine : 0.0f);
+        m_glassShader->setUniform("tint", QVector4D(0.09, 0.06, 0.1, tintAlpha));
+        m_glassShader->setUniform("rim", control ? m_settings.controlRim : 0.0f);
         m_glassShader->setUniform("edgeFade", frosted ? 0.0f : m_settings.liquidEdgeFade);
         m_glassShader->setUniform("edgeGain", bubble ? m_settings.bubbleEdgeGain : frosted ? 1.0f : m_settings.liquidEdgeGain);
         m_glassShader->setUniform("edgeWhite", frosted ? m_settings.frostEdgeWhite : 0.0f);

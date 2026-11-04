@@ -35,9 +35,9 @@ uniform float edgeFade;
 uniform float edgeGain;
 uniform float edgeWhite;
 uniform float outerAlpha;
-// A visible line on top of a fading edge: how much its outer device pixel whitens. The next one
-// does about a third as much. 0 means none.
-uniform float edgeLine;
+// A rim instead of an edge, for control modules: how much its outer device pixel whitens where it's
+// lit. The next one does about a third as much. 0 means no rim.
+uniform float rim;
 uniform float opacity;
 
 // Texture coordinates: 0 to 1 across the shape, with y pointing up.
@@ -103,13 +103,16 @@ void main(void)
 
     // The edge, with no dimming: it shows the surroundings, not what's right behind it.
     vec3 edge = mix(min(texture(wide, uv).rgb * edgeGain, vec3(1.0)), vec3(1.0), edgeWhite);
-    if (edgeFade > 0.0) {
-        color.rgb = mix(color.rgb, edge, 1.0 - smoothstep(0.0, edgeFade, -d));
-        float pixels = -d * deviceScale;
+    float pixels = -d * deviceScale;
+    if (rim > 0.0) {
+        // Light falls along the top-left to bottom-right diagonal: the rim is even across those two
+        // quadrants and almost gone at the other two corners, measured around Tahoe's buttons.
+        float lit = mix(0.12, 1.0, smoothstep(0.25, 0.72, abs(dot(n, vec2(0.7071)))));
         float line = band(pixels, 0.0, 1.0) + band(pixels, 1.0, 2.0) * 0.33;
-        color.rgb = mix(color.rgb, vec3(1.0), line * edgeLine);
+        color.rgb = mix(color.rgb, vec3(1.0), line * lit * rim);
+    } else if (edgeFade > 0.0) {
+        color.rgb = mix(color.rgb, edge, 1.0 - smoothstep(0.0, edgeFade, -d));
     } else {
-        float pixels = -d * deviceScale;
         color.rgb = mix(color.rgb, edge, band(pixels, 1.0, 3.0));
         color.rgb = mix(color.rgb, vec3(0.0), band(pixels, 0.0, 1.0) * outerAlpha);
     }

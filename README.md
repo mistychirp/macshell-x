@@ -111,9 +111,11 @@ LiquidBrightness=0.89
 LiquidSaturation=1.15
 LiquidEdgeFade=2
 LiquidEdgeGain=1.06
-# Control modules (Control Center): a white veil, and a visible line along the edge.
-ControlVeil=0.1
-ControlEdgeLine=0.5
+# Control modules (Control Center): how much they brighten the background, saturation, and how much
+# the rim along the edge whitens where it catches the light.
+ControlBrightness=1.15
+ControlSaturation=1.1
+ControlRim=0.55
 # Bubbles (the dock's labels): how strong the dark tint is, and how the edge is dimmed.
 BubbleTint=0.5
 BubbleEdgeGain=0.85

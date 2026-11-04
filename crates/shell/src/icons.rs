@@ -144,6 +144,8 @@ pub fn icon<'a>(glyph: Glyph, size: f32, color: Color) -> Element<'a> {
     svg(svg::Handle::from_memory(glyph.source().as_bytes()))
         .width(size)
         .height(size)
+        // The tint only takes the color's hue; its alpha has to be applied separately.
+        .opacity(color.a)
         .style(move |_, _| svg::Style { color: Some(color) })
         .into()
 }
