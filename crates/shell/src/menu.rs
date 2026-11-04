@@ -2,10 +2,13 @@
 //! every surface that opens menus.
 
 use iced_widget::core::text::{LineHeight, Paragraph as _, Shaping, Wrapping};
-use iced_widget::core::{Alignment, Background, Border, Color, Font, Length, Size, alignment};
+use iced_widget::core::{
+    Alignment, Background, Border, Color, Font, Length, Padding, Size, alignment,
+};
 use iced_widget::{Space, button, column, container, mouse_area, row, text};
 
 use crate::app::{Element, Message};
+use crate::fonts;
 use crate::icons::{self, Glyph};
 use crate::material;
 
@@ -27,9 +30,12 @@ const MIN_WIDTH: f32 = 160.0;
 /// Labels longer than this many characters are cut short with an ellipsis.
 const MAX_LABEL_CHARS: usize = 48;
 pub const RADIUS: f32 = 13.0;
+/// A dock menu's tail, which is part of its surface.
+pub const TAIL_HEIGHT: f32 = 10.0;
+const TAIL_WIDTH: f32 = 22.0;
 
-/// macOS's selection blue.
-pub const ACCENT: Color = Color::from_rgba(0.0, 0.45, 1.0, 0.95);
+/// The selection color: Tahoe's, with its purple accent.
+pub const ACCENT: Color = Color::from_rgba(0.7, 0.18, 0.69, 0.95);
 const DISABLED_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.4);
 const SHORTCUT_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.45);
 
@@ -125,11 +131,11 @@ pub fn size(entries: &[Entry]) -> (u32, u32) {
                 let end = if submenu.is_some() {
                     CHEVRON_ROOM
                 } else if let Some(shortcut) = shortcut {
-                    SHORTCUT_GAP + text_width(shortcut, TEXT_SIZE, Font::default())
+                    SHORTCUT_GAP + text_width(shortcut, TEXT_SIZE, fonts::REGULAR)
                 } else {
                     0.0
                 };
-                Some(text_width(label, TEXT_SIZE, Font::default()) + CHECK_WIDTH + end)
+                Some(text_width(label, TEXT_SIZE, fonts::REGULAR) + CHECK_WIDTH + end)
             }
             Entry::Separator => None,
         })
@@ -141,12 +147,28 @@ pub fn size(entries: &[Entry]) -> (u32, u32) {
     (width.ceil() as u32, height.ceil() as u32)
 }
 
-pub fn material_shapes((width, height): (u32, u32)) -> Vec<material::Shape> {
+/// The glass of a menu of this size, which includes its tail, if it has one: `tail` is where its tip
+/// is from the left.
+pub fn material_shapes((width, height): (u32, u32), tail: Option<f32>) -> Vec<material::Shape> {
     vec![material::Shape {
         rect: (0, 0, width as i32, height as i32),
         radius: RADIUS as i32,
-        style: material::Style::Frosted,
+        style: match tail {
+            Some(center) => material::Style::FrostedWithTail([
+                center as i32,
+                TAIL_WIDTH as i32,
+                TAIL_HEIGHT as i32,
+            ]),
+            None => material::Style::Frosted,
+        },
     }]
+}
+
+/// Where a menu of this width, with a tail pointing at `target` from its left edge's `x`, has its
+/// tail's tip: over the target, unless that would run into the menu's corners.
+pub fn tail_center(width: u32, x: f32, target: f32) -> f32 {
+    let margin = RADIUS + TAIL_WIDTH / 2.0;
+    (target - x).clamp(margin, (width as f32 - margin).max(margin))
 }
 
 /// Where a submenu of the row at `index` attaches to its menu: beside the row, overlapping the menu
@@ -178,6 +200,7 @@ pub fn view(
     material: Option<material::Kind>,
     level: usize,
     open_row: Option<usize>,
+    has_tail: bool,
 ) -> Element<'_> {
     let rows = entries
         .iter()
@@ -198,26 +221,30 @@ pub fn view(
                     on_select.clone()
                 };
                 let row = button(
-                    row![
-                        text(if *checked { "✓" } else { "" })
-                            .size(TEXT_SIZE)
-                            .width(CHECK_WIDTH),
-                        // The width is measured to fit, but rounding mustn't wrap it onto two lines.
-                        text(label).size(TEXT_SIZE).wrapping(Wrapping::None),
-                        Space::new().width(Length::Fill),
-                    ]
-                    .push(
-                        submenu
-                            .is_some()
-                            .then(|| icons::icon(Glyph::Chevron, CHEVRON_SIZE, Color::WHITE)),
+                    container(
+                        row![
+                            text(if *checked { "✓" } else { "" })
+                                .size(TEXT_SIZE)
+                                .width(CHECK_WIDTH),
+                            // The width is measured to fit, but rounding mustn't wrap it onto two lines.
+                            text(label).size(TEXT_SIZE).wrapping(Wrapping::None),
+                            Space::new().width(Length::Fill),
+                        ]
+                        .push(
+                            submenu
+                                .is_some()
+                                .then(|| icons::icon(Glyph::Chevron, CHEVRON_SIZE, Color::WHITE)),
+                        )
+                        .push(shortcut.as_deref().map(|keys| {
+                            text(keys)
+                                .size(TEXT_SIZE)
+                                .wrapping(Wrapping::None)
+                                .color(SHORTCUT_TEXT)
+                        }))
+                        .align_y(Alignment::Center),
                     )
-                    .push(shortcut.as_deref().map(|keys| {
-                        text(keys)
-                            .size(TEXT_SIZE)
-                            .wrapping(Wrapping::None)
-                            .color(SHORTCUT_TEXT)
-                    }))
-                    .align_y(Alignment::Center),
+                    .height(Length::Fill)
+                    .align_y(alignment::Vertical::Center),
                 )
                 .on_press_maybe(enabled.then_some(on_press))
                 .width(Length::Fill)
@@ -259,7 +286,7 @@ pub fn view(
         });
 
     let tint = material::panel_tint(material);
-    container(column(rows))
+    let panel = container(column(rows))
         .padding(PADDING)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -267,6 +294,11 @@ pub fn view(
             background: Some(Background::Color(Color::from_rgba(0.1, 0.1, 0.12, tint))),
             border: material::panel_border(material, RADIUS),
             ..Default::default()
+        });
+    container(panel)
+        .padding(Padding {
+            bottom: if has_tail { TAIL_HEIGHT } else { 0.0 },
+            ..Padding::ZERO
         })
         .into()
 }

@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use iced_widget::core::mouse::ScrollDelta;
 use iced_widget::core::text::{Shaping, Wrapping};
-use iced_widget::core::{Alignment, Color, Font, Length, font};
+use iced_widget::core::{Alignment, Color, Length};
 use iced_widget::graphics::text::cosmic_text::{self, Attrs, Buffer, Metrics, SwashCache, Weight};
 use iced_widget::{Space, container, image, mouse_area, pin, row, stack, text};
 
@@ -16,7 +16,7 @@ use crate::notifications::{
     CARD_WIDTH, CHIP_INK, CLOSE_SIZE, Notification, OVERHANG, RADIUS, card, chip_shape,
     close_button, close_shape, panel_style,
 };
-use crate::{dock, material, menu, menubar};
+use crate::{dock, fonts, material, menu, menubar};
 
 /// Wider than the cards, for the blur behind the message when there are none to fade out in.
 pub const WIDTH: f32 = 540.0;
@@ -44,11 +44,6 @@ const SHADOW_STRENGTH: f32 = 0.9;
 const BACKDROP_HEIGHT: f32 = 231.0;
 /// How far to scroll to move by a row: about a notch of a mouse wheel.
 const PIXELS_PER_ROW: f32 = 25.0;
-
-const BOLD: Font = Font {
-    weight: font::Weight::Bold,
-    ..Font::DEFAULT
-};
 
 /// The height of Notification Center's surface on a screen this tall: down to the dock. Any taller
 /// and the compositor slides it up over the bar to keep it out of the dock's reserved area.
@@ -209,7 +204,7 @@ pub fn view<'a>(
     let mut layers: Vec<Element<'a>> = Vec::new();
     if notifications.is_empty() {
         let message = "No recent notifications";
-        let x = CARD_X + (CARD_WIDTH - menu::text_width(message, TITLE_SIZE, BOLD)) / 2.0;
+        let x = CARD_X + (CARD_WIDTH - menu::text_width(message, TITLE_SIZE, fonts::BOLD)) / 2.0;
         layers.push(
             pin(title(message))
                 .x(x - SHADOW_REACH)
@@ -291,7 +286,7 @@ pub fn view<'a>(
 /// A title directly on the desktop, with Tahoe's soft shadow, which keeps it readable on a bright
 /// wallpaper. It starts [`SHADOW_REACH`] up and to the left of the text.
 fn title(content: &str) -> Element<'_> {
-    let width = menu::text_width(content, TITLE_SIZE, BOLD) + 2.0 * SHADOW_REACH;
+    let width = menu::text_width(content, TITLE_SIZE, fonts::BOLD) + 2.0 * SHADOW_REACH;
     let height = LINE_HEIGHT * TITLE_SIZE + 2.0 * SHADOW_REACH;
     let shadow = SHADOWS.with_borrow_mut(|shadows| {
         shadows
@@ -303,7 +298,7 @@ fn title(content: &str) -> Element<'_> {
         image(shadow).width(width).height(height),
         pin(text(content)
             .size(TITLE_SIZE)
-            .font(BOLD)
+            .font(fonts::BOLD)
             .color(Color::WHITE)
             .shaping(Shaping::Advanced)
             .wrapping(Wrapping::None))
@@ -342,7 +337,9 @@ fn text_shadow(content: &str, width: f32, height: f32) -> image::Handle {
     buffer.set_text(
         fonts,
         content,
-        &Attrs::new().weight(Weight::BOLD),
+        &Attrs::new()
+            .family(cosmic_text::Family::Name("Inter"))
+            .weight(Weight::SEMIBOLD),
         cosmic_text::Shaping::Advanced,
         None,
     );

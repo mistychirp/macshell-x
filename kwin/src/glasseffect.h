@@ -7,6 +7,7 @@
 #pragma once
 
 #include "effect/effect.h"
+#include "glassmanager.h"
 #include "opengl/glutils.h"
 
 #include <memory>
@@ -46,8 +47,8 @@ struct GlassSettings {
 
     /// Liquid glass, for controls like the dock: darkened a little, its edge fading into the
     /// surroundings, a touch brighter.
-    float liquidBrightness = 0.89;
-    float liquidSaturation = 1.15;
+    float liquidBrightness = 0.86;
+    float liquidSaturation = 1.1;
     float liquidEdgeFade = 2.0;
     float liquidEdgeGain = 1.06;
 
@@ -84,6 +85,10 @@ struct WindowGlass {
     bool probeScheduled = false;
     /// Where the glass last was, in global logical coordinates.
     KWin::Rect lastBounds;
+    /// The shapes, which outlive the surface, so that glass fades out with a closing window.
+    QList<Shape> shapes;
+    /// The window's closing. Its glass is fading out with it, and needs repainting all the way.
+    bool closing = false;
 };
 
 /// Glass behind the shapes clients ask for with macshell-glass-v1, the way Tahoe draws it: a flat
@@ -100,6 +105,7 @@ public:
 
     void reconfigure(ReconfigureFlags flags) override;
     void prePaintScreen(KWin::ScreenPrePaintData &data) override;
+    void postPaintScreen() override;
     void drawWindow(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, int mask, const KWin::Region &deviceRegion, KWin::WindowPaintData &data) override;
 
     bool isActive() const override;

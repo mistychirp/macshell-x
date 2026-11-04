@@ -11,6 +11,7 @@ mod control;
 mod dbus;
 mod dbusmenu;
 mod dock;
+mod fonts;
 mod glass_protocol;
 mod icons;
 mod kwin;
@@ -32,5 +33,6 @@ fn main() -> Result<(), iced_layershell::Error> {
         env_logger::Env::default().default_filter_or("warn,layershellev=error,macshell=info"),
     )
     .init();
+    fonts::load();
     app::run()
 }

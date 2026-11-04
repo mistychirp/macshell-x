@@ -36,6 +36,8 @@ namespace Macshell
 static constexpr QSize s_probeSize(32, 4);
 /// How far past the edges of glass to repaint when it changes, in logical pixels.
 static constexpr int s_edgeRepaint = 2;
+/// How long glass a client let go of stays if its window turns out not to be closing.
+static constexpr int s_releasedGlassMs = 1000;
 
 /// Saturation as a color matrix, applied to row vectors like KWin's blur does.
 static QMatrix4x4 saturationMatrix(float saturation)
@@ -79,6 +81,13 @@ GlassEffect::GlassEffect()
 
     // Glass can arrive before its window maps, and windows can go without dropping it.
     connect(effects, &EffectsHandler::windowAdded, this, &GlassEffect::updateWindow);
+    connect(effects, &EffectsHandler::windowClosed, this, [this](EffectWindow *w) {
+        if (auto it = m_windows.find(w); it != m_windows.end()) {
+            it->second.closing = true;
+            w->addRepaintFull();
+            effects->addRepaintFull();
+        }
+    });
     connect(effects, &EffectsHandler::windowDeleted, this, [this](EffectWindow *w) {
         if (auto it = m_windows.find(w); it != m_windows.end()) {
             effects->makeOpenGLContextCurrent();
@@ -137,7 +146,25 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
 void GlassEffect::updateWindow(EffectWindow *w)
 {
     GlassSurface *glass = w->surface() ? m_manager->glassFor(w->surface()) : nullptr;
-    if (!glass || glass->shapes().isEmpty()) {
+    if (!glass) {
+        // A client lets go of its glass as it closes the surface; that glass still has a closing
+        // animation to fade out in. If the window turns out to be staying, it goes after all.
+        if (m_windows.contains(w) && !w->isDeleted()) {
+            QTimer::singleShot(s_releasedGlassMs, this, [this, window = QPointer<EffectWindow>(w)]() {
+                auto it = m_windows.find(window.data());
+                if (!window || it == m_windows.end() || it->second.closing || window->isDeleted()
+                    || (window->surface() && m_manager->glassFor(window->surface()))) {
+                    return;
+                }
+                effects->makeOpenGLContextCurrent();
+                m_windows.erase(it);
+                window->addRepaintFull();
+                effects->addRepaintFull();
+            });
+        }
+        return;
+    }
+    if (glass->shapes().isEmpty()) {
         if (auto it = m_windows.find(w); it != m_windows.end()) {
             effects->makeOpenGLContextCurrent();
             m_windows.erase(it);
@@ -157,6 +184,7 @@ void GlassEffect::updateWindow(EffectWindow *w)
     }
 
     WindowGlass &data = m_windows[w];
+    data.shapes = glass->shapes();
     if (!data.item) {
         data.item = std::make_unique<BackgroundEffectItem>(w->windowItem());
     }
@@ -178,6 +206,19 @@ void GlassEffect::prePaintScreen(ScreenPrePaintData &data)
 {
     m_currentView = data.view;
     effects->prePaintScreen(data);
+}
+
+void GlassEffect::postPaintScreen()
+{
+    // A closing window only repaints itself, but glass reaches a little past it at a fractional
+    // scale. Without this, that row of pixels stays as it was until the window's gone.
+    for (const auto &[window, glass] : m_windows) {
+        if (glass.closing && !glass.lastBounds.isEmpty()) {
+            const Rect bounds = glass.lastBounds;
+            effects->addRepaint(Rect(bounds.x() - s_edgeRepaint, bounds.y() - s_edgeRepaint, bounds.width() + 2 * s_edgeRepaint, bounds.height() + 2 * s_edgeRepaint));
+        }
+    }
+    effects->postPaintScreen();
 }
 
 void GlassEffect::drawWindow(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, int mask, const Region &deviceRegion, WindowPaintData &data)
@@ -317,14 +358,12 @@ float GlassEffect::measureLuminance(ShapeRender &render, bool linear)
 void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, const Region &deviceRegion, const WindowPaintData &data)
 {
     auto it = m_windows.find(w);
-    if (it == m_windows.end() || !w->surface()) {
+    if (it == m_windows.end()) {
         return;
     }
-    GlassSurface *glass = m_manager->glassFor(w->surface());
-    if (!glass) {
-        return;
-    }
-    const QList<Shape> &shapes = glass->shapes();
+    // Gone once the surface is, while the window finishes closing.
+    GlassSurface *glass = w->surface() ? m_manager->glassFor(w->surface()) : nullptr;
+    const QList<Shape> &shapes = it->second.shapes;
     std::vector<ShapeRender> &renders = it->second.render[m_currentView];
     renders.resize(shapes.size());
 
@@ -336,7 +375,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
 
     for (qsizetype i = 0; i < shapes.size(); ++i) {
         const Shape &shape = shapes[i];
-        const bool probe = i == 0 && glass->tracksBrightness();
+        const bool probe = glass && i == 0 && glass->tracksBrightness();
         if (shape.style == Style::Transparent && !probe) {
             continue;
         }
@@ -463,6 +502,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("rimDirectional", control ? 1.0f : 0.0f);
         m_glassShader->setUniform("rimInner", control ? 0.33f : 1.0f);
         m_glassShader->setUniform("softEdges", shape.softEdges);
+        m_glassShader->setUniform("tail", QVector3D(shape.tail.x() * data.xScale(), shape.tail.y() * data.xScale(), shape.tail.z() * data.yScale()));
         m_glassShader->setUniform("edgeFade", frosted ? 0.0f : m_settings.liquidEdgeFade);
         m_glassShader->setUniform("edgeGain", bubble ? m_settings.bubbleEdgeGain : frosted ? 1.0f : m_settings.liquidEdgeGain);
         m_glassShader->setUniform("edgeWhite", frosted ? m_settings.frostEdgeWhite : 0.0f);

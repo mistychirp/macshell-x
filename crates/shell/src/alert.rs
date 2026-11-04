@@ -3,17 +3,28 @@
 //! grab and stays until answered.
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
-use iced_widget::core::{Alignment, Background, Border, Color, Length, alignment};
+use iced_widget::core::text::LineHeight;
+use iced_widget::core::{Background, Border, Color, Length};
 use iced_widget::{Space, button, column, container, image, row, text};
 
 use crate::app::{Element, Message};
-use crate::material;
+use crate::{fonts, material, menu};
 
-const WIDTH: u32 = 300;
-const HEIGHT: u32 = 196;
-const RADIUS: f32 = 20.0;
-const PADDING: f32 = 18.0;
-const ICON_SIZE: f32 = 56.0;
+// Measured from Tahoe's alerts.
+const WIDTH: f32 = 266.0;
+const RADIUS: f32 = 26.0;
+const PADDING_X: f32 = 21.0;
+const PADDING_TOP: f32 = 21.0;
+const PADDING_BOTTOM: f32 = 16.0;
+const ICON_SIZE: f32 = 62.0;
+const TEXT_SIZE: f32 = 13.0;
+const LINE_HEIGHT: f32 = 16.0;
+const TEXT_WIDTH: f32 = WIDTH - 2.0 * PADDING_X;
+const ICON_GAP: f32 = 12.0;
+const TITLE_GAP: f32 = 10.0;
+const BUTTONS_GAP: f32 = 16.0;
+const BUTTON_HEIGHT: f32 = 28.0;
+const BUTTON_SPACING: f32 = 8.0;
 
 pub struct Alert {
     pub title: String,
@@ -24,12 +35,27 @@ pub struct Alert {
     pub icon: Option<image::Handle>,
 }
 
-pub fn settings() -> NewLayerShellSettings {
+/// How tall an alert is, which depends on how its words wrap.
+fn height(alert: &Alert) -> f32 {
+    let lines =
+        |words: &str, font| menu::text_height(words, TEXT_SIZE, LINE_HEIGHT, font, TEXT_WIDTH);
+    PADDING_TOP
+        + ICON_SIZE
+        + ICON_GAP
+        + lines(&alert.title, fonts::BOLD)
+        + TITLE_GAP
+        + lines(&alert.detail, fonts::REGULAR)
+        + BUTTONS_GAP
+        + BUTTON_HEIGHT
+        + PADDING_BOTTOM
+}
+
+pub fn settings(alert: &Alert) -> NewLayerShellSettings {
     NewLayerShellSettings {
         // No anchors: the compositor centers the surface.
         anchor: Anchor::empty(),
         layer: Layer::Overlay,
-        size: Some((WIDTH, HEIGHT)),
+        size: Some((WIDTH as u32, height(alert).ceil() as u32)),
         exclusive_zone: Some(-1),
         keyboard_interactivity: KeyboardInteractivity::OnDemand,
         namespace: Some(String::from("macshell-alert")),
@@ -37,9 +63,9 @@ pub fn settings() -> NewLayerShellSettings {
     }
 }
 
-pub fn material_shapes() -> Vec<material::Shape> {
+pub fn material_shapes(alert: &Alert) -> Vec<material::Shape> {
     vec![material::Shape {
-        rect: (0, 0, WIDTH as i32, HEIGHT as i32),
+        rect: (0, 0, WIDTH as i32, height(alert).ceil() as i32),
         radius: RADIUS as i32,
         style: material::Style::Frosted,
     }]
@@ -54,35 +80,38 @@ pub fn view(alert: &Alert, material: Option<material::Kind>) -> Element<'_> {
         None => Space::new().height(ICON_SIZE).into(),
     };
 
-    let buttons = row![
-        alert_button("Cancel", Message::AlertAnswered(false), false),
-        alert_button(&alert.confirm, Message::AlertAnswered(true), true),
-    ]
-    .spacing(8);
-
     let tint = material::panel_tint(material);
-    container(
-        column![
-            icon,
-            text(&alert.title)
-                .size(13)
-                .align_x(alignment::Horizontal::Center),
-            text(&alert.detail)
-                .size(11)
-                .align_x(alignment::Horizontal::Center)
-                .color(Color::from_rgba(1.0, 1.0, 1.0, 0.65)),
-            Space::new().height(Length::Fill),
-            buttons,
+    container(column![
+        icon,
+        Space::new().height(ICON_GAP),
+        text(&alert.title)
+            .size(TEXT_SIZE)
+            .line_height(LineHeight::Absolute(LINE_HEIGHT.into()))
+            .font(fonts::BOLD),
+        Space::new().height(TITLE_GAP),
+        text(&alert.detail)
+            .size(TEXT_SIZE)
+            .line_height(LineHeight::Absolute(LINE_HEIGHT.into()))
+            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.85)),
+        Space::new().height(BUTTONS_GAP),
+        row![
+            alert_button("Cancel", Message::AlertAnswered(false), false),
+            alert_button(&alert.confirm, Message::AlertAnswered(true), true),
         ]
-        .spacing(6)
-        .align_x(Alignment::Center),
-    )
-    .padding(PADDING)
+        .spacing(BUTTON_SPACING),
+    ])
+    .padding(iced_widget::core::Padding {
+        top: PADDING_TOP,
+        bottom: PADDING_BOTTOM,
+        left: PADDING_X,
+        right: PADDING_X,
+    })
     .width(Length::Fill)
     .height(Length::Fill)
     .style(move |_| container::Style {
         background: Some(Background::Color(Color::from_rgba(0.1, 0.1, 0.12, tint))),
         border: material::panel_border(material, RADIUS),
+        text_color: Some(Color::WHITE),
         ..Default::default()
     })
     .into()
@@ -90,26 +119,27 @@ pub fn view(alert: &Alert, material: Option<material::Kind>) -> Element<'_> {
 
 fn alert_button<'a>(label: &str, on_press: Message, primary: bool) -> Element<'a> {
     button(
-        text(label.to_owned())
-            .size(13)
-            .align_x(alignment::Horizontal::Center),
+        container(text(label.to_owned()).size(TEXT_SIZE))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
     )
     .on_press(on_press)
     .width(Length::Fill)
-    .padding([5, 10])
+    .height(BUTTON_HEIGHT)
+    .padding([0, 10])
     .style(move |_, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let background = if primary {
-            // macOS's default-button blue.
-            Color::from_rgba(0.0, 0.45, 1.0, if hovered { 1.0 } else { 0.9 })
+            // Tahoe's default button, with its purple accent.
+            Color::from_rgba(0.63, 0.31, 0.66, if hovered { 1.0 } else { 0.9 })
         } else {
-            Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.25 } else { 0.15 })
+            Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.2 } else { 0.1 })
         };
         button::Style {
             background: Some(Background::Color(background)),
             text_color: Color::WHITE,
             border: Border {
-                radius: 8.0.into(),
+                radius: (BUTTON_HEIGHT / 2.0).into(),
                 ..Default::default()
             },
             ..Default::default()

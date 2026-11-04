@@ -44,6 +44,9 @@ uniform float rimInner;
 // A backdrop instead of a shape: just the blur, fading in from each side over this many logical
 // pixels (left, top, right, bottom), with no edge. All 0 means it isn't one.
 uniform vec4 softEdges;
+// A tail pointing down from the shape: where its tip is from the left, how wide it is and how tall,
+// in logical pixels. The tail is part of geoSize. A height of 0 means none.
+uniform vec3 tail;
 uniform float opacity;
 
 // Texture coordinates: 0 to 1 across the shape, with y pointing up.
@@ -56,6 +59,37 @@ float sdRoundedBox(vec2 p, vec2 halfSize, float r)
 {
     vec2 q = abs(p) - halfSize + r;
     return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+}
+
+// Signed distance to an isosceles triangle with its tip at the origin, widening toward +y.
+float sdTriangle(vec2 p, vec2 q)
+{
+    p.x = abs(p.x);
+    vec2 a = p - q * clamp(dot(p, q) / dot(q, q), 0.0, 1.0);
+    vec2 b = p - q * vec2(clamp(p.x / q.x, 0.0, 1.0), 1.0);
+    float k = sign(q.y);
+    float d = min(dot(a, a), dot(b, b));
+    float s = max(k * (p.x * q.y - p.y * q.x), k * (p.y - q.y));
+    return sqrt(d) * sign(s);
+}
+
+// Signed distance to the shape, which may have a tail flaring out of its bottom.
+float sdShape(vec2 p, vec2 halfSize, float r)
+{
+    if (tail.z <= 0.0) {
+        return sdRoundedBox(p, halfSize, r);
+    }
+    float body = sdRoundedBox(p + vec2(0.0, tail.z * 0.5), vec2(halfSize.x, halfSize.y - tail.z * 0.5), r);
+    // The tip is rounded by pulling the triangle in and growing it back. It carries on into the
+    // body at the same angle, so that the join is a clean one to smooth.
+    const float tipRadius = 1.5;
+    vec2 tip = vec2(p.x + halfSize.x - tail.x, halfSize.y - tipRadius * 1.6 - p.y);
+    vec2 reach = vec2(tail.y * 0.5, tail.z) * 1.5;
+    float triangle = sdTriangle(tip, reach) - tipRadius;
+    // A smooth union, which flares the tail's base into the body.
+    const float flare = 5.0;
+    float h = clamp(0.5 + 0.5 * (triangle - body) / flare, 0.0, 1.0);
+    return mix(triangle, body, h) - flare * h * (1.0 - h);
 }
 
 // Samples the background at shape coordinates (0 to 1, y pointing down).
@@ -85,7 +119,7 @@ void main(void)
         return;
     }
 
-    float d = sdRoundedBox(p, halfSize, cornerRadius);
+    float d = sdShape(p, halfSize, cornerRadius);
 
     // Antialiased coverage over one device pixel.
     float coverage = clamp(0.5 - d * deviceScale, 0.0, 1.0);
@@ -96,8 +130,8 @@ void main(void)
     // Outward surface normal from the SDF gradient.
     vec2 e = vec2(0.5, 0.0);
     vec2 n = vec2(
-        sdRoundedBox(p + e.xy, halfSize, cornerRadius) - sdRoundedBox(p - e.xy, halfSize, cornerRadius),
-        sdRoundedBox(p + e.yx, halfSize, cornerRadius) - sdRoundedBox(p - e.yx, halfSize, cornerRadius));
+        sdShape(p + e.xy, halfSize, cornerRadius) - sdShape(p - e.xy, halfSize, cornerRadius),
+        sdShape(p + e.yx, halfSize, cornerRadius) - sdShape(p - e.yx, halfSize, cornerRadius));
     n = length(n) > 0.0 ? normalize(n) : vec2(0.0);
 
     // The lens bends the background toward the center, most at the edge. Thin shapes get a

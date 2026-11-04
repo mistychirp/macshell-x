@@ -8,7 +8,7 @@ use std::fs;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
 use iced_widget::core::text::Wrapping;
-use iced_widget::core::{Alignment, Background, Border, Color, Font, Length, Rectangle, font};
+use iced_widget::core::{Alignment, Background, Border, Color, Font, Length, Rectangle};
 use iced_widget::{Space, container, image, mouse_area, row, text};
 
 use crate::app::{Element, Message};
@@ -17,7 +17,7 @@ use crate::dock::MenuAction;
 use crate::icons::{self, Glyph};
 use crate::kwin::KeyboardLayouts;
 use crate::material::{self, Shape};
-use crate::{apps, menu, tray};
+use crate::{apps, fonts, menu, tray};
 
 pub const HEIGHT: u32 = 30;
 pub const TEXT_SIZE: f32 = 13.0;
@@ -35,10 +35,7 @@ const INPUT_TEXT_SIZE: f32 = 10.0;
 /// Between the bottom of the bar and the top of a menu hanging from it.
 const MENU_GAP: i32 = 4;
 
-const BOLD: Font = Font {
-    weight: font::Weight::Bold,
-    ..Font::DEFAULT
-};
+const BOLD: Font = fonts::HEAVY;
 
 /// A title in the bar that opens a menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,7 +220,7 @@ impl Bar<'_> {
         // As many of the app's menus as fit before the status items.
         for (index, name) in self.app_menus.iter().enumerate() {
             let width =
-                (menu::text_width(name, TEXT_SIZE, Font::DEFAULT) + 2.0 * TITLE_PADDING_X).ceil();
+                (menu::text_width(name, TEXT_SIZE, fonts::REGULAR) + 2.0 * TITLE_PADDING_X).ceil();
             if left_end + width > x {
                 break;
             }
@@ -234,7 +231,7 @@ impl Bar<'_> {
     }
 
     fn clock_width(&self) -> f32 {
-        (menu::text_width(self.clock, TEXT_SIZE, Font::DEFAULT) + 2.0 * TITLE_PADDING_X).ceil()
+        (menu::text_width(self.clock, TEXT_SIZE, fonts::REGULAR) + 2.0 * TITLE_PADDING_X).ceil()
     }
 
     /// Where Control Center attaches: under the bar's right end, like on macOS, rather than under

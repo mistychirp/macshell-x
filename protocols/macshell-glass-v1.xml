@@ -37,7 +37,7 @@
     their glass is, to pick a text color that stays legible over it.
   </description>
 
-  <interface name="macshell_glass_manager_v1" version="4">
+  <interface name="macshell_glass_manager_v1" version="5">
     <description summary="glass factory">
       Creates glass objects for surfaces.
     </description>
@@ -63,7 +63,7 @@
     </request>
   </interface>
 
-  <interface name="macshell_glass_v1" version="4">
+  <interface name="macshell_glass_v1" version="5">
     <description summary="glass shapes behind a surface">
       Holds a list of glass shapes rendered behind the surface. The list is
       double-buffered state, applied on the next wl_surface.commit, and starts
@@ -123,6 +123,23 @@
       <arg name="fade_top" type="uint"/>
       <arg name="fade_right" type="uint"/>
       <arg name="fade_bottom" type="uint"/>
+    </request>
+
+    <request name="add_rounded_rect_with_tail" since="5">
+      <description summary="add a rounded rectangle with a tail pointing down">
+        Like add_rounded_rect, but the shape is a rounded rectangle above a small
+        tail that points down, like a speech bubble's. Together they fill the
+        given rectangle: the tail takes tail_height off its bottom.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="radius" type="uint"/>
+      <arg name="style" type="uint" enum="style"/>
+      <arg name="tail_center" type="int" summary="where the tail's tip is, from the left"/>
+      <arg name="tail_width" type="uint"/>
+      <arg name="tail_height" type="uint"/>
     </request>
 
     <request name="add_rounded_rect">

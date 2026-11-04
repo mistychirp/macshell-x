@@ -29,8 +29,8 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appmenu, audio, bluetooth, brightness, control, dbusmenu, dock, media, menu, menubar, network,
-    notification_center, stack, tray, wallpaper,
+    appmenu, audio, bluetooth, brightness, control, dbusmenu, dock, fonts, media, menu, menubar,
+    network, notification_center, stack, tray, wallpaper,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -57,6 +57,7 @@ pub fn run() -> Result<(), iced_layershell::Error> {
             start_mode: StartMode::Background,
             ..Default::default()
         },
+        default_font: fonts::REGULAR,
         default_text_size: menubar::TEXT_SIZE.into(),
         with_connection: connection.map(WithConnection::Value),
         ..Default::default()
@@ -101,8 +102,8 @@ pub enum Message {
     ControlRefresh,
     /// A module's detail was opened, or left.
     ControlDetail(Option<control::Detail>),
-    /// A detail panel was pressed somewhere that does nothing.
-    ControlPanelPressed,
+    /// Something that takes presses was pressed where they do nothing.
+    Nothing,
     /// A detail panel's settings row was pressed; carries the settings page.
     ControlSettings(&'static str),
     /// A keyboard layout was chosen in the Keyboard detail; carries its index.
@@ -194,6 +195,10 @@ struct Popup {
     material: Option<MaterialSurface>,
     /// Shapes last sent, for content that changes while it's open.
     shapes: Vec<material::Shape>,
+    /// Where its left edge is on the screen.
+    x: f32,
+    /// Where a menu's tail's tip is from its left edge, if it has one.
+    tail: Option<f32>,
 }
 
 /// A menu open beside a row of another.
@@ -1108,10 +1113,23 @@ impl Shell {
         let Some(anchor) = dock::menu_anchor(&self.dock_layout, index) else {
             return Task::none();
         };
+        // A menu's tail is part of its surface, and points at the icon. The compositor keeps the
+        // whole thing on the screen, which can move it from being centered over the icon.
+        let is_menu = matches!(content, PopupContent::Menu(_));
+        let size = if is_menu {
+            (size.0, size.1 + menu::TAIL_HEIGHT as u32)
+        } else {
+            size
+        };
+        let icon_center = anchor.0 as f32 + anchor.2 as f32 / 2.0;
+        let x = (icon_center - size.0 as f32 / 2.0)
+            .min(self.dock_width - size.0 as f32)
+            .max(0.0);
+        let tail = is_menu.then(|| menu::tail_center(size.0, x, icon_center));
         let settings = IcedNewPopupSettings::new(self.dock_id, size, anchor)
             .anchor(PopupAnchor::Top)
             .gravity(PopupGravity::Top);
-        self.open_popup(None, settings, content)
+        self.open_popup(None, settings, content, x, tail)
     }
 
     /// Opens a menu bar title's menu under it.
@@ -1146,7 +1164,13 @@ impl Shell {
                 )
                 .anchor(PopupAnchor::BottomRight)
                 .gravity(PopupGravity::BottomLeft);
-                let open = self.open_popup(Some(title), settings, PopupContent::ControlCenter);
+                let open = self.open_popup(
+                    Some(title),
+                    settings,
+                    PopupContent::ControlCenter,
+                    0.0,
+                    None,
+                );
                 return Task::batch([open, reread, Task::done(Message::ControlRefresh)]);
             }
             menubar::Title::AppMenu(index) => {
@@ -1188,7 +1212,13 @@ impl Shell {
                 )
                 .anchor(PopupAnchor::BottomRight)
                 .gravity(PopupGravity::BottomLeft);
-                let open = self.open_popup(Some(title), settings, PopupContent::NotificationCenter);
+                let open = self.open_popup(
+                    Some(title),
+                    settings,
+                    PopupContent::NotificationCenter,
+                    0.0,
+                    None,
+                );
                 // Everything's in the panel now, and a banner would sit on top of it.
                 self.banners.dismiss_all();
                 return Task::batch([open, self.sync_banners()]);
@@ -1240,14 +1270,7 @@ impl Shell {
     fn menu_x(&self, level: usize) -> f32 {
         match level.checked_sub(1) {
             Some(index) => self.submenus.get(index).map_or(0.0, |menu| menu.x),
-            // A menu near the end of the bar is slid back onto the screen.
-            None => self.popup.as_ref().map_or(0.0, |popup| {
-                popup
-                    .title
-                    .and_then(|title| self.bar().menu_anchor(title))
-                    .map_or(0.0, |anchor| anchor.0 as f32)
-                    .min(self.menubar_width - popup.size.0 as f32)
-            }),
+            None => self.popup.as_ref().map_or(0.0, |popup| popup.x),
         }
     }
 
@@ -1330,10 +1353,12 @@ impl Shell {
         let Some(anchor) = self.bar().menu_anchor(title) else {
             return Task::none();
         };
+        // A menu near the end of the bar is slid back onto the screen.
+        let x = (anchor.0 as f32).min(self.menubar_width - size.0 as f32);
         let settings = IcedNewPopupSettings::new(self.menubar_id, size, anchor)
             .anchor(PopupAnchor::BottomLeft)
             .gravity(PopupGravity::BottomRight);
-        self.open_popup(Some(title), settings, content)
+        self.open_popup(Some(title), settings, content, x, None)
     }
 
     /// Opens a popup, unless one is open: then it closes that one instead.
@@ -1342,6 +1367,8 @@ impl Shell {
         title: Option<menubar::Title>,
         settings: IcedNewPopupSettings,
         content: PopupContent,
+        x: f32,
+        tail: Option<f32>,
     ) -> Task<Message> {
         // xdg-shell only lets the topmost popup grab, so a new popup can't open until the old
         // one is gone. Close it, and let the next click open the new one.
@@ -1358,6 +1385,8 @@ impl Shell {
             size: settings.size,
             material: None,
             shapes: Vec::new(),
+            x,
+            tail,
         });
         Task::batch([
             self.relayout_dock(),
@@ -1395,13 +1424,13 @@ impl Shell {
                 let Some(submenu) = self.submenus.iter_mut().find(|menu| menu.id == id) else {
                     return;
                 };
-                material.set_shapes(&target, &menu::material_shapes(submenu.size));
+                material.set_shapes(&target, &menu::material_shapes(submenu.size, None));
                 submenu.material = Some(target);
             }
             Some(Surface::Popup) => match &mut self.popup {
                 Some(popup) if popup.id == id => {
                     let shapes = match popup.content {
-                        PopupContent::Menu(_) => menu::material_shapes(popup.size),
+                        PopupContent::Menu(_) => menu::material_shapes(popup.size, popup.tail),
                         PopupContent::Downloads(_) => stack::material_shapes(popup.size),
                         PopupContent::ControlCenter => control::material_shapes(&self.control),
                         PopupContent::NotificationCenter => notification_center::material_shapes(
@@ -1420,7 +1449,7 @@ impl Shell {
             },
             Some(Surface::Alert) => match &mut self.alert {
                 Some(open) if open.id == id => {
-                    material.set_shapes(&target, &alert::material_shapes());
+                    material.set_shapes(&target, &alert::material_shapes(&open.alert));
                     open.material = Some(target);
                 }
                 _ => target.destroy(),
@@ -1603,7 +1632,7 @@ impl Shell {
         if self.alert.is_some() {
             return Task::none();
         }
-        let (id, open) = Message::layershell_open(alert::settings());
+        let (id, open) = Message::layershell_open(alert::settings(&alert));
         self.surfaces.insert(id, Surface::Alert);
         self.alert = Some(OpenAlert {
             id,
@@ -1857,12 +1886,17 @@ impl Shell {
                         material,
                         index + 1,
                         open_row,
+                        false,
                     );
                 }
                 match self.popup.as_ref().map(|popup| &popup.content) {
                     Some(PopupContent::Menu(entries)) => {
                         let open_row = self.submenus.first().map(|menu| menu.opener);
-                        menu::view(entries, material, 0, open_row)
+                        let has_tail = self
+                            .popup
+                            .as_ref()
+                            .is_some_and(|popup| popup.tail.is_some());
+                        menu::view(entries, material, 0, open_row, has_tail)
                     }
                     Some(PopupContent::Downloads(tiles)) => stack::view(tiles, material),
                     Some(PopupContent::ControlCenter) => control::view(&self.control, material),

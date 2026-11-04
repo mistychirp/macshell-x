@@ -107,8 +107,8 @@ FrostEdgeWhite=0.12
 FrostOuterEdge=0.8
 # Liquid glass (the dock): how much it darkens the background, saturation, and its edge, which
 # fades into the surroundings over this many logical pixels, brightened by the gain.
-LiquidBrightness=0.89
-LiquidSaturation=1.15
+LiquidBrightness=0.86
+LiquidSaturation=1.1
 LiquidEdgeFade=2
 LiquidEdgeGain=1.06
 # Control modules (Control Center): how much they brighten the background, saturation, and how much

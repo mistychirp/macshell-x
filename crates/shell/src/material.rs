@@ -42,6 +42,9 @@ pub enum Style {
     Bubble,
     /// A brightened lens inside a rim that catches the light, for Control Center's modules.
     Control,
+    /// Frosted, with a tail pointing down from its bottom, like a dock menu's: where its tip is from
+    /// the left, how wide it is and how tall. Plain frosted where that isn't supported.
+    FrostedWithTail([i32; 3]),
     /// A menu's tint over the dock's lens, for notifications.
     Card,
     /// A very wide blur under a light grey tint, inside an even rim, for small buttons.
@@ -137,7 +140,7 @@ impl Material {
         let queue = event_queue.handle();
         let compositor: WlCompositor = globals.bind(&queue, 1..=6, ()).ok()?;
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=4, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=5, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -201,9 +204,27 @@ impl Material {
                         }
                         continue;
                     }
+                    if let Style::FrostedWithTail([center, width_, height_]) = shape.style
+                        && glass.version() >= 5
+                    {
+                        glass.add_rounded_rect_with_tail(
+                            x,
+                            y,
+                            width,
+                            height,
+                            shape.radius.max(0) as u32,
+                            macshell_glass_v1::Style::Frosted,
+                            center,
+                            width_ as u32,
+                            height_ as u32,
+                        );
+                        continue;
+                    }
                     let style = match shape.style {
                         Style::Clear => macshell_glass_v1::Style::Clear,
-                        Style::Frosted => macshell_glass_v1::Style::Frosted,
+                        Style::Frosted | Style::FrostedWithTail(_) => {
+                            macshell_glass_v1::Style::Frosted
+                        }
                         Style::Liquid if glass.version() >= 2 => macshell_glass_v1::Style::Liquid,
                         Style::Bubble if glass.version() >= 2 => macshell_glass_v1::Style::Bubble,
                         Style::Control if glass.version() >= 2 => macshell_glass_v1::Style::Control,

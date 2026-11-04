@@ -11,12 +11,13 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
-use iced_widget::core::{Background, Border, Color, Font, Length, Point, Rectangle, Vector};
+use iced_widget::core::{Background, Border, Color, Length, Point, Rectangle, Vector};
 use iced_widget::{Space, container, image, mouse_area, pin, stack, text};
 
 use crate::app::{Element, Message};
 use crate::apps;
 use crate::apps::{App, AppIndex};
+use crate::fonts;
 use crate::kwin::{self, WindowInfo};
 use crate::material::{self, Shape};
 use crate::menu;
@@ -47,7 +48,7 @@ const LABEL_HEIGHT: f32 = 26.0;
 /// Gap between the label and the top of the icon under it.
 const LABEL_GAP: f32 = 10.0;
 /// Gap between a menu and the top of the icon it belongs to.
-const MENU_GAP: f32 = 8.0;
+const MENU_GAP: f32 = 26.0;
 
 /// How far above the pill the pointer has to drag a pinned icon to remove it.
 const REMOVE_DISTANCE: f32 = 40.0;
@@ -259,7 +260,7 @@ pub fn layout(
             None => Place::ALL.get(index - apps)?.name().to_owned(),
         };
         let icon = icons.get(index)?;
-        let width = (menu::text_width(&name, LABEL_TEXT_SIZE, Font::default())
+        let width = (menu::text_width(&name, LABEL_TEXT_SIZE, fonts::REGULAR)
             + 2.0 * LABEL_PADDING_X)
             .ceil();
         let x = (icon.center_x() - width / 2.0)
@@ -349,7 +350,7 @@ fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> 
 
     let label = removing.then(|| {
         let text = String::from("Remove");
-        let width = (menu::text_width(&text, LABEL_TEXT_SIZE, Font::default())
+        let width = (menu::text_width(&text, LABEL_TEXT_SIZE, fonts::REGULAR)
             + 2.0 * LABEL_PADDING_X)
             .ceil();
         Label {
@@ -572,13 +573,13 @@ pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
         entries.push(menu::Entry::Separator);
     }
 
-    entries.push(
-        menu::Entry::item(
-            "Keep in Dock",
-            Message::DockMenu(MenuAction::TogglePin(item.app.id.clone())),
-        )
-        .checked(pinned),
-    );
+    entries.push(menu::Entry::item("Options", Message::Nothing).submenu(vec![
+            menu::Entry::item(
+                "Keep in Dock",
+                Message::DockMenu(MenuAction::TogglePin(item.app.id.clone())),
+            )
+            .checked(pinned),
+        ]));
     entries.push(menu::Entry::Separator);
 
     if item.windows.is_empty() {

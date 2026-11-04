@@ -9,7 +9,7 @@ use iced_futures::Subscription;
 use iced_futures::futures::channel::mpsc;
 use iced_futures::futures::{SinkExt as _, Stream, future};
 use iced_widget::core::text::Shaping;
-use iced_widget::core::{Alignment, Background, Border, Color, Font, Length, font};
+use iced_widget::core::{Alignment, Background, Border, Color, Length};
 use iced_widget::{Space, button, column, container, image, mouse_area, pin, row, stack, text};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::object_server::SignalEmitter;
@@ -18,7 +18,7 @@ use zbus::zvariant::{OwnedValue, Value};
 use crate::app::{Element, Message};
 use crate::apps::AppIndex;
 use crate::icons::{self, Glyph};
-use crate::{dbus, material, menu};
+use crate::{dbus, fonts, material, menu};
 
 const SERVICE: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
@@ -52,11 +52,6 @@ const ACTIONS_HEIGHT: f32 = 32.0;
 pub const CLOSE_SIZE: f32 = 19.0;
 /// What's on a chip, like the ✕ on its button.
 pub const CHIP_INK: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.75);
-
-const BOLD: Font = Font {
-    weight: font::Weight::Bold,
-    ..Font::DEFAULT
-};
 
 /// What the service hears from apps.
 #[derive(Debug, Clone)]
@@ -127,7 +122,7 @@ impl Notification {
         .or_else(|| app.icon.clone())
         .or_else(|| apps.themed_icon("dialog-information"));
 
-        let title = menu::fit(&incoming.summary, TEXT_SIZE, BOLD, TEXT_WIDTH);
+        let title = menu::fit(&incoming.summary, TEXT_SIZE, fonts::BOLD, TEXT_WIDTH);
         let body = clamp_lines(&plain_text(&incoming.body));
         let body_height = if body.is_empty() {
             0.0
@@ -171,7 +166,7 @@ impl Notification {
 }
 
 fn body_height(body: &str) -> f32 {
-    menu::text_height(body, TEXT_SIZE, LINE_HEIGHT, Font::DEFAULT, TEXT_WIDTH)
+    menu::text_height(body, TEXT_SIZE, LINE_HEIGHT, fonts::REGULAR, TEXT_WIDTH)
 }
 
 /// `body`, cut short with an ellipsis if it takes more lines than a card shows.
@@ -272,7 +267,7 @@ pub fn card<'a>(
             .line_height(iced_widget::core::text::LineHeight::Absolute(
                 LINE_HEIGHT.into()
             ))
-            .font(BOLD)
+            .font(fonts::BOLD)
             .shaping(Shaping::Advanced),
     ];
     if !notification.body.is_empty() {
@@ -330,7 +325,7 @@ pub fn card<'a>(
 
 fn action_button<'a>(label: &str, width: f32, on_press: Message) -> Element<'a> {
     button(
-        text(menu::fit(label, 12.0, Font::DEFAULT, width - 16.0))
+        text(menu::fit(label, 12.0, fonts::REGULAR, width - 16.0))
             .size(12)
             .center()
             .width(Length::Fill),

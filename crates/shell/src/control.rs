@@ -4,7 +4,7 @@
 
 use iced_widget::core::text::Wrapping;
 use iced_widget::core::{
-    Alignment, Background, Border, Color, Font, Length, Padding, Rectangle, alignment, font,
+    Alignment, Background, Border, Color, Length, Padding, Rectangle, alignment,
 };
 use iced_widget::scrollable::{Direction, Scrollbar};
 use iced_widget::{
@@ -18,7 +18,7 @@ use crate::icons::{self, Glyph};
 use crate::kwin::KeyboardLayouts;
 use crate::media::{Control, Track};
 use crate::network::{Network, Wifi};
-use crate::{bluetooth, material, media, menu, menubar, network};
+use crate::{bluetooth, fonts, material, media, menu, menubar, network};
 
 const CELL: f32 = 63.0;
 const GAP: f32 = 12.0;
@@ -47,10 +47,6 @@ const BLUR_TOP_FADE: f32 = 30.0;
 /// Between the bubbles and the edge of the screen, which the blur reaches.
 const MARGIN_RIGHT: f32 = 8.0;
 
-const BOLD: Font = Font {
-    weight: font::Weight::Bold,
-    ..Font::DEFAULT
-};
 const DIM: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.65);
 const FAINT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.3);
 const OFF_FILL: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.25);
@@ -360,7 +356,7 @@ fn keyboard(panel: &Panel) -> Element<'_> {
         .map_or("Unavailable", String::as_str);
     let several = layouts.is_some_and(|layouts| layouts.names.len() > 1);
 
-    let circle = container(text(menubar::input_label(name)).size(13).font(BOLD))
+    let circle = container(text(menubar::input_label(name)).size(13).font(fonts::BOLD))
         .center(TOGGLE_SIZE)
         .style(|_| toggle_style(false));
     capsule_row(
@@ -404,11 +400,11 @@ fn capsule_row<'a>(
         row![
             circle,
             column![
-                text(name).size(TITLE_SIZE).font(BOLD),
+                text(name).size(TITLE_SIZE).font(fonts::BOLD),
                 text(menu::fit(
                     status,
                     DETAIL_SIZE,
-                    Font::DEFAULT,
+                    fonts::REGULAR,
                     CAPSULE_TEXT_WIDTH
                 ))
                 .size(DETAIL_SIZE)
@@ -484,11 +480,11 @@ fn now_playing(panel: &Panel) -> Element<'_> {
 
     let (title, artist, play_glyph) = match &panel.track {
         Some(track) => (
-            menu::fit(&track.title, TITLE_SIZE, BOLD, TILE_TEXT_WIDTH),
+            menu::fit(&track.title, TITLE_SIZE, fonts::BOLD, TILE_TEXT_WIDTH),
             menu::fit(
                 track.artist.as_deref().unwrap_or_default(),
                 DETAIL_SIZE,
-                Font::DEFAULT,
+                fonts::REGULAR,
                 TILE_TEXT_WIDTH,
             ),
             if track.playing {
@@ -514,7 +510,7 @@ fn now_playing(panel: &Panel) -> Element<'_> {
         column![
             art,
             Space::new().height(Length::Fill),
-            text(title).size(TITLE_SIZE).font(BOLD),
+            text(title).size(TITLE_SIZE).font(fonts::BOLD),
         ]
         .push(active.then(|| text(artist).size(DETAIL_SIZE).color(DIM)))
         .push(Space::new().height(4))
@@ -616,7 +612,7 @@ fn slider_module<'a>(
 
     container(
         column![
-            text(title).size(TITLE_SIZE).font(BOLD),
+            text(title).size(TITLE_SIZE).font(fonts::BOLD),
             row![low_icon, line, icons::icon(high, 18.0, Color::WHITE)]
                 .push(on_outputs.map(|message| {
                     mouse_area(
@@ -670,7 +666,7 @@ fn detail_view<'a>(
     let (settings_label, settings_page) = detail.settings();
     let header = container(
         row![
-            text(detail.title()).size(TITLE_SIZE).font(BOLD),
+            text(detail.title()).size(TITLE_SIZE).font(fonts::BOLD),
             Space::new().width(Length::Fill),
         ]
         .push(switch_for(detail, panel))
@@ -724,7 +720,7 @@ fn detail_view<'a>(
             style
         }),
     )
-    .on_press(Message::ControlPanelPressed)
+    .on_press(Message::Nothing)
     .into()
 }
 
@@ -856,7 +852,7 @@ fn detail_list(detail: Detail, panel: &Panel) -> Vec<Element<'_>> {
 }
 
 fn detail_heading(heading: &str) -> Element<'_> {
-    container(text(heading).size(DETAIL_SIZE).font(BOLD).color(DIM))
+    container(text(heading).size(DETAIL_SIZE).font(fonts::BOLD).color(DIM))
         .height(DETAIL_ROW)
         .padding([0.0, DETAIL_ROW_PADDING])
         .align_y(alignment::Vertical::Center)
@@ -898,7 +894,7 @@ fn detail_row<'a>(
         - DETAIL_ICON
         - 8.0
         - if trailing.is_some() { 74.0 } else { 0.0 };
-    let label = menu::fit(name, TITLE_SIZE, Font::DEFAULT, room);
+    let label = menu::fit(name, TITLE_SIZE, fonts::REGULAR, room);
     detail_button(
         container(
             row![

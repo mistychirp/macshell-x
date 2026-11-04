@@ -14,7 +14,7 @@
 namespace Macshell
 {
 
-static constexpr int s_version = 4;
+static constexpr int s_version = 5;
 
 /// Reading pixels back stalls the GPU, so brightness is measured at most this often.
 static constexpr int s_probeIntervalMs = 500;
@@ -162,6 +162,17 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect(Resource *resource, int32_
         .style = shapeStyle,
     });
     m_dirty = true;
+}
+
+void GlassSurface::macshell_glass_v1_add_rounded_rect_with_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height)
+{
+    macshell_glass_v1_add_rounded_rect(resource, x, y, width, height, radius, style);
+    if (!m_pending.isEmpty() && tail_height < uint32_t(height)) {
+        m_pending.last().tail = QVector3D(tail_center, tail_width, tail_height);
+        // The radius is clamped against what's left above the tail.
+        const int body = std::min(width, height - int(tail_height));
+        m_pending.last().radius = std::min<int>(radius, body / 2);
+    }
 }
 
 void GlassSurface::macshell_glass_v1_add_backdrop(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t fade_left, uint32_t fade_top, uint32_t fade_right, uint32_t fade_bottom)
