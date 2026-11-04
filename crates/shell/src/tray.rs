@@ -194,10 +194,6 @@ impl Item {
         !self.menu.is_empty()
     }
 
-    pub fn service(&self) -> &str {
-        &self.service
-    }
-
     /// What the app calls this item when asked to activate it.
     pub fn activate(&self, x: i32, y: i32) -> impl Future<Output = ()> + use<> {
         let (service, path) = (self.service.clone(), self.path.clone());
@@ -219,50 +215,33 @@ impl Item {
         }
     }
 
-    /// The entries of the menu reached by following `path`, a list of submenus' ids from the top.
-    /// In a submenu, the first entry leads back.
-    pub fn entries(&self, path: &[i32]) -> Vec<menu::Entry> {
-        let mut items = &self.menu;
-        for id in path {
-            let Some(item) = items.iter().find(|item| item.id == *id) else {
-                return Vec::new();
-            };
-            items = &item.children;
-        }
+    /// The entries of its menu.
+    pub fn entries(&self) -> Vec<menu::Entry> {
+        self.entries_of(&self.menu)
+    }
 
-        let mut entries = Vec::new();
-        if let Some((_, parent)) = path.split_last() {
-            entries.push(menu::Entry::item(
-                "‹ Back",
-                Message::TraySubmenu(self.service.clone(), parent.to_vec()),
-            ));
-            entries.push(menu::Entry::Separator);
-        }
-        for item in items {
-            if item.separator {
-                entries.push(menu::Entry::Separator);
-            } else if item.children.is_empty() {
+    fn entries_of(&self, items: &[MenuItem]) -> Vec<menu::Entry> {
+        items
+            .iter()
+            .map(|item| {
+                if item.separator {
+                    return menu::Entry::Separator;
+                }
                 let on_select = Message::TrayMenuItem(
                     self.service.clone(),
                     self.menu_path.clone().unwrap_or_default(),
                     item.id,
                 );
-                entries.push(
-                    menu::Entry::item(&item.label, on_select)
-                        .checked(item.checked)
-                        .enabled(item.enabled),
-                );
-            } else {
-                let inner = path.iter().copied().chain([item.id]).collect();
-                let on_select = Message::TraySubmenu(self.service.clone(), inner);
-                entries.push(
-                    menu::Entry::item(&item.label, on_select)
-                        .enabled(item.enabled)
-                        .submenu(),
-                );
-            }
-        }
-        entries
+                let entry = menu::Entry::item(&item.label, on_select)
+                    .checked(item.checked)
+                    .enabled(item.enabled);
+                if item.children.is_empty() {
+                    entry
+                } else {
+                    entry.submenu(self.entries_of(&item.children))
+                }
+            })
+            .collect()
     }
 }
 

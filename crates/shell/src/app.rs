@@ -9,7 +9,9 @@ use iced_futures::Subscription;
 use iced_futures::backend::native::tokio::time;
 use iced_layershell::actions::{ActionCallback, IcedNewPopupSettings};
 use iced_layershell::daemon;
-use iced_layershell::reexport::{IcedId, PopupAnchor, PopupGravity, Task, WithConnection};
+use iced_layershell::reexport::{
+    IcedId, PopupAnchor, PopupConstraintAdjustment, PopupGravity, Task, WithConnection,
+};
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
 use iced_widget::core::{Color, Event, Point, Size, Theme, event, mouse, theme, window};
@@ -156,8 +158,12 @@ pub enum Message {
     TrayItems(Vec<tray::Item>),
     /// Something was chosen in a tray icon's menu: its service, menu and the item's id.
     TrayMenuItem(String, String, i32),
-    /// A tray icon's menu should go to a submenu: its service, and the ids leading there.
-    TraySubmenu(String, Vec<i32>),
+    /// The pointer moved onto a menu's row: how many submenus deep the menu is, and which row.
+    MenuRowEntered(usize, usize),
+    /// A row that leads to a submenu was pressed.
+    MenuRowPressed(usize, usize),
+    /// Time to check whether the pointer has settled on a menu's row.
+    MenuHoverCheck,
     /// Scrolled over Notification Center, in rows.
     NotificationCenterScrolled(f32),
 }
@@ -172,6 +178,26 @@ struct Popup {
     material: Option<MaterialSurface>,
     /// Shapes last sent, for content that changes while it's open.
     shapes: Vec<material::Shape>,
+}
+
+/// A menu open beside a row of another.
+struct Submenu {
+    id: IcedId,
+    /// The row of the menu before it that it opened from.
+    opener: usize,
+    /// Where its left edge is on the screen.
+    x: f32,
+    entries: Vec<menu::Entry>,
+    size: (u32, u32),
+    material: Option<MaterialSurface>,
+    /// It was asked to close, and hasn't yet.
+    closing: bool,
+}
+
+struct MenuHover {
+    level: usize,
+    row: usize,
+    since: Instant,
 }
 
 struct OpenAlert {
@@ -251,8 +277,13 @@ struct Shell {
     popup: Option<Popup>,
     /// A menu bar title whose menu opens once the open popup is gone.
     next_bar_menu: Option<menubar::Title>,
-    /// A tray icon's submenu that opens once the open popup is gone.
-    next_submenu: Option<(menubar::Title, Vec<menu::Entry>)>,
+    /// Submenus open under the popup's menu, outermost first.
+    submenus: Vec<Submenu>,
+    /// A menu's row the pointer is over, and since when, that may change which submenus are open.
+    menu_hover: Option<MenuHover>,
+    /// A submenu to open once those being closed are gone, since only the topmost popup can have
+    /// one: the level and row of the menu it's opening from.
+    next_submenu: Option<(usize, usize)>,
     tray: Vec<tray::Icon>,
     alert: Option<OpenAlert>,
     /// Desktop entry id of the app that opens folders and the trash.
@@ -306,6 +337,9 @@ const LAUNCH_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// The screen's height until the wallpaper's surface says, if there is one.
 const FALLBACK_SCREEN_HEIGHT: f32 = 700.0;
+/// How long the pointer has to stay on a menu's row to change which submenus are open, so that
+/// heading for an open submenu across other rows doesn't close it.
+const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
 /// How many past notifications Notification Center keeps.
 const MAX_NOTIFICATIONS: usize = 100;
 
@@ -382,6 +416,8 @@ impl Shell {
             started: Instant::now(),
             popup: None,
             next_bar_menu: None,
+            submenus: Vec::new(),
+            menu_hover: None,
             next_submenu: None,
             tray: Vec::new(),
             alert: None,
@@ -805,6 +841,9 @@ impl Shell {
             Message::SurfaceOpened(id, _) if self.popup.as_ref().is_some_and(|p| p.id == id) => {
                 return self.reach_surface(id);
             }
+            Message::SurfaceOpened(id, _) if self.submenus.iter().any(|menu| menu.id == id) => {
+                return self.reach_surface(id);
+            }
             Message::SurfaceOpened(id, _) if self.banners_surface == Some(id) => {
                 self.banners_region.clear();
                 return Task::batch([self.reach_surface(id), self.sync_banners()]);
@@ -866,19 +905,25 @@ impl Shell {
                 let chosen = Task::future(tray::menu_item_chosen(service, menu_path, id)).discard();
                 return Task::batch([self.close_popup(), chosen]);
             }
-            Message::TraySubmenu(service, path) => {
-                let Some(index) = self
-                    .tray
-                    .iter()
-                    .position(|icon| icon.item.service() == service)
-                else {
-                    return Task::none();
-                };
-                self.next_submenu = Some((
-                    menubar::Title::Tray(index),
-                    self.tray[index].item.entries(&path),
-                ));
-                return self.close_popup();
+            Message::MenuRowEntered(level, row) => {
+                self.menu_hover = Some(MenuHover {
+                    level,
+                    row,
+                    since: Instant::now(),
+                });
+            }
+            Message::MenuRowPressed(level, row) => {
+                self.menu_hover = None;
+                return self.show_submenu(level, row);
+            }
+            Message::MenuHoverCheck => {
+                if let Some(hover) = &self.menu_hover
+                    && hover.since.elapsed() >= MENU_HOVER_DELAY
+                {
+                    let (level, row) = (hover.level, hover.row);
+                    self.menu_hover = None;
+                    return self.show_submenu(level, row);
+                }
             }
             Message::NotificationGroupOpened(app_key) => {
                 self.open_groups.insert(app_key);
@@ -903,18 +948,27 @@ impl Shell {
             }
             Message::SurfaceClosed(id) => {
                 self.surfaces.remove(&id);
+                if let Some(index) = self.submenus.iter().position(|menu| menu.id == id) {
+                    let submenu = self.submenus.remove(index);
+                    if let Some(material) = submenu.material {
+                        material.destroy();
+                    }
+                    if !self.submenus.iter().any(|menu| menu.closing)
+                        && let Some((level, row)) = self.next_submenu.take()
+                    {
+                        return self.show_submenu(level, row);
+                    }
+                    return Task::none();
+                }
                 if self.popup.as_ref().is_some_and(|popup| popup.id == id)
                     && let Some(popup) = self.popup.take()
                 {
                     if let Some(material) = popup.material {
                         material.destroy();
                     }
+                    self.menu_hover = None;
+                    self.next_submenu = None;
                     let relayout = self.relayout_dock();
-                    if let Some((title, entries)) = self.next_submenu.take() {
-                        let size = menu::size(&entries);
-                        let open = self.open_bar_popup(title, size, PopupContent::Menu(entries));
-                        return Task::batch([relayout, open]);
-                    }
                     return match self.next_bar_menu.take() {
                         Some(title) => Task::batch([relayout, self.open_bar_menu(title)]),
                         None => relayout,
@@ -1012,7 +1066,7 @@ impl Shell {
                 if !icon.item.has_menu() {
                     return Task::future(icon.item.activate(0, 0)).discard();
                 }
-                icon.item.entries(&[])
+                icon.item.entries()
             }
             menubar::Title::Clock => {
                 self.center_scroll = 0.0;
@@ -1036,6 +1090,128 @@ impl Shell {
         };
         let size = menu::size(&entries);
         self.open_bar_popup(title, size, PopupContent::Menu(entries))
+    }
+
+    /// The entries of the menu `level` submenus deep.
+    fn menu_at(&self, level: usize) -> Option<&[menu::Entry]> {
+        match level {
+            0 => match &self.popup.as_ref()?.content {
+                PopupContent::Menu(entries) => Some(entries),
+                _ => None,
+            },
+            level => Some(&self.submenus.get(level - 1)?.entries),
+        }
+    }
+
+    /// Makes the row's submenu the innermost one open, if it has one. If it doesn't, this closes
+    /// whatever was open from that menu.
+    fn show_submenu(&mut self, level: usize, row: usize) -> Task<Message> {
+        let wanted = self
+            .menu_at(level)
+            .and_then(|entries| entries.get(row))
+            .and_then(menu::Entry::submenu_entries)
+            .map(<[menu::Entry]>::to_vec);
+
+        let keep = match self.submenus.get(level) {
+            Some(open) if open.opener == row && !open.closing && wanted.is_some() => level + 1,
+            _ => level,
+        };
+        if keep == level + 1 {
+            self.next_submenu = None;
+            return self.close_submenus(keep);
+        }
+        if self.submenus.len() > keep {
+            self.next_submenu = wanted.is_some().then_some((level, row));
+            return self.close_submenus(keep);
+        }
+        let Some(entries) = wanted else {
+            return Task::none();
+        };
+        self.open_submenu(level, row, entries)
+    }
+
+    /// Where the left edge of the menu `level` submenus deep is on the screen.
+    fn menu_x(&self, level: usize) -> f32 {
+        match level.checked_sub(1) {
+            Some(index) => self.submenus.get(index).map_or(0.0, |menu| menu.x),
+            // A menu near the end of the bar is slid back onto the screen.
+            None => self.popup.as_ref().map_or(0.0, |popup| {
+                popup
+                    .title
+                    .and_then(|title| self.bar().menu_anchor(title))
+                    .map_or(0.0, |anchor| anchor.0 as f32)
+                    .min(self.menubar_width - popup.size.0 as f32)
+            }),
+        }
+    }
+
+    /// Closes the submenus from this depth in. The surface closes its own children.
+    fn close_submenus(&mut self, depth: usize) -> Task<Message> {
+        let Some(first) = self.submenus.get(depth) else {
+            return Task::none();
+        };
+        let close = iced_runtime::window::close(first.id);
+        for submenu in &mut self.submenus[depth..] {
+            submenu.closing = true;
+        }
+        close
+    }
+
+    fn open_submenu(
+        &mut self,
+        level: usize,
+        row: usize,
+        entries: Vec<menu::Entry>,
+    ) -> Task<Message> {
+        let (parent, parent_width) = match level {
+            0 => match &self.popup {
+                Some(popup) => (popup.id, popup.size.0),
+                None => return Task::none(),
+            },
+            level => match self.submenus.get(level - 1) {
+                Some(menu) => (menu.id, menu.size.0),
+                None => return Task::none(),
+            },
+        };
+        let parent_x = self.menu_x(level);
+        let Some(siblings) = self.menu_at(level) else {
+            return Task::none();
+        };
+        let anchor = menu::submenu_anchor(siblings, row, parent_width);
+        let size = menu::size(&entries);
+        // To the right if there's room. Otherwise to the left, and then on to the left from a menu
+        // that went that way, since its parent would otherwise be in the way.
+        let right_x = parent_x + parent_width as f32 - menu::SUBMENU_OVERLAP as f32;
+        let went_left = level > 0 && parent_x < self.menu_x(level - 1);
+        let goes_right = !went_left && right_x + size.0 as f32 <= self.menubar_width;
+        let x = if goes_right {
+            right_x
+        } else {
+            parent_x + menu::SUBMENU_OVERLAP as f32 - size.0 as f32
+        };
+        let (anchor_point, gravity) = if goes_right {
+            (PopupAnchor::TopRight, PopupGravity::BottomRight)
+        } else {
+            (PopupAnchor::TopLeft, PopupGravity::BottomLeft)
+        };
+        let id = IcedId::unique();
+        self.surfaces.insert(id, Surface::Popup);
+        self.submenus.push(Submenu {
+            id,
+            opener: row,
+            x,
+            entries,
+            size,
+            material: None,
+            closing: false,
+        });
+        let settings = IcedNewPopupSettings::new(parent, size, anchor)
+            .anchor(anchor_point)
+            .gravity(gravity)
+            .constraint_adjustment(
+                PopupConstraintAdjustment::FlipX | PopupConstraintAdjustment::SlideY,
+            );
+        Task::done(Message::NewPopUp { settings, id })
     }
 
     /// Opens a popup under a menu bar title.
@@ -1108,6 +1284,13 @@ impl Shell {
                 self.dock_shapes = dock::material_shapes(&self.dock_layout);
                 material.set_shapes(&target, &self.dock_shapes);
                 self.dock_material = Some(target);
+            }
+            Some(Surface::Popup) if self.submenus.iter().any(|menu| menu.id == id) => {
+                let Some(submenu) = self.submenus.iter_mut().find(|menu| menu.id == id) else {
+                    return;
+                };
+                material.set_shapes(&target, &menu::material_shapes(submenu.size));
+                submenu.material = Some(target);
             }
             Some(Surface::Popup) => match &mut self.popup {
                 Some(popup) if popup.id == id => {
@@ -1324,6 +1507,8 @@ impl Shell {
 
     /// Closes the open popup, if any. Its state is cleaned up once the surface is gone.
     fn close_popup(&mut self) -> Task<Message> {
+        self.menu_hover = None;
+        self.next_submenu = None;
         match &self.popup {
             Some(popup) => iced_runtime::window::close(popup.id),
             None => Task::none(),
@@ -1557,8 +1742,20 @@ impl Shell {
             ),
             Some(Surface::Popup) => {
                 let material = self.material.as_ref().map(|m| m.kind());
+                if let Some(index) = self.submenus.iter().position(|menu| menu.id == id) {
+                    let open_row = self.submenus.get(index + 1).map(|menu| menu.opener);
+                    return menu::view(
+                        &self.submenus[index].entries,
+                        material,
+                        index + 1,
+                        open_row,
+                    );
+                }
                 match self.popup.as_ref().map(|popup| &popup.content) {
-                    Some(PopupContent::Menu(entries)) => menu::view(entries, material),
+                    Some(PopupContent::Menu(entries)) => {
+                        let open_row = self.submenus.first().map(|menu| menu.opener);
+                        menu::view(entries, material, 0, open_row)
+                    }
                     Some(PopupContent::Downloads(tiles)) => stack::view(tiles, material),
                     Some(PopupContent::ControlCenter) => control::view(&self.control, material),
                     Some(PopupContent::NotificationCenter) => notification_center::view(
@@ -1622,9 +1819,16 @@ impl Shell {
             Subscription::none()
         };
 
+        let menu_hover = if self.menu_hover.is_some() {
+            time::every(Duration::from_millis(30)).map(|_| Message::MenuHoverCheck)
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             dock_frames,
             banner_frames,
+            menu_hover,
             notifications::events().map(Message::Notification),
             tray::items().map(Message::TrayItems),
             bar_brightness,

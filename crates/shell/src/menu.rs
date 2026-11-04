@@ -3,7 +3,7 @@
 
 use iced_widget::core::text::{LineHeight, Paragraph as _, Shaping, Wrapping};
 use iced_widget::core::{Alignment, Background, Border, Color, Font, Length, Size, alignment};
-use iced_widget::{Space, button, column, container, row, text};
+use iced_widget::{Space, button, column, container, mouse_area, row, text};
 
 use crate::app::{Element, Message};
 use crate::icons::{self, Glyph};
@@ -18,6 +18,8 @@ const PADDING: f32 = 5.0;
 const ITEM_PADDING_X: f32 = 8.0;
 const CHECK_WIDTH: f32 = 18.0;
 const CHEVRON_SIZE: f32 = 10.0;
+/// How far a submenu overlaps its menu.
+pub const SUBMENU_OVERLAP: i32 = 4;
 /// Between a label and the chevron of a submenu, and the chevron.
 const CHEVRON_ROOM: f32 = 16.0 + CHEVRON_SIZE;
 const MIN_WIDTH: f32 = 160.0;
@@ -35,8 +37,8 @@ pub enum Entry {
         label: String,
         checked: bool,
         enabled: bool,
-        /// It leads to a submenu.
-        submenu: bool,
+        /// What opens to its side, if it leads to a submenu.
+        submenu: Option<Vec<Entry>>,
         on_select: Message,
     },
     Separator,
@@ -48,7 +50,7 @@ impl Entry {
             label: truncate(label),
             checked: false,
             enabled: true,
-            submenu: false,
+            submenu: None,
             on_select,
         }
     }
@@ -67,11 +69,24 @@ impl Entry {
         self
     }
 
-    pub fn submenu(mut self) -> Self {
+    /// Makes it lead to a submenu of these entries.
+    pub fn submenu(mut self, entries: Vec<Entry>) -> Self {
         if let Self::Item { submenu, .. } = &mut self {
-            *submenu = true;
+            *submenu = Some(entries);
         }
         self
+    }
+
+    /// What's in the submenu it leads to, unless it's disabled.
+    pub fn submenu_entries(&self) -> Option<&[Entry]> {
+        match self {
+            Self::Item {
+                submenu: Some(entries),
+                enabled: true,
+                ..
+            } => Some(entries),
+            _ => None,
+        }
     }
 }
 
@@ -90,7 +105,7 @@ pub fn size(entries: &[Entry]) -> (u32, u32) {
         .iter()
         .filter_map(|entry| match entry {
             Entry::Item { label, submenu, .. } => {
-                let chevron = if *submenu { CHEVRON_ROOM } else { 0.0 };
+                let chevron = if submenu.is_some() { CHEVRON_ROOM } else { 0.0 };
                 Some(text_width(label, TEXT_SIZE, Font::default()) + CHECK_WIDTH + chevron)
             }
             Entry::Separator => None,
@@ -98,14 +113,7 @@ pub fn size(entries: &[Entry]) -> (u32, u32) {
         .fold(0.0, f32::max);
     let width = (label_width + 2.0 * ITEM_PADDING_X + 2.0 * PADDING).max(MIN_WIDTH);
 
-    let height = 2.0 * PADDING
-        + entries
-            .iter()
-            .map(|entry| match entry {
-                Entry::Item { .. } => ROW_HEIGHT,
-                Entry::Separator => SEPARATOR_HEIGHT,
-            })
-            .sum::<f32>();
+    let height = 2.0 * PADDING + entries.iter().map(entry_height).sum::<f32>();
 
     (width.ceil() as u32, height.ceil() as u32)
 }
@@ -118,57 +126,107 @@ pub fn material_shapes((width, height): (u32, u32)) -> Vec<material::Shape> {
     }]
 }
 
-pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> {
-    let rows = entries.iter().map(|entry| match entry {
-        Entry::Item {
-            label,
-            checked,
-            enabled,
-            submenu,
-            on_select,
-        } => button(
-            row![
-                text(if *checked { "✓" } else { "" })
-                    .size(TEXT_SIZE)
-                    .width(CHECK_WIDTH),
-                // The width is measured to fit, but rounding mustn't wrap it onto two lines.
-                text(label).size(TEXT_SIZE).wrapping(Wrapping::None),
-                Space::new().width(Length::Fill),
-            ]
-            .push(submenu.then(|| icons::icon(Glyph::Chevron, CHEVRON_SIZE, Color::WHITE)))
-            .align_y(Alignment::Center),
-        )
-        .on_press_maybe(enabled.then(|| on_select.clone()))
-        .width(Length::Fill)
-        .height(ROW_HEIGHT)
-        .padding([0.0, ITEM_PADDING_X])
-        .style(|_, status| button::Style {
-            background: matches!(status, button::Status::Hovered | button::Status::Pressed)
-                .then_some(Background::Color(ACCENT)),
-            text_color: if matches!(status, button::Status::Disabled) {
-                DISABLED_TEXT
-            } else {
-                Color::WHITE
-            },
-            border: Border {
-                // Concentric with the menu's corners.
-                radius: (RADIUS - PADDING).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into(),
-        Entry::Separator => container(container(Space::new()).width(Length::Fill).height(1).style(
-            |_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.15))),
-                ..Default::default()
-            },
-        ))
-        .height(SEPARATOR_HEIGHT)
-        .padding([0.0, ITEM_PADDING_X])
-        .align_y(alignment::Vertical::Center)
-        .into(),
-    });
+/// Where a submenu of the row at `index` attaches to its menu: beside the row, overlapping the menu
+/// a little, so that the submenu's first row lines up with it.
+pub fn submenu_anchor(entries: &[Entry], index: usize, menu_width: u32) -> (i32, i32, i32, i32) {
+    let y = PADDING
+        + entries[..index.min(entries.len())]
+            .iter()
+            .map(entry_height)
+            .sum::<f32>();
+    (
+        SUBMENU_OVERLAP,
+        (y - PADDING) as i32,
+        menu_width as i32 - 2 * SUBMENU_OVERLAP,
+        1,
+    )
+}
+
+fn entry_height(entry: &Entry) -> f32 {
+    match entry {
+        Entry::Item { .. } => ROW_HEIGHT,
+        Entry::Separator => SEPARATOR_HEIGHT,
+    }
+}
+
+/// A menu `level` submenus deep, in which the row `open_row` has its submenu open.
+pub fn view(
+    entries: &[Entry],
+    material: Option<material::Kind>,
+    level: usize,
+    open_row: Option<usize>,
+) -> Element<'_> {
+    let rows = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| match entry {
+            Entry::Item {
+                label,
+                checked,
+                enabled,
+                submenu,
+                on_select,
+            } => {
+                let open = open_row == Some(index);
+                let on_press = if submenu.is_some() {
+                    Message::MenuRowPressed(level, index)
+                } else {
+                    on_select.clone()
+                };
+                let row = button(
+                    row![
+                        text(if *checked { "✓" } else { "" })
+                            .size(TEXT_SIZE)
+                            .width(CHECK_WIDTH),
+                        // The width is measured to fit, but rounding mustn't wrap it onto two lines.
+                        text(label).size(TEXT_SIZE).wrapping(Wrapping::None),
+                        Space::new().width(Length::Fill),
+                    ]
+                    .push(
+                        submenu
+                            .is_some()
+                            .then(|| icons::icon(Glyph::Chevron, CHEVRON_SIZE, Color::WHITE)),
+                    )
+                    .align_y(Alignment::Center),
+                )
+                .on_press_maybe(enabled.then_some(on_press))
+                .width(Length::Fill)
+                .height(ROW_HEIGHT)
+                .padding([0.0, ITEM_PADDING_X])
+                .style(move |_, status| button::Style {
+                    background: (open
+                        || matches!(status, button::Status::Hovered | button::Status::Pressed))
+                    .then_some(Background::Color(ACCENT)),
+                    text_color: if matches!(status, button::Status::Disabled) {
+                        DISABLED_TEXT
+                    } else {
+                        Color::WHITE
+                    },
+                    border: Border {
+                        // Concentric with the menu's corners.
+                        radius: (RADIUS - PADDING).into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+                mouse_area(row)
+                    .on_enter(Message::MenuRowEntered(level, index))
+                    .into()
+            }
+            Entry::Separator => container(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(1)
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.15))),
+                        ..Default::default()
+                    }),
+            )
+            .height(SEPARATOR_HEIGHT)
+            .padding([0.0, ITEM_PADDING_X])
+            .align_y(alignment::Vertical::Center)
+            .into(),
+        });
 
     let tint = material::panel_tint(material);
     container(column(rows))
