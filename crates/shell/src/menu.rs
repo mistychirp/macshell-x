@@ -6,6 +6,7 @@ use iced_widget::core::{Alignment, Background, Border, Color, Font, Length, Size
 use iced_widget::{Space, button, column, container, row, text};
 
 use crate::app::{Element, Message};
+use crate::icons::{self, Glyph};
 use crate::material;
 
 const TEXT_SIZE: f32 = 13.0;
@@ -16,6 +17,9 @@ const PADDING: f32 = 5.0;
 /// Inside an item, between its highlight and its text.
 const ITEM_PADDING_X: f32 = 8.0;
 const CHECK_WIDTH: f32 = 18.0;
+const CHEVRON_SIZE: f32 = 10.0;
+/// Between a label and the chevron of a submenu, and the chevron.
+const CHEVRON_ROOM: f32 = 16.0 + CHEVRON_SIZE;
 const MIN_WIDTH: f32 = 160.0;
 /// Labels longer than this many characters are cut short with an ellipsis.
 const MAX_LABEL_CHARS: usize = 48;
@@ -23,12 +27,16 @@ pub const RADIUS: f32 = 13.0;
 
 /// macOS's selection blue.
 const ACCENT: Color = Color::from_rgba(0.0, 0.45, 1.0, 0.95);
+const DISABLED_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.4);
 
 #[derive(Debug, Clone)]
 pub enum Entry {
     Item {
         label: String,
         checked: bool,
+        enabled: bool,
+        /// It leads to a submenu.
+        submenu: bool,
         on_select: Message,
     },
     Separator,
@@ -39,6 +47,8 @@ impl Entry {
         Self::Item {
             label: truncate(label),
             checked: false,
+            enabled: true,
+            submenu: false,
             on_select,
         }
     }
@@ -46,6 +56,20 @@ impl Entry {
     pub fn checked(mut self, value: bool) -> Self {
         if let Self::Item { checked, .. } = &mut self {
             *checked = value;
+        }
+        self
+    }
+
+    pub fn enabled(mut self, value: bool) -> Self {
+        if let Self::Item { enabled, .. } = &mut self {
+            *enabled = value;
+        }
+        self
+    }
+
+    pub fn submenu(mut self) -> Self {
+        if let Self::Item { submenu, .. } = &mut self {
+            *submenu = true;
         }
         self
     }
@@ -65,8 +89,9 @@ pub fn size(entries: &[Entry]) -> (u32, u32) {
     let label_width = entries
         .iter()
         .filter_map(|entry| match entry {
-            Entry::Item { label, .. } => {
-                Some(text_width(label, TEXT_SIZE, Font::default()) + CHECK_WIDTH)
+            Entry::Item { label, submenu, .. } => {
+                let chevron = if *submenu { CHEVRON_ROOM } else { 0.0 };
+                Some(text_width(label, TEXT_SIZE, Font::default()) + CHECK_WIDTH + chevron)
             }
             Entry::Separator => None,
         })
@@ -98,6 +123,8 @@ pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> 
         Entry::Item {
             label,
             checked,
+            enabled,
+            submenu,
             on_select,
         } => button(
             row![
@@ -106,17 +133,23 @@ pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> 
                     .width(CHECK_WIDTH),
                 // The width is measured to fit, but rounding mustn't wrap it onto two lines.
                 text(label).size(TEXT_SIZE).wrapping(Wrapping::None),
+                Space::new().width(Length::Fill),
             ]
+            .push(submenu.then(|| icons::icon(Glyph::Chevron, CHEVRON_SIZE, Color::WHITE)))
             .align_y(Alignment::Center),
         )
-        .on_press(on_select.clone())
+        .on_press_maybe(enabled.then(|| on_select.clone()))
         .width(Length::Fill)
         .height(ROW_HEIGHT)
         .padding([0.0, ITEM_PADDING_X])
         .style(|_, status| button::Style {
             background: matches!(status, button::Status::Hovered | button::Status::Pressed)
                 .then_some(Background::Color(ACCENT)),
-            text_color: Color::WHITE,
+            text_color: if matches!(status, button::Status::Disabled) {
+                DISABLED_TEXT
+            } else {
+                Color::WHITE
+            },
             border: Border {
                 // Concentric with the menu's corners.
                 radius: (RADIUS - PADDING).into(),

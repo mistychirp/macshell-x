@@ -22,6 +22,7 @@ mod notifications;
 mod places;
 mod plasma_protocol;
 mod stack;
+mod tray;
 mod wallpaper;
 
 fn main() -> Result<(), iced_layershell::Error> {

@@ -16,7 +16,7 @@ use crate::dock::MenuAction;
 use crate::icons::{self, Glyph};
 use crate::kwin::KeyboardLayouts;
 use crate::material::{self, Shape};
-use crate::{apps, menu};
+use crate::{apps, menu, tray};
 
 pub const HEIGHT: u32 = 30;
 pub const TEXT_SIZE: f32 = 13.0;
@@ -26,6 +26,7 @@ const PADDING_X: f32 = 8.0;
 const TITLE_PADDING_X: f32 = 10.0;
 const TITLE_HEIGHT: f32 = 22.0;
 const LOGO_SIZE: f32 = 16.0;
+const TRAY_ICON_SIZE: f32 = 17.0;
 /// Width of a status item on the right, like the keyboard layout.
 const STATUS_WIDTH: f32 = 34.0;
 const CONTROL_CENTER_WIDTH: f32 = 44.0;
@@ -51,6 +52,8 @@ pub enum Title {
     ControlCenter,
     /// The clock, which opens Notification Center.
     Clock,
+    /// An app's tray icon; carries its place among them.
+    Tray(usize),
 }
 
 /// How bright what's behind the bar is, which decides its text color, like on macOS.
@@ -174,6 +177,7 @@ pub struct Bar<'a> {
     pub backdrop: Option<Backdrop>,
     /// Short name of the keyboard layout, when there's more than one.
     pub input: Option<&'a str>,
+    pub tray: &'a [tray::Icon],
 }
 
 impl Bar<'_> {
@@ -204,6 +208,10 @@ impl Bar<'_> {
         if self.input.is_some() {
             x -= STATUS_WIDTH;
             titles.push((Title::Input, rect(x, STATUS_WIDTH)));
+        }
+        for index in (0..self.tray.len()).rev() {
+            x -= STATUS_WIDTH;
+            titles.push((Title::Tray(index), rect(x, STATUS_WIDTH)));
         }
         titles
     }
@@ -344,6 +352,18 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
             Title::Input => input_badge(bar.input.unwrap_or_default(), ink),
             Title::ControlCenter => icons::icon(Glyph::ControlCenter, 17.0, ink),
             Title::Clock => text(bar.clock).into(),
+            Title::Tray(index) => match bar.tray.get(index).and_then(|icon| {
+                match (bar.backdrop, &icon.image_on_light) {
+                    (Some(Backdrop::Light), Some(on_light)) => Some(on_light),
+                    _ => icon.image.as_ref(),
+                }
+            }) {
+                Some(handle) => image(handle.clone())
+                    .width(TRAY_ICON_SIZE)
+                    .height(TRAY_ICON_SIZE)
+                    .into(),
+                None => Space::new().width(TRAY_ICON_SIZE).into(),
+            },
         };
         let item = title_item(title, content, rect, bar.open, highlight);
         match title {
@@ -391,6 +411,7 @@ fn title_item<'a>(
             }),
     )
     .on_press(Message::BarPressed(title))
+    .on_right_press(Message::BarPressed(title))
     .on_enter(Message::BarEntered(title))
     .into()
 }

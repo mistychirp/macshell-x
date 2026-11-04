@@ -28,7 +28,7 @@ use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
     audio, bluetooth, brightness, control, dock, media, menu, menubar, network,
-    notification_center, stack, wallpaper,
+    notification_center, stack, tray, wallpaper,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -152,6 +152,12 @@ pub enum Message {
     NotificationGroupOpened(String),
     NotificationGroupClosed(String),
     NotificationGroupCleared(String),
+    /// The session's tray icons changed.
+    TrayItems(Vec<tray::Item>),
+    /// Something was chosen in a tray icon's menu: its service, menu and the item's id.
+    TrayMenuItem(String, String, i32),
+    /// A tray icon's menu should go to a submenu: its service, and the ids leading there.
+    TraySubmenu(String, Vec<i32>),
     /// Scrolled over Notification Center, in rows.
     NotificationCenterScrolled(f32),
 }
@@ -245,6 +251,9 @@ struct Shell {
     popup: Option<Popup>,
     /// A menu bar title whose menu opens once the open popup is gone.
     next_bar_menu: Option<menubar::Title>,
+    /// A tray icon's submenu that opens once the open popup is gone.
+    next_submenu: Option<(menubar::Title, Vec<menu::Entry>)>,
+    tray: Vec<tray::Icon>,
     alert: Option<OpenAlert>,
     /// Desktop entry id of the app that opens folders and the trash.
     file_manager: String,
@@ -373,6 +382,8 @@ impl Shell {
             started: Instant::now(),
             popup: None,
             next_bar_menu: None,
+            next_submenu: None,
+            tray: Vec::new(),
             alert: None,
             file_manager,
             downloads_dir: places::downloads_dir(),
@@ -707,7 +718,15 @@ impl Shell {
             // menu. The new popup can only take the grab once the old one is destroyed, so it
             // opens when the old one reports closed.
             Message::BarEntered(title) => {
-                if let Some(open) = self.popup.as_ref().and_then(|popup| popup.title)
+                let has_menu = match title {
+                    menubar::Title::Tray(index) => self
+                        .tray
+                        .get(index)
+                        .is_some_and(|icon| icon.item.has_menu()),
+                    _ => true,
+                };
+                if has_menu
+                    && let Some(open) = self.popup.as_ref().and_then(|popup| popup.title)
                     && open != title
                 {
                     self.next_bar_menu = Some(title);
@@ -837,6 +856,30 @@ impl Shell {
                 return Task::batch([invoke, self.dismiss_notification(id)]);
             }
             Message::NotificationDismissed(id) => return self.dismiss_notification(id),
+            Message::TrayItems(items) => {
+                self.tray = items
+                    .into_iter()
+                    .map(|item| tray::Icon::new(item, &mut self.apps))
+                    .collect();
+            }
+            Message::TrayMenuItem(service, menu_path, id) => {
+                let chosen = Task::future(tray::menu_item_chosen(service, menu_path, id)).discard();
+                return Task::batch([self.close_popup(), chosen]);
+            }
+            Message::TraySubmenu(service, path) => {
+                let Some(index) = self
+                    .tray
+                    .iter()
+                    .position(|icon| icon.item.service() == service)
+                else {
+                    return Task::none();
+                };
+                self.next_submenu = Some((
+                    menubar::Title::Tray(index),
+                    self.tray[index].item.entries(&path),
+                ));
+                return self.close_popup();
+            }
             Message::NotificationGroupOpened(app_key) => {
                 self.open_groups.insert(app_key);
             }
@@ -867,6 +910,11 @@ impl Shell {
                         material.destroy();
                     }
                     let relayout = self.relayout_dock();
+                    if let Some((title, entries)) = self.next_submenu.take() {
+                        let size = menu::size(&entries);
+                        let open = self.open_bar_popup(title, size, PopupContent::Menu(entries));
+                        return Task::batch([relayout, open]);
+                    }
                     return match self.next_bar_menu.take() {
                         Some(title) => Task::batch([relayout, self.open_bar_menu(title)]),
                         None => relayout,
@@ -956,6 +1004,15 @@ impl Shell {
                 .gravity(PopupGravity::BottomLeft);
                 let open = self.open_popup(Some(title), settings, PopupContent::ControlCenter);
                 return Task::batch([open, reread, Task::done(Message::ControlRefresh)]);
+            }
+            menubar::Title::Tray(index) => {
+                let Some(icon) = self.tray.get(index) else {
+                    return Task::none();
+                };
+                if !icon.item.has_menu() {
+                    return Task::future(icon.item.activate(0, 0)).discard();
+                }
+                icon.item.entries(&[])
             }
             menubar::Title::Clock => {
                 self.center_scroll = 0.0;
@@ -1101,6 +1158,7 @@ impl Shell {
             open: self.popup.as_ref().and_then(|popup| popup.title),
             backdrop: self.bar_backdrop,
             input: self.input_label.as_deref(),
+            tray: &self.tray,
         }
     }
 
@@ -1568,6 +1626,7 @@ impl Shell {
             dock_frames,
             banner_frames,
             notifications::events().map(Message::Notification),
+            tray::items().map(Message::TrayItems),
             bar_brightness,
             control_refresh,
             kwin::windows().map(Message::WindowsChanged),
