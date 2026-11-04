@@ -708,8 +708,7 @@ pub fn view<'a>(
     }
 
     if let Some(label) = &layout.label {
-        // Over clear glass, the bubble needs a dark tint to stay legible on bright backgrounds.
-        let tint = if material.is_some() { 0.5 } else { 0.6 };
+        let tint = material::panel_tint(material).min(0.6);
         let bubble = container(text(&label.text).size(LABEL_TEXT_SIZE))
             .center_x(label.rect.width)
             .center_y(label.rect.height)

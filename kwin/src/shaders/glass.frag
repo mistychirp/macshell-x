@@ -22,10 +22,16 @@ uniform float refraction;
 uniform float brightness;
 // Saturation of the background.
 uniform mat4 colorMatrix;
-// The light line along the edge: how strongly it whitens, its width in device pixels, and how much
-// stronger it gets along the bottom edge (and weaker along the top).
-uniform float edgeAlpha;
-uniform float edgeWidth;
+// A color laid over the background: rgb, and how opaque it is.
+uniform vec4 tint;
+// The light line along the edge is the glass's own color, brightened: multiplied by edgeBoost,
+// then mixed with white by edgeWhite. That way it takes on the color behind it. It's two device
+// pixels wide, the inner one at edgeInner strength.
+uniform float edgeBoost;
+uniform float edgeWhite;
+uniform float edgeInner;
+// How much stronger the line gets where the edge faces the light, along the top-left to
+// bottom-right diagonal, and weaker elsewhere.
 uniform float edgeLit;
 // The dark one-device-pixel line outside the light one: how strongly it darkens. 0 means none.
 uniform float outerAlpha;
@@ -90,12 +96,16 @@ void main(void)
     // The copied background is opaque wherever there's anything behind it.
     color.a = 1.0;
     color.rgb *= brightness;
+    color.rgb = mix(color.rgb, tint.rgb, tint.a);
 
-    // The edge lines, from the outside in: dark, then light.
+    // The edge lines, from the outside in: dark, then light, strong then weaker.
     float depth = -d * deviceScale;
     float outerWidth = outerAlpha > 0.0 ? 1.0 : 0.0;
-    float light = band(depth, outerWidth, outerWidth + edgeWidth) * edgeAlpha * (1.0 + edgeLit * n.y);
-    color.rgb = mix(color.rgb, vec3(1.0), clamp(light, 0.0, 1.0));
+    float facing = abs(dot(n, normalize(vec2(-1.0, -1.0))));
+    float line = band(depth, outerWidth, outerWidth + 1.0)
+        + band(depth, outerWidth + 1.0, outerWidth + 2.0) * edgeInner;
+    vec3 bright = mix(min(color.rgb * edgeBoost, vec3(1.0)), vec3(1.0), edgeWhite);
+    color.rgb = mix(color.rgb, bright, clamp(line * (1.0 + edgeLit * (facing - 0.7)), 0.0, 1.0));
     color.rgb = mix(color.rgb, vec3(0.0), band(depth, 0.0, outerWidth) * outerAlpha);
 
     fragColor = color * coverage * opacity;

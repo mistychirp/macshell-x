@@ -57,6 +57,16 @@ pub enum Kind {
     Blur,
 }
 
+/// How opaque the dark fill a panel draws for itself should be, so its text stays legible. Glass
+/// tints under its edge lines, so a fill on top would only dim them.
+pub fn panel_tint(material: Option<Kind>) -> f32 {
+    match material {
+        Some(Kind::Glass) => 0.0,
+        Some(Kind::Blur) => 0.45,
+        None => 0.9,
+    }
+}
+
 /// The border a panel draws for itself: glass draws its own edge lines, but blur or nothing leaves
 /// the panel needing one.
 pub fn panel_border(material: Option<Kind>, radius: f32) -> iced_widget::core::Border {

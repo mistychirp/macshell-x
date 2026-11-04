@@ -10,7 +10,7 @@ use crate::bluetooth::Bluetooth;
 use crate::icons::{self, Glyph};
 use crate::media::{Control, Track};
 use crate::network::Wifi;
-use crate::{bluetooth, material, media, menu, network};
+use crate::{bluetooth, material, media, network};
 
 const WIDTH: f32 = 320.0;
 const PADDING: f32 = 12.0;
@@ -75,8 +75,7 @@ pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
             .into(),
     };
 
-    // Like menus: a dark tint over glass, nearly opaque without it.
-    let tint = if material.is_some() { menu::TINT } else { 0.9 };
+    let tint = material::panel_tint(material);
     container(column![top, sound].spacing(GAP))
         .padding(PADDING)
         .width(Length::Fill)

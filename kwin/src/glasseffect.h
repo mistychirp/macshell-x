@@ -33,16 +33,19 @@ struct GlassSettings {
     float blurOffset = 2.0;
 
     /// Frosted glass, for menus, popovers and alerts: flat, with a dark line outside a light one.
-    float frostSaturation = 1.8;
-    float frostEdge = 0.72;
-    float frostOuterEdge = 0.88;
+    float frostSaturation = 1.5;
+    float frostTint = 0.58;
+    float frostEdge = 0.3;
+    float frostOuterEdge = 0.8;
 
-    /// Liquid glass, for controls like the dock: a thin refracting rim and a faint light line.
+    /// Liquid glass, for controls like the dock: a thin refracting rim and a light line that takes
+    /// on the color behind it.
     float liquidRim = 6.0;
     float liquidRefraction = 5.0;
     float liquidBrightness = 0.86;
     float liquidSaturation = 1.15;
-    float liquidEdge = 0.16;
+    float liquidEdgeBoost = 1.5;
+    float liquidEdgeWhite = 0.2;
 };
 
 /// What one glass shape keeps between frames, per render view.

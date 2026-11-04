@@ -5,8 +5,8 @@ use iced_widget::{button, column, container, image, row, text};
 
 use crate::app::{Element, Message};
 use crate::dock::MenuAction;
+use crate::material;
 use crate::places::{Download, Place};
-use crate::{material, menu};
 
 /// How many downloads the stack shows.
 pub const LIMIT: usize = 12;
@@ -84,8 +84,7 @@ pub fn view(tiles: &[Tile], material: Option<material::Kind>) -> Element<'_> {
             ..Default::default()
         });
 
-    // Like menus: a dark tint over glass, nearly opaque without it.
-    let tint = if material.is_some() { menu::TINT } else { 0.9 };
+    let tint = material::panel_tint(material);
     container(
         column![
             grid,

@@ -112,13 +112,15 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.blurPasses = std::clamp(group.readEntry("BlurPasses", defaults.blurPasses), 1, 4);
     m_settings.blurOffset = group.readEntry("BlurOffset", defaults.blurOffset);
     m_settings.frostSaturation = group.readEntry("FrostSaturation", defaults.frostSaturation);
+    m_settings.frostTint = group.readEntry("FrostTint", defaults.frostTint);
     m_settings.frostEdge = group.readEntry("FrostEdge", defaults.frostEdge);
     m_settings.frostOuterEdge = group.readEntry("FrostOuterEdge", defaults.frostOuterEdge);
     m_settings.liquidRim = group.readEntry("LiquidRim", defaults.liquidRim);
     m_settings.liquidRefraction = group.readEntry("LiquidRefraction", defaults.liquidRefraction);
     m_settings.liquidBrightness = group.readEntry("LiquidBrightness", defaults.liquidBrightness);
     m_settings.liquidSaturation = group.readEntry("LiquidSaturation", defaults.liquidSaturation);
-    m_settings.liquidEdge = group.readEntry("LiquidEdge", defaults.liquidEdge);
+    m_settings.liquidEdgeBoost = group.readEntry("LiquidEdgeBoost", defaults.liquidEdgeBoost);
+    m_settings.liquidEdgeWhite = group.readEntry("LiquidEdgeWhite", defaults.liquidEdgeWhite);
     effects->addRepaintFull();
 }
 
@@ -424,10 +426,14 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("refraction", m_settings.liquidRefraction);
         m_glassShader->setUniform("brightness", liquid ? m_settings.liquidBrightness : 1.0f);
         m_glassShader->setUniform("colorMatrix", saturationMatrix(saturation));
-        m_glassShader->setUniform("edgeAlpha", frosted ? m_settings.frostEdge : m_settings.liquidEdge);
-        m_glassShader->setUniform("edgeWidth", 2.0f);
-        // Tahoe's dock catches more light along the bottom; its menus are even all around.
-        m_glassShader->setUniform("edgeLit", frosted ? 0.0f : 0.6f);
+        // Measured from Tahoe's menus: a dark tint with a hint of purple, under the edge lines.
+        m_glassShader->setUniform("tint", frosted ? QVector4D(0.09, 0.06, 0.1, m_settings.frostTint) : QVector4D());
+        // Menus whiten evenly along two pixels; liquid glass brightens its own color, mostly in
+        // the outer pixel, and more where it faces the light.
+        m_glassShader->setUniform("edgeBoost", frosted ? 1.0f : m_settings.liquidEdgeBoost);
+        m_glassShader->setUniform("edgeWhite", frosted ? m_settings.frostEdge : m_settings.liquidEdgeWhite);
+        m_glassShader->setUniform("edgeInner", frosted ? 1.0f : 0.35f);
+        m_glassShader->setUniform("edgeLit", frosted ? 0.0f : 0.8f);
         m_glassShader->setUniform("outerAlpha", frosted ? m_settings.frostOuterEdge : 0.0f);
         m_glassShader->setUniform("opacity", opacity);
 

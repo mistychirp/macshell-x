@@ -20,8 +20,6 @@ const MIN_WIDTH: f32 = 160.0;
 /// Labels longer than this many characters are cut short with an ellipsis.
 const MAX_LABEL_CHARS: usize = 48;
 pub const RADIUS: f32 = 13.0;
-/// Opacity of the dark tint over glass, shared by the shell's other popups.
-pub const TINT: f32 = 0.45;
 
 /// macOS's selection blue.
 const ACCENT: Color = Color::from_rgba(0.0, 0.45, 1.0, 0.95);
@@ -138,9 +136,7 @@ pub fn view(entries: &[Entry], material: Option<material::Kind>) -> Element<'_> 
         .into(),
     });
 
-    // Clear glass needs a fair dark tint to keep text legible over bright backgrounds; with
-    // nothing behind the menu, it needs to be nearly opaque.
-    let tint = if material.is_some() { TINT } else { 0.9 };
+    let tint = material::panel_tint(material);
     container(column(rows))
         .padding(PADDING)
         .width(Length::Fill)

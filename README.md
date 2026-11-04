@@ -94,18 +94,21 @@ found. The glass can be tuned in `kwinrc`; these are the defaults:
 # The blur under frosted and liquid glass: dual Kawase passes and their sample offset.
 BlurPasses=2
 BlurOffset=2
-# Frosted glass (menus, popovers, alerts): saturation, the light line along the edge, and the dark
-# line outside it.
-FrostSaturation=1.8
-FrostEdge=0.72
-FrostOuterEdge=0.88
+# Frosted glass (menus, popovers, alerts): saturation, how strong its dark tint is, how much the
+# light line along the edge whitens it, and the dark line outside that.
+FrostSaturation=1.5
+FrostTint=0.58
+FrostEdge=0.3
+FrostOuterEdge=0.8
 # Liquid glass (the dock): width and strength of the refracting rim, how much it darkens the
-# background, saturation, and the light line along the edge.
+# background, saturation, and the light line along the edge, which is the glass's color multiplied
+# by the boost and mixed with white.
 LiquidRim=6
 LiquidRefraction=5
 LiquidBrightness=0.86
 LiquidSaturation=1.15
-LiquidEdge=0.16
+LiquidEdgeBoost=1.5
+LiquidEdgeWhite=0.2
 ```
 
 To try it without leaving your session, run KWin nested. KWin needs `wp_single_pixel_buffer_manager_v1`

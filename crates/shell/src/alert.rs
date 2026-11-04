@@ -7,7 +7,7 @@ use iced_widget::core::{Alignment, Background, Border, Color, Length, alignment}
 use iced_widget::{Space, button, column, container, image, row, text};
 
 use crate::app::{Element, Message};
-use crate::{material, menu};
+use crate::material;
 
 const WIDTH: u32 = 300;
 const HEIGHT: u32 = 196;
@@ -60,7 +60,7 @@ pub fn view(alert: &Alert, material: Option<material::Kind>) -> Element<'_> {
     ]
     .spacing(8);
 
-    let tint = if material.is_some() { menu::TINT } else { 0.92 };
+    let tint = material::panel_tint(material);
     container(
         column![
             icon,
