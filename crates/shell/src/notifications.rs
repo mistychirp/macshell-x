@@ -5,10 +5,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use chrono::{DateTime, Local};
 use iced_futures::Subscription;
 use iced_futures::futures::channel::mpsc;
 use iced_futures::futures::{SinkExt as _, Stream, future};
-use iced_widget::core::text::Shaping;
+use iced_widget::core::text::{LineHeight, Shaping};
 use iced_widget::core::{Alignment, Background, Border, Color, Length};
 use iced_widget::{Space, button, column, container, image, mouse_area, pin, row, stack, text};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
@@ -45,6 +46,12 @@ const TEXT_WIDTH: f32 = CARD_WIDTH - PADDING_X - ICON_SIZE - ICON_GAP - PADDING_
 const TEXT_SIZE: f32 = 13.0;
 const LINE_HEIGHT: f32 = 16.0;
 const MAX_BODY_LINES: f32 = 4.0;
+/// Room left beside a title for the time.
+const TIME_ROOM: f32 = 76.0;
+const TIME_SIZE: f32 = 11.0;
+const TIME_INK: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.55);
+const ATTACHMENT_SIZE: f32 = 30.0;
+const ATTACHMENT_GAP: f32 = 8.0;
 /// Far more than fits on four lines, so that measuring a huge message stays quick.
 const MAX_BODY_CHARS: usize = 600;
 const MAX_ACTIONS: usize = 3;
@@ -68,6 +75,8 @@ pub struct Incoming {
     pub replaces: bool,
     app_name: String,
     desktop_entry: Option<String>,
+    /// The icon the app named for itself.
+    app_icon: String,
     icon: IncomingIcon,
     summary: String,
     body: String,
@@ -90,6 +99,9 @@ pub struct Notification {
     pub app_key: String,
     pub app: String,
     icon: Option<image::Handle>,
+    /// A picture of its own, like who a message is from, beside the text.
+    attachment: Option<image::Handle>,
+    received: DateTime<Local>,
     title: String,
     body: String,
     body_height: f32,
@@ -112,22 +124,33 @@ impl Notification {
         } else {
             incoming.app_name.clone()
         };
-        let icon = match incoming.icon {
-            IncomingIcon::Pixels(handle) => Some(handle),
-            IncomingIcon::Named(name) => {
-                let name = name.strip_prefix("file://").unwrap_or(&name).to_owned();
-                apps.themed_icon(&name)
-            }
-        }
-        .or_else(|| app.icon.clone())
-        .or_else(|| apps.themed_icon("dialog-information"));
+        let own_icon = (!incoming.app_icon.is_empty())
+            .then(|| apps.themed_icon(file_path(&incoming.app_icon)))
+            .flatten()
+            .or_else(|| app.icon.clone());
+        let (icon, attachment) = match incoming.icon {
+            // Pixels are usually something particular to this notification, like who a message
+            // is from. The app's icon goes first if it has one, like on macOS.
+            IncomingIcon::Pixels(handle) => match own_icon {
+                Some(icon) => (Some(icon), Some(handle)),
+                None => (Some(handle), None),
+            },
+            IncomingIcon::Named(name) => (apps.themed_icon(file_path(&name)).or(own_icon), None),
+        };
+        let icon = icon.or_else(|| apps.themed_icon("dialog-information"));
 
-        let title = menu::fit(&incoming.summary, TEXT_SIZE, fonts::BOLD, TEXT_WIDTH);
-        let body = clamp_lines(&plain_text(&incoming.body));
+        let title = menu::fit(
+            &incoming.summary,
+            TEXT_SIZE,
+            fonts::BOLD,
+            TEXT_WIDTH - TIME_ROOM,
+        );
+        let body_width = body_width(attachment.is_some());
+        let body = clamp_lines(&plain_text(&incoming.body), body_width);
         let body_height = if body.is_empty() {
             0.0
         } else {
-            body_height(&body)
+            body_height(&body, body_width)
         };
 
         Self {
@@ -135,6 +158,8 @@ impl Notification {
             app_key: incoming.desktop_entry.unwrap_or(incoming.app_name),
             app: name,
             icon,
+            attachment,
+            received: Local::now(),
             title,
             body,
             body_height,
@@ -153,9 +178,27 @@ impl Notification {
         }
     }
 
+    /// When it came, the way macOS says it: the time today, or more than that otherwise.
+    pub fn time_label(&self) -> String {
+        let today = Local::now().date_naive();
+        let day = self.received.date_naive();
+        if day == today {
+            self.received.format("%H:%M").to_string()
+        } else if today.pred_opt() == Some(day) {
+            self.received.format("Yesterday, %H:%M").to_string()
+        } else {
+            self.received.format("%b %-d").to_string()
+        }
+    }
+
     /// How tall its card is, without the close button's overhang.
     pub fn height(&self) -> f32 {
-        let text = LINE_HEIGHT + self.body_height;
+        let beside = if self.attachment.is_some() {
+            ATTACHMENT_SIZE
+        } else {
+            0.0
+        };
+        let text = LINE_HEIGHT + self.body_height.max(beside);
         let actions = if self.actions.is_empty() {
             0.0
         } else {
@@ -165,13 +208,26 @@ impl Notification {
     }
 }
 
-fn body_height(body: &str) -> f32 {
-    menu::text_height(body, TEXT_SIZE, LINE_HEIGHT, fonts::REGULAR, TEXT_WIDTH)
+fn file_path(icon: &str) -> &str {
+    icon.strip_prefix("file://").unwrap_or(icon)
+}
+
+/// How wide the text under the title can be, with an attachment beside it or without.
+fn body_width(has_attachment: bool) -> f32 {
+    if has_attachment {
+        TEXT_WIDTH - ATTACHMENT_SIZE - ATTACHMENT_GAP
+    } else {
+        TEXT_WIDTH
+    }
+}
+
+fn body_height(body: &str, width: f32) -> f32 {
+    menu::text_height(body, TEXT_SIZE, LINE_HEIGHT, fonts::REGULAR, width)
 }
 
 /// `body`, cut short with an ellipsis if it takes more lines than a card shows.
-fn clamp_lines(body: &str) -> String {
-    let fits = |text: &str| body_height(text) <= MAX_BODY_LINES * LINE_HEIGHT;
+fn clamp_lines(body: &str, width: f32) -> String {
+    let fits = |text: &str| body_height(text, width) <= MAX_BODY_LINES * LINE_HEIGHT;
     let chars: Vec<char> = body.chars().take(MAX_BODY_CHARS).collect();
     if chars.len() == body.chars().count() && fits(body) {
         return body.to_owned();
@@ -244,6 +300,7 @@ fn markup_tag(text: &str) -> Option<(usize, &'static str)> {
 /// [`CARD_WIDTH`] and [`Notification::height`], plus [`OVERHANG`] above and to the left.
 pub fn card<'a>(
     notification: &'a Notification,
+    time: Option<String>,
     hovered: bool,
     material: Option<material::Kind>,
     on_press: Message,
@@ -261,26 +318,42 @@ pub fn card<'a>(
         None => Space::new().width(ICON_SIZE).height(ICON_SIZE).into(),
     };
 
-    let mut words = column![
+    let line_height = LineHeight::Absolute(LINE_HEIGHT.into());
+    let heading = row![
         text(&notification.title)
             .size(TEXT_SIZE)
-            .line_height(iced_widget::core::text::LineHeight::Absolute(
-                LINE_HEIGHT.into()
-            ))
+            .line_height(line_height)
             .font(fonts::BOLD)
             .shaping(Shaping::Advanced),
-    ];
+        Space::new().width(Length::Fill),
+    ]
+    .push(time.map(|time| {
+        text(time)
+            .size(TIME_SIZE)
+            .line_height(line_height)
+            .color(TIME_INK)
+    }))
+    .width(TEXT_WIDTH);
+
+    let mut under = row![].width(TEXT_WIDTH);
     if !notification.body.is_empty() {
-        words = words.push(
+        under = under.push(
             text(&notification.body)
                 .size(TEXT_SIZE)
-                .line_height(iced_widget::core::text::LineHeight::Absolute(
-                    LINE_HEIGHT.into(),
-                ))
+                .line_height(line_height)
                 .shaping(Shaping::Advanced)
-                .width(TEXT_WIDTH),
+                .width(body_width(notification.attachment.is_some())),
         );
     }
+    if let Some(handle) = &notification.attachment {
+        under = under.push(Space::new().width(Length::Fill)).push(
+            image(handle.clone())
+                .width(ATTACHMENT_SIZE)
+                .height(ATTACHMENT_SIZE)
+                .border_radius(ATTACHMENT_SIZE / 2.0),
+        );
+    }
+    let mut words = column![heading, under];
     if !notification.actions.is_empty() {
         let width = (TEXT_WIDTH - 6.0 * (notification.actions.len() as f32 - 1.0))
             / notification.actions.len() as f32;
@@ -434,7 +507,8 @@ impl Server {
                 Some(Value::Str(entry)) if !entry.is_empty() => Some(entry.to_string()),
                 _ => None,
             },
-            icon: incoming_icon(&hints, app_icon),
+            icon: incoming_icon(&hints, app_icon.clone()),
+            app_icon,
             app_name,
             summary,
             body,

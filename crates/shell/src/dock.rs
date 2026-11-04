@@ -1,23 +1,26 @@
 //! The dock: pinned apps first, then running ones, with a dot under each running app, the
 //! hovered app's name above it, and icons that grow toward the pointer. After a separator
-//! come the places: Downloads and Trash.
+//! come Downloads, minimized windows and Trash.
 //!
 //! The surface spans the bottom of the output and is taller than the pill, leaving room above
 //! it. [`layout`] places everything; the view, the material shapes and the input region are all
 //! derived from it, so they always line up.
 
+use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
-use iced_widget::core::{Background, Border, Color, Length, Point, Rectangle, Vector};
+use iced_widget::core::{Background, Border, Color, ContentFit, Length, Point, Rectangle, Vector};
 use iced_widget::{Space, container, image, mouse_area, pin, stack, text};
 
 use crate::app::{Element, Message};
 use crate::apps;
 use crate::apps::{App, AppIndex};
+use crate::autostart;
 use crate::fonts;
+use crate::icons::Glyph;
 use crate::kwin::{self, WindowInfo};
 use crate::material::{self, Shape};
 use crate::menu;
@@ -37,6 +40,12 @@ pub const RESERVED_HEIGHT: f32 = PILL_HEIGHT + MARGIN;
 
 /// Extra room between the apps and the places, where the separator line goes.
 const SEPARATOR_GAP: f32 = 12.0;
+/// A minimized window's app icon, as a share of its tile.
+const TILE_BADGE: f32 = 0.42;
+const BADGE_SIZE: f32 = 21.0;
+const BADGE_TEXT_SIZE: f32 = 12.0;
+const BADGE_PADDING: f32 = 11.0;
+const BADGE_OVERHANG: f32 = 5.0;
 const SEPARATOR_HEIGHT: f32 = ICON_SIZE * 0.75;
 
 /// How many icon slots to either side of the pointer magnification reaches.
@@ -47,6 +56,8 @@ const LABEL_PADDING_X: f32 = 10.0;
 const LABEL_HEIGHT: f32 = 26.0;
 /// Gap between the label and the top of the icon under it.
 const LABEL_GAP: f32 = 10.0;
+/// A window's title can be long.
+const LABEL_MAX_WIDTH: f32 = 300.0;
 /// Gap between a menu and the top of the icon it belongs to.
 const MENU_GAP: f32 = 26.0;
 
@@ -81,6 +92,26 @@ impl Item {
     pub fn window_ids(&self) -> Vec<u64> {
         self.windows.iter().map(|window| window.id).collect()
     }
+}
+
+/// A minimized window, which the dock shows as a picture of itself.
+#[derive(Debug)]
+pub struct Minimized {
+    pub id: u64,
+    pub title: String,
+    /// The window's picture, once it's been captured.
+    pub image: Option<image::Handle>,
+    pub app: Rc<App>,
+}
+
+/// Which slot a place is in: Downloads comes before the minimized windows, and Trash after.
+pub fn place_slot(layout: &Layout, offset: usize) -> usize {
+    layout.apps + if offset == 0 { 0 } else { 1 + layout.minimized }
+}
+
+/// Which slot a minimized window is in.
+pub fn minimized_slot(layout: &Layout, index: usize) -> usize {
+    layout.apps + 1 + index
 }
 
 /// A parabolic hop from 0 up to 1 and back down over `period` seconds, repeating.
@@ -121,8 +152,9 @@ pub struct Layout {
     /// One per slot: the apps, then the places. Bottom-aligned; magnified icons stand up out
     /// of the pill.
     pub icons: Vec<Rectangle>,
-    /// How many of the slots are apps; the rest are [`Place::ALL`].
+    /// How many of the slots are apps; the rest are [`Place::ALL`] and the minimized windows.
     pub apps: usize,
+    pub minimized: usize,
     /// Horizontal center of the line between the apps and the places.
     pub separator: f32,
     pub label: Option<Label>,
@@ -206,6 +238,7 @@ fn icon_size(index: usize, apps: usize, pointer: &Pointer, max_icon: f32) -> f32
 pub fn layout(
     surface_width: f32,
     items: &[Item],
+    minimized: &[Minimized],
     pointer: &Pointer,
     max_icon: f32,
     bounce: Vec<f32>,
@@ -214,11 +247,11 @@ pub fn layout(
     if let Some(drag) = drag
         && drag.index < items.len()
     {
-        return drag_layout(surface_width, items.len(), drag, max_icon);
+        return drag_layout(surface_width, items.len(), minimized.len(), drag, max_icon);
     }
 
     let apps = items.len();
-    let sizes: Vec<f32> = (0..apps + Place::ALL.len())
+    let sizes: Vec<f32> = (0..apps + Place::ALL.len() + minimized.len())
         .map(|index| icon_size(index, apps, pointer, max_icon))
         .collect();
     let icons_width =
@@ -257,7 +290,16 @@ pub fn layout(
     let label = pointer.hovered.and_then(|index| {
         let name = match items.get(index) {
             Some(item) => item.app.name.clone(),
-            None => Place::ALL.get(index - apps)?.name().to_owned(),
+            None => match index - apps {
+                0 => Place::ALL.first()?.name().to_owned(),
+                offset if offset <= minimized.len() => menu::fit(
+                    &minimized[offset - 1].title,
+                    LABEL_TEXT_SIZE,
+                    fonts::REGULAR,
+                    LABEL_MAX_WIDTH,
+                ),
+                _ => Place::ALL.get(1)?.name().to_owned(),
+            },
         };
         let icon = icons.get(index)?;
         let width = (menu::text_width(&name, LABEL_TEXT_SIZE, fonts::REGULAR)
@@ -282,6 +324,7 @@ pub fn layout(
         pill,
         icons,
         apps,
+        minimized: minimized.len(),
         separator,
         label,
         bounce,
@@ -292,12 +335,19 @@ pub fn layout(
 
 /// While dragging: icons at their plain size, a gap where the dragged one would land, and the
 /// dragged icon itself under the pointer.
-fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> Layout {
+fn drag_layout(
+    surface_width: f32,
+    count: usize,
+    minimized: usize,
+    drag: &Drag,
+    max_icon: f32,
+) -> Layout {
     let pill_y = headroom(max_icon).round();
     let removing = drag.removable && drag.pointer.y < pill_y - REMOVE_DISTANCE;
     // Dragging out to remove closes the gap; otherwise the dragged icon keeps a slot.
     let app_slots = if removing { count - 1 } else { count };
-    let slots = app_slots + Place::ALL.len();
+    let trailing = Place::ALL.len() + minimized;
+    let slots = app_slots + trailing;
 
     let width =
         2.0 * PADDING_X + slots as f32 * ICON_SIZE + (slots - 1) as f32 * SPACING + SEPARATOR_GAP;
@@ -341,7 +391,7 @@ fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> 
         .collect();
 
     let separator = slot_x(app_slots) - SPACING / 2.0 + SEPARATOR_GAP / 2.0;
-    icons.extend((0..Place::ALL.len()).map(|index| Rectangle {
+    icons.extend((0..trailing).map(|index| Rectangle {
         x: slot_x(app_slots + index) + SEPARATOR_GAP,
         y: pill.y + PADDING,
         width: ICON_SIZE,
@@ -370,6 +420,7 @@ fn drag_layout(surface_width: f32, count: usize, drag: &Drag, max_icon: f32) -> 
         pill,
         icons,
         apps: count,
+        minimized,
         separator,
         label,
         bounce: Vec::new(),
@@ -516,6 +567,12 @@ pub enum MenuAction {
     Launch(Vec<String>),
     /// Pins or unpins the app with this id.
     TogglePin(String),
+    /// Turns opening at login on or off for the app with this id.
+    ToggleLogin(String),
+    /// Shows these windows, by their uuids, side by side.
+    ShowAll(Vec<String>),
+    /// Puts these windows away, without them showing up in the dock as minimized.
+    Hide(Vec<u64>),
     /// Closes these windows.
     Quit(Vec<u64>),
     /// Opens a file with its default app.
@@ -554,10 +611,13 @@ pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
 
     for window in &item.windows {
         let title = window.title.as_deref().unwrap_or(&item.app.name);
-        entries.push(
-            menu::Entry::item(title, Message::DockMenu(MenuAction::FocusWindow(window.id)))
-                .checked(window.is_focused),
-        );
+        let entry = menu::Entry::item(title, Message::DockMenu(MenuAction::FocusWindow(window.id)))
+            .icon(menu::Icon::Glyph(Glyph::Window));
+        entries.push(if window.is_minimized {
+            entry.marked("◇")
+        } else {
+            entry.checked(window.is_focused)
+        });
     }
     if !entries.is_empty() {
         entries.push(menu::Entry::Separator);
@@ -573,12 +633,18 @@ pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
         entries.push(menu::Entry::Separator);
     }
 
+    let app_id = &item.app.id;
     entries.push(menu::Entry::item("Options", Message::Nothing).submenu(vec![
             menu::Entry::item(
                 "Keep in Dock",
-                Message::DockMenu(MenuAction::TogglePin(item.app.id.clone())),
+                Message::DockMenu(MenuAction::TogglePin(app_id.clone())),
             )
             .checked(pinned),
+            menu::Entry::item(
+                "Open at Login",
+                Message::DockMenu(MenuAction::ToggleLogin(app_id.clone())),
+            )
+            .checked(autostart::is_enabled(app_id)),
         ]));
     entries.push(menu::Entry::Separator);
 
@@ -586,10 +652,23 @@ pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
         if item.app.command.is_some() {
             entries.push(menu::Entry::item(
                 "Open",
-                Message::DockMenu(MenuAction::Open(item.app.id.clone())),
+                Message::DockMenu(MenuAction::Open(app_id.clone())),
             ));
         }
     } else {
+        entries.push(menu::Entry::item(
+            "Show All Windows",
+            Message::DockMenu(MenuAction::ShowAll(
+                item.windows
+                    .iter()
+                    .map(|window| window.uuid.clone())
+                    .collect(),
+            )),
+        ));
+        entries.push(menu::Entry::item(
+            "Hide",
+            Message::DockMenu(MenuAction::Hide(item.window_ids())),
+        ));
         entries.push(menu::Entry::item(
             "Quit",
             Message::DockMenu(MenuAction::Quit(item.window_ids())),
@@ -629,6 +708,8 @@ pub fn activate(item: &Item) {
 pub fn view<'a>(
     items: &'a [Item],
     places: &'a [Option<image::Handle>],
+    minimized: &'a [Minimized],
+    badges: &HashMap<String, u32>,
     layout: &'a Layout,
     material: Option<material::Kind>,
 ) -> Element<'a> {
@@ -664,6 +745,10 @@ pub fn view<'a>(
             .on_right_press(Message::DockMenuRequested(item.app.id.clone()));
         layers.push(pin(icon).x(rect.x).y(rect.y - lift).into());
 
+        if let Some(&count) = badges.get(&item.app.id.to_lowercase()) {
+            layers.push(count_badge(count, rect, lift));
+        }
+
         if !item.windows.is_empty() {
             layers.push(
                 pin(dot())
@@ -675,7 +760,7 @@ pub fn view<'a>(
     }
 
     for (offset, &place) in Place::ALL.iter().enumerate() {
-        let Some(rect) = layout.icons.get(layout.apps + offset) else {
+        let Some(rect) = layout.icons.get(place_slot(layout, offset)) else {
             continue;
         };
         let handle = places.get(offset).and_then(Option::as_ref);
@@ -685,6 +770,16 @@ pub fn view<'a>(
             .on_press(Message::PlaceClicked(place))
             .on_right_press(Message::PlaceMenuRequested(place));
         layers.push(pin(icon).x(rect.x).y(rect.y).into());
+    }
+
+    for (index, window) in minimized.iter().enumerate() {
+        let Some(rect) = layout.icons.get(minimized_slot(layout, index)) else {
+            continue;
+        };
+        let tile = mouse_area(minimized_tile(window, rect.width))
+            .on_press(Message::DockThumbnailPressed(window.id))
+            .on_right_press(Message::DockThumbnailMenu(window.id));
+        layers.push(pin(tile).x(rect.x).y(rect.y).into());
     }
 
     let separator = container(Space::new())
@@ -728,6 +823,60 @@ pub fn view<'a>(
     mouse_area(stack(layers).width(Length::Fill).height(Length::Fill))
         .on_move(Message::DockPointerMoved)
         .on_exit(Message::DockPointerLeft)
+        .into()
+}
+
+/// A minimized window's picture, with its app's icon on its corner, like Tahoe's.
+fn minimized_tile(window: &Minimized, size: f32) -> Element<'_> {
+    let picture: Element<'_> = match &window.image {
+        Some(handle) => image(handle.clone())
+            .width(size)
+            .height(size)
+            .content_fit(ContentFit::Contain)
+            .into(),
+        None => icon(&window.app, size),
+    };
+    let badge_size = size * TILE_BADGE;
+    let badge = pin(icon(&window.app, badge_size))
+        .x(size - badge_size)
+        .y(size - badge_size);
+    container(stack![picture, badge])
+        .width(size)
+        .height(size)
+        .into()
+}
+
+/// A red count on an icon's corner, like macOS's.
+fn count_badge<'a>(count: u32, icon: &Rectangle, lift: f32) -> Element<'a> {
+    let scale = icon.width / ICON_SIZE;
+    let size = BADGE_SIZE * scale;
+    let label = if count > 99 {
+        String::from("99+")
+    } else {
+        count.to_string()
+    };
+    let width = (menu::text_width(&label, BADGE_TEXT_SIZE * scale, fonts::BOLD)
+        + BADGE_PADDING * scale)
+        .max(size);
+    let badge = container(
+        text(label)
+            .size(BADGE_TEXT_SIZE * scale)
+            .font(fonts::BOLD)
+            .color(Color::WHITE),
+    )
+    .center_x(width)
+    .center_y(size)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.95, 0.23, 0.19))),
+        border: Border {
+            radius: (size / 2.0).into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    pin(badge)
+        .x(icon.x + icon.width - width + BADGE_OVERHANG * scale)
+        .y(icon.y - lift - BADGE_OVERHANG * scale)
         .into()
 }
 

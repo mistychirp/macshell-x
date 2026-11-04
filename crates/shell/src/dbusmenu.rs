@@ -2,11 +2,13 @@
 
 use std::collections::HashMap;
 
+use iced_widget::image;
 use serde::Deserialize;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::{OwnedValue, Type, Value};
 
 use crate::app::Message;
+use crate::apps::AppIndex;
 use crate::{dbus, menu};
 
 pub const INTERFACE: &str = "com.canonical.dbusmenu";
@@ -38,6 +40,9 @@ pub struct Item {
     checked: bool,
     /// The keys that do the same, in macOS's symbols.
     shortcut: Option<String>,
+    icon_name: String,
+    /// Its icon, once [`load_icons`] has found it.
+    icon: Option<image::Handle>,
     /// It's meant to open a submenu, even if that's empty right now.
     opens_submenu: bool,
     pub children: Vec<Item>,
@@ -96,6 +101,9 @@ impl Address {
                 let mut entry = menu::Entry::item(&item.label, on_select)
                     .checked(item.checked)
                     .enabled(item.enabled && (!item.opens_submenu || !item.children.is_empty()));
+                if let Some(icon) = &item.icon {
+                    entry = entry.icon(menu::Icon::Image(icon.clone()));
+                }
                 if let Some(shortcut) = &item.shortcut {
                     entry = entry.shortcut(shortcut);
                 }
@@ -128,6 +136,16 @@ impl Address {
     }
 }
 
+/// Finds the items' icons.
+pub fn load_icons(items: &mut [Item], apps: &mut AppIndex) {
+    for item in items {
+        if !item.icon_name.is_empty() {
+            item.icon = apps.menu_icon(&item.icon_name);
+        }
+        load_icons(&mut item.children, apps);
+    }
+}
+
 /// `value` with any variants around it taken off.
 fn peeled<'a>(value: &'a Value<'a>) -> &'a Value<'a> {
     match value {
@@ -155,6 +173,8 @@ fn parse_item(id: i32, properties: &[(String, &Value<'_>)], children: Vec<Item>)
         checked: !text("toggle-type").is_empty()
             && matches!(property("toggle-state"), Some(Value::I32(1))),
         shortcut: property("shortcut").and_then(parse_shortcut),
+        icon_name: text("icon-name").to_owned(),
+        icon: None,
         opens_submenu: text("children-display") == "submenu",
         children,
     }

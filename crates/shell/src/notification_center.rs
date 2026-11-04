@@ -29,10 +29,12 @@ const SHOW_LESS_WIDTH: f32 = 73.0;
 const SHOW_LESS_HEIGHT: f32 = 21.0;
 const CONTROL_GAP: f32 = 8.0;
 /// The edge of the group's next card, under its first.
-const PEEK_INSET: f32 = 14.0;
-const PEEK_HEIGHT: f32 = 9.0;
+const PEEKS: [f32; 2] = [10.0, 22.0];
+const PEEK_HEIGHT: f32 = 8.0;
 const EMPTY_TOP: f32 = 40.0;
 const TITLE_SIZE: f32 = 15.0;
+const PANEL_TITLE_SIZE: f32 = 17.0;
+const PANEL_TITLE_HEIGHT: f32 = 24.0;
 /// The height of a line of text, in text sizes: what the text widget uses unless told otherwise.
 const LINE_HEIGHT: f32 = 1.3;
 const SHADOW_REACH: f32 = 8.0;
@@ -54,6 +56,8 @@ pub fn height(screen_height: f32) -> f32 {
 /// What can be scrolled past.
 #[derive(Debug, Clone, Copy)]
 enum Row<'a> {
+    /// The panel's own title, with the ✕ that clears everything.
+    Title,
     Header {
         app_key: &'a str,
         app: &'a str,
@@ -68,11 +72,19 @@ enum Row<'a> {
 impl Row<'_> {
     fn height(&self) -> f32 {
         match self {
+            Row::Title => PANEL_TITLE_HEIGHT,
             Row::Header { .. } => HEADER_HEIGHT,
             Row::Card {
                 notification,
                 closed_group,
-            } => notification.height() + if *closed_group { PEEK_HEIGHT } else { 0.0 },
+            } => {
+                notification.height()
+                    + if *closed_group {
+                        PEEKS.len() as f32 * PEEK_HEIGHT
+                    } else {
+                        0.0
+                    }
+            }
         }
     }
 }
@@ -81,6 +93,9 @@ impl Row<'_> {
 fn rows<'a>(notifications: &'a [Notification], open: &HashSet<String>) -> Vec<Row<'a>> {
     let mut seen = HashSet::new();
     let mut rows = Vec::new();
+    if !notifications.is_empty() {
+        rows.push(Row::Title);
+    }
     for first in notifications {
         if !seen.insert(first.app_key.as_str()) {
             continue;
@@ -155,6 +170,9 @@ pub fn material_shapes(
     let mut shapes = Vec::new();
     for (row, y) in placed(notifications, open, first, height) {
         match row {
+            Row::Title => {
+                shapes.push(close_shape(CARD_X + CARD_WIDTH - CLOSE_SIZE, y));
+            }
             Row::Header { .. } => {
                 let close_x = CARD_X + CARD_WIDTH - CLOSE_SIZE;
                 shapes.push(chip_shape(
@@ -179,13 +197,15 @@ pub fn material_shapes(
                     shapes.push(close_shape(CARD_X - OVERHANG, y - OVERHANG));
                 }
                 if closed_group {
-                    shapes.push(shape(
-                        CARD_X + PEEK_INSET,
-                        y + card_height + 1.0,
-                        CARD_WIDTH - 2.0 * PEEK_INSET,
-                        PEEK_HEIGHT - 1.0,
-                        (PEEK_HEIGHT - 1.0) / 2.0,
-                    ));
+                    for (index, inset) in PEEKS.into_iter().enumerate() {
+                        shapes.push(shape(
+                            CARD_X + inset,
+                            y + card_height + 1.0 + index as f32 * PEEK_HEIGHT,
+                            CARD_WIDTH - 2.0 * inset,
+                            PEEK_HEIGHT - 1.0,
+                            (PEEK_HEIGHT - 1.0) / 2.0,
+                        ));
+                    }
                 }
             }
         }
@@ -206,7 +226,7 @@ pub fn view<'a>(
         let message = "No recent notifications";
         let x = CARD_X + (CARD_WIDTH - menu::text_width(message, TITLE_SIZE, fonts::BOLD)) / 2.0;
         layers.push(
-            pin(title(message))
+            pin(title(message, TITLE_SIZE))
                 .x(x - SHADOW_REACH)
                 .y(EMPTY_TOP - SHADOW_REACH)
                 .into(),
@@ -215,10 +235,24 @@ pub fn view<'a>(
 
     for (row, y) in placed(notifications, open, first, height) {
         match row {
+            Row::Title => {
+                layers.push(
+                    pin(title("Notification Center", PANEL_TITLE_SIZE))
+                        .x(CARD_X - SHADOW_REACH)
+                        .y(y - SHADOW_REACH - 2.0)
+                        .into(),
+                );
+                layers.push(
+                    pin(close_button(Message::NotificationsCleared, material))
+                        .x(CARD_X + CARD_WIDTH - CLOSE_SIZE)
+                        .y(y)
+                        .into(),
+                );
+            }
             Row::Header { app_key, app } => {
                 layers.push(pin(header(app_key, material)).x(CARD_X).y(y).into());
                 layers.push(
-                    pin(title(app))
+                    pin(title(app, TITLE_SIZE))
                         .x(CARD_X - SHADOW_REACH)
                         .y(y - SHADOW_REACH)
                         .into(),
@@ -243,6 +277,7 @@ pub fn view<'a>(
                 layers.push(
                     pin(card(
                         notification,
+                        Some(notification.time_label()),
                         hovered == Some(id),
                         material,
                         on_press,
@@ -253,15 +288,17 @@ pub fn view<'a>(
                     .into(),
                 );
                 if closed_group {
-                    layers.push(
-                        pin(container(Space::new())
-                            .width(CARD_WIDTH - 2.0 * PEEK_INSET)
-                            .height(PEEK_HEIGHT - 1.0)
-                            .style(move |_| panel_style(material, (PEEK_HEIGHT - 1.0) / 2.0)))
-                        .x(CARD_X + PEEK_INSET)
-                        .y(y + notification.height() + 1.0)
-                        .into(),
-                    );
+                    for (index, inset) in PEEKS.into_iter().enumerate() {
+                        layers.push(
+                            pin(container(Space::new())
+                                .width(CARD_WIDTH - 2.0 * inset)
+                                .height(PEEK_HEIGHT - 1.0)
+                                .style(move |_| panel_style(material, (PEEK_HEIGHT - 1.0) / 2.0)))
+                            .x(CARD_X + inset)
+                            .y(y + notification.height() + 1.0 + index as f32 * PEEK_HEIGHT)
+                            .into(),
+                        );
+                    }
                 }
             }
         }
@@ -285,19 +322,19 @@ pub fn view<'a>(
 
 /// A title directly on the desktop, with Tahoe's soft shadow, which keeps it readable on a bright
 /// wallpaper. It starts [`SHADOW_REACH`] up and to the left of the text.
-fn title(content: &str) -> Element<'_> {
-    let width = menu::text_width(content, TITLE_SIZE, fonts::BOLD) + 2.0 * SHADOW_REACH;
-    let height = LINE_HEIGHT * TITLE_SIZE + 2.0 * SHADOW_REACH;
+fn title(content: &str, size: f32) -> Element<'_> {
+    let width = menu::text_width(content, size, fonts::BOLD) + 2.0 * SHADOW_REACH;
+    let height = LINE_HEIGHT * size + 2.0 * SHADOW_REACH;
     let shadow = SHADOWS.with_borrow_mut(|shadows| {
         shadows
             .entry(content.to_owned())
-            .or_insert_with(|| text_shadow(content, width, height))
+            .or_insert_with(|| text_shadow(content, size, width, height))
             .clone()
     });
     stack![
         image(shadow).width(width).height(height),
         pin(text(content)
-            .size(TITLE_SIZE)
+            .size(size)
             .font(fonts::BOLD)
             .color(Color::WHITE)
             .shaping(Shaping::Advanced)
@@ -317,7 +354,7 @@ thread_local! {
 
 /// The shadow of a title, as an image of this size in logical pixels: its glyphs, drawn by the same
 /// text engine that draws the text, and blurred, since a renderer can't blur text.
-fn text_shadow(content: &str, width: f32, height: f32) -> image::Handle {
+fn text_shadow(content: &str, size: f32, width: f32, height: f32) -> image::Handle {
     let (pixel_width, pixel_height) = (
         (width * SHADOW_SCALE).ceil() as usize,
         (height * SHADOW_SCALE).ceil() as usize,
@@ -328,10 +365,7 @@ fn text_shadow(content: &str, width: f32, height: f32) -> image::Handle {
         .write()
         .expect("text system");
     let fonts = system.raw();
-    let metrics = Metrics::new(
-        TITLE_SIZE * SHADOW_SCALE,
-        LINE_HEIGHT * TITLE_SIZE * SHADOW_SCALE,
-    );
+    let metrics = Metrics::new(size * SHADOW_SCALE, LINE_HEIGHT * size * SHADOW_SCALE);
     let mut buffer = Buffer::new(fonts, metrics);
     buffer.set_size(fonts, None, None);
     buffer.set_text(

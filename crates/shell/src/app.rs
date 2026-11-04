@@ -29,8 +29,8 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appmenu, audio, bluetooth, brightness, control, dbusmenu, dock, fonts, media, menu, menubar,
-    network, notification_center, stack, tray, wallpaper,
+    appmenu, audio, autostart, bluetooth, brightness, control, dbusmenu, dock, fonts, launcher,
+    media, menu, menubar, network, notification_center, stack, tray, wallpaper,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -146,6 +146,13 @@ pub enum Message {
     BarBrightness,
     /// A dock icon was right-clicked; carries the app's id.
     DockMenuRequested(String),
+    /// A minimized window's tile in the dock was pressed, or right-clicked.
+    DockThumbnailPressed(u64),
+    DockThumbnailMenu(u64),
+    /// A minimized window's picture arrived, if it could be taken.
+    WindowCaptured(u64, Option<image::Handle>),
+    /// An app's news about its dock badge.
+    LauncherUpdate(launcher::Update),
     /// Something was chosen in a dock popup.
     DockMenu(dock::MenuAction),
     PlaceClicked(Place),
@@ -169,6 +176,8 @@ pub enum Message {
     NotificationGroupOpened(String),
     NotificationGroupClosed(String),
     NotificationGroupCleared(String),
+    /// Notification Center's own ✕ was pressed.
+    NotificationsCleared,
     /// The session's tray icons changed.
     TrayItems(Vec<tray::Item>),
     /// Something was chosen in a menu an app exports.
@@ -320,6 +329,14 @@ struct Shell {
     trash_count: usize,
     /// The current icon of each of [`Place::ALL`].
     place_icons: Vec<Option<image::Handle>>,
+    /// Windows hidden with their app, which are minimized but don't show up in the dock as such.
+    hidden_windows: HashSet<u64>,
+    /// Minimized windows, which the dock shows, in the order they were minimized.
+    minimized: Vec<dock::Minimized>,
+    /// Count badges, by desktop entry id in lowercase.
+    dock_badges: HashMap<String, u32>,
+    /// What each app last said about its count, and whether to show it.
+    badge_counts: HashMap<String, (u32, bool)>,
     /// Height of the screen, once the wallpaper's surface has said.
     screen_height: f32,
     /// What Notification Center holds, most recent first.
@@ -344,6 +361,8 @@ enum DockSlot {
     App(usize),
     /// An offset into [`Place::ALL`].
     Place(usize),
+    /// A place in the list of minimized windows.
+    Minimized(usize),
 }
 
 fn place_slot(place: Place) -> DockSlot {
@@ -366,11 +385,14 @@ const FALLBACK_SCREEN_HEIGHT: f32 = 700.0;
 /// How long the pointer has to stay on a menu's row to change which submenus are open, so that
 /// heading for an open submenu across other rows doesn't close it.
 const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
+/// How big minimized windows' pictures are kept, on their longer side: enough for a magnified dock.
+const THUMBNAIL_SIZE: u32 = 512;
 /// How many past notifications Notification Center keeps.
 const MAX_NOTIFICATIONS: usize = 100;
 
 impl Shell {
     fn new(material: Option<Rc<Material>>) -> (Self, Task<Message>) {
+        autostart::run_once();
         let config = Config::load();
         let mut apps = AppIndex::load();
         let dock = dock::items(&config.dock.pinned, &[], &mut apps);
@@ -455,6 +477,10 @@ impl Shell {
             trash_dir,
             trash_count,
             place_icons: Vec::new(),
+            hidden_windows: HashSet::new(),
+            minimized: Vec::new(),
+            dock_badges: HashMap::new(),
+            badge_counts: HashMap::new(),
             screen_height: FALLBACK_SCREEN_HEIGHT,
             notifications: Vec::new(),
             notification_hovered: None,
@@ -505,8 +531,12 @@ impl Shell {
                 Surface::MenuBar => format!("{:?}", self.bar()),
                 Surface::Dock => {
                     format!(
-                        "{:?} {:?} {:?}",
-                        self.dock, self.place_icons, self.dock_layout
+                        "{:?} {:?} {:?} {:?} {:?}",
+                        self.dock,
+                        self.place_icons,
+                        self.dock_layout,
+                        self.minimized,
+                        self.dock_badges
                     )
                 }
                 // Short-lived, with live content.
@@ -541,6 +571,7 @@ impl Shell {
                 }
                 self.windows = windows;
                 self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
+                let captures = self.sync_minimized();
                 // A window showing up is what ends a launch bounce.
                 let dock = &self.dock;
                 self.launching.retain(|app_id, _| {
@@ -548,7 +579,7 @@ impl Shell {
                         .iter()
                         .any(|item| item.app.id == *app_id && item.is_running())
                 });
-                return self.relayout_dock();
+                return Task::batch([self.relayout_dock(), captures]);
             }
             Message::KeyboardLayoutsChanged(layouts) => {
                 self.input_label = (layouts.names.len() > 1)
@@ -895,6 +926,39 @@ impl Shell {
             Message::SurfaceOpened(id, _) if self.alert.as_ref().is_some_and(|a| a.id == id) => {
                 return self.reach_surface(id);
             }
+            Message::DockThumbnailPressed(id) => kwin::focus_window(id),
+            Message::DockThumbnailMenu(id) => {
+                let Some(index) = self.minimized.iter().position(|window| window.id == id) else {
+                    return Task::none();
+                };
+                let app_id = self.minimized[index].app.id.clone();
+                let Some(item) = self.dock.iter().find(|item| item.app.id == app_id) else {
+                    return Task::none();
+                };
+                let pinned = self.pinned.iter().any(|id| *id == app_id);
+                let entries = dock::menu_entries(item, pinned);
+                let size = menu::size(&entries);
+                return self.open_dock_popup(
+                    DockSlot::Minimized(index),
+                    PopupContent::Menu(entries),
+                    size,
+                );
+            }
+            Message::WindowCaptured(id, image) => {
+                if let Some(window) = self.minimized.iter_mut().find(|window| window.id == id) {
+                    window.image = image;
+                }
+            }
+            Message::LauncherUpdate(update) => {
+                let (count, visible) = self.badge_counts.entry(update.app.clone()).or_default();
+                *count = update.count.unwrap_or(*count);
+                *visible = update.visible.unwrap_or(*visible);
+                if *visible && *count > 0 {
+                    self.dock_badges.insert(update.app, *count);
+                } else {
+                    self.dock_badges.remove(&update.app);
+                }
+            }
             Message::PlaceClicked(place) => match place {
                 Place::Downloads => {
                     let tiles: Vec<stack::Tile> =
@@ -986,7 +1050,8 @@ impl Shell {
                 let chosen = Task::future(address.item_chosen(id)).discard();
                 return Task::batch([self.close_popup(), chosen]);
             }
-            Message::AppMenuChanged(address, items) => {
+            Message::AppMenuChanged(address, mut items) => {
+                dbusmenu::load_icons(&mut items, &mut self.apps);
                 if self.app_menu_address.as_ref() == Some(&address) {
                     self.app_menu_titles = items
                         .iter()
@@ -1024,6 +1089,11 @@ impl Shell {
             }
             Message::NotificationGroupClosed(app_key) => {
                 self.open_groups.remove(&app_key);
+            }
+            Message::NotificationsCleared => {
+                let ids: Vec<u32> = self.notifications.iter().map(|known| known.id).collect();
+                self.open_groups.clear();
+                return Task::batch(ids.into_iter().map(|id| self.dismiss_notification(id)));
             }
             Message::NotificationGroupCleared(app_key) => {
                 let ids: Vec<u32> = self
@@ -1108,7 +1178,8 @@ impl Shell {
     ) -> Task<Message> {
         let index = match slot {
             DockSlot::App(index) => index,
-            DockSlot::Place(offset) => self.dock_layout.apps + offset,
+            DockSlot::Place(offset) => dock::place_slot(&self.dock_layout, offset),
+            DockSlot::Minimized(index) => dock::minimized_slot(&self.dock_layout, index),
         };
         let Some(anchor) = dock::menu_anchor(&self.dock_layout, index) else {
             return Task::none();
@@ -1740,6 +1811,47 @@ impl Shell {
         self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
     }
 
+    /// Keeps the list of minimized windows up to date, and asks for pictures of new ones.
+    fn sync_minimized(&mut self) -> Task<Message> {
+        let windows = &self.windows;
+        // A window that was hidden and is back is an ordinary one again.
+        self.hidden_windows.retain(|id| {
+            windows
+                .iter()
+                .any(|window| window.id == *id && window.is_minimized)
+        });
+        let hidden = &self.hidden_windows;
+        self.minimized.retain(|known| {
+            !hidden.contains(&known.id)
+                && windows
+                    .iter()
+                    .any(|window| window.id == known.id && window.is_minimized)
+        });
+        let mut captures = Vec::new();
+        for window in windows.iter().filter(|window| window.is_minimized) {
+            if hidden.contains(&window.id)
+                || self.minimized.iter().any(|known| known.id == window.id)
+            {
+                continue;
+            }
+            let Some(app_id) = &window.app_id else {
+                continue;
+            };
+            self.minimized.push(dock::Minimized {
+                id: window.id,
+                title: window.title.clone().unwrap_or_default(),
+                image: None,
+                app: self.apps.resolve(app_id),
+            });
+            let id = window.id;
+            captures.push(Task::perform(
+                kwin::capture_window(window.uuid.clone(), THUMBNAIL_SIZE),
+                move |image| Message::WindowCaptured(id, image),
+            ));
+        }
+        Task::batch(captures)
+    }
+
     /// Focuses the app, or launches it with a bounce if it isn't running.
     fn activate(&mut self, app_id: &str) -> Task<Message> {
         let Some(item) = self.dock.iter().find(|item| item.app.id == app_id) else {
@@ -1748,7 +1860,17 @@ impl Shell {
         if !item.is_running() && item.app.command.is_some() {
             self.launching.insert(app_id.to_owned(), Instant::now());
         }
-        dock::activate(item);
+        // An app that was hidden comes back with all its windows.
+        let hidden: Vec<u64> = item
+            .window_ids()
+            .into_iter()
+            .filter(|id| self.hidden_windows.contains(id))
+            .collect();
+        if hidden.is_empty() {
+            dock::activate(item);
+        } else {
+            hidden.into_iter().rev().for_each(kwin::focus_window);
+        }
         self.relayout_dock()
     }
 
@@ -1757,6 +1879,22 @@ impl Shell {
             dock::MenuAction::FocusWindow(id) => kwin::focus_window(id),
             dock::MenuAction::Open(app_id) => return self.activate(&app_id),
             dock::MenuAction::Launch(command) => apps::spawn(command),
+            dock::MenuAction::ToggleLogin(app_id) => {
+                autostart::set_enabled(
+                    &app_id,
+                    self.apps.entry_path(&app_id),
+                    !autostart::is_enabled(&app_id),
+                );
+            }
+            dock::MenuAction::ShowAll(uuids) => {
+                return Task::future(kwin::show_windows(uuids)).discard();
+            }
+            dock::MenuAction::Hide(ids) => {
+                for id in ids {
+                    self.hidden_windows.insert(id);
+                    kwin::minimize_window(id);
+                }
+            }
             dock::MenuAction::Quit(ids) => ids.into_iter().for_each(kwin::close_window),
             dock::MenuAction::TogglePin(app_id) => {
                 if let Some(index) = self.pinned.iter().position(|id| *id == app_id) {
@@ -1826,6 +1964,7 @@ impl Shell {
         let mut layout = dock::layout(
             self.dock_width,
             &self.dock,
+            &self.minimized,
             &self.dock_pointer,
             self.dock_max_icon,
             bounce,
@@ -1874,6 +2013,8 @@ impl Shell {
             Some(Surface::Dock) => dock::view(
                 &self.dock,
                 &self.place_icons,
+                &self.minimized,
+                &self.dock_badges,
                 &self.dock_layout,
                 self.material.as_ref().map(|m| m.kind()),
             ),
@@ -1979,6 +2120,7 @@ impl Shell {
             menu_hover,
             notifications::events().map(Message::Notification),
             tray::items().map(Message::TrayItems),
+            launcher::updates().map(Message::LauncherUpdate),
             app_menu,
             appmenu::registrar(),
             bar_brightness,

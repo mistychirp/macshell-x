@@ -89,7 +89,8 @@ pub struct Icon {
 }
 
 impl Icon {
-    pub fn new(item: Item, apps: &mut AppIndex) -> Self {
+    pub fn new(mut item: Item, apps: &mut AppIndex) -> Self {
+        dbusmenu::load_icons(&mut item.menu, apps);
         let (name, pixels) = if item.needs_attention {
             (&item.attention_name, &item.attention_pixels)
         } else {

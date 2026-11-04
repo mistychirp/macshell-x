@@ -22,6 +22,8 @@ let
     # so portals and services started on demand can reach the session.
     ${pkgs.dbus}/bin/dbus-update-activation-environment --systemd --all
     systemctl --user start macshell-session.target
+    # Unlocks KWallet with the login password, which PAM kept for this.
+    systemctl --user start --no-block plasma-kwallet-pam.service
 
     ${polkit-kde-agent-1}/libexec/polkit-kde-authentication-agent-1 &
 

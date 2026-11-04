@@ -244,6 +244,7 @@ impl Banners {
                 let id = banner.notification.id;
                 pin(card(
                     &banner.notification,
+                    None,
                     hovered == Some(id),
                     material,
                     Message::NotificationPressed(id),

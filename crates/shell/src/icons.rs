@@ -28,6 +28,13 @@ pub enum Glyph {
     Previous,
     Next,
     Close,
+    /// Half a circle, for sleep.
+    Sleep,
+    Restart,
+    Power,
+    Person,
+    /// A window with a title bar, for a menu's list of an app's windows.
+    Window,
     /// Where sound goes: a screen with sound coming from it, like AirPlay's.
     Outputs,
     /// A network that wants a password.
@@ -66,6 +73,37 @@ impl Glyph {
                 r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round">
                 <path d="M8.8 16.2a4.7 4.7 0 0 1 6.4 0"/>
                 <circle cx="12" cy="19.6" r="1.7" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::Sleep => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2">
+                <circle cx="12" cy="12" r="9"/>
+                <path d="M3 12h18" />
+                <path d="M3.5 12a8.5 8.5 0 0 0 17 0z" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::Restart => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2" stroke-linejoin="round">
+                <path d="M19 4v16L5 12z"/>
+                </svg>"##
+            }
+            Glyph::Power => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round">
+                <path d="M12 3v9"/>
+                <path d="M7 6.2a8.5 8.5 0 1 0 10 0"/>
+                </svg>"##
+            }
+            Glyph::Person => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2">
+                <circle cx="12" cy="12" r="9.5"/>
+                <circle cx="12" cy="9.5" r="3.5" fill="#000" stroke="none"/>
+                <path d="M5.5 18.5a7.5 7.5 0 0 1 13 0" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::Window => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2">
+                <rect x="3" y="5" width="18" height="14" rx="3"/>
+                <path d="M6 9h1M9 9h1M12 9h1" stroke-linecap="round"/>
                 </svg>"##
             }
             Glyph::Outputs => {

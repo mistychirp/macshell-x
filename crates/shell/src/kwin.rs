@@ -6,15 +6,19 @@
 //! executable; see `contrib/macshell.desktop`.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::{self, Read as _};
+use std::os::fd::AsFd as _;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 use iced_futures::Subscription;
-use iced_futures::futures::channel::mpsc;
+use iced_futures::futures::channel::{mpsc, oneshot};
 use iced_futures::futures::{SinkExt, Stream, StreamExt, stream};
+use iced_widget::image;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, QueueHandle};
+use zbus::zvariant::{Fd, OwnedValue, Value};
 
 use crate::dbus;
 use crate::dbusmenu::Address;
@@ -37,6 +41,9 @@ pub struct WindowInfo {
     pub focused_at: Option<u64>,
     /// Where its app exports its menus, if it does.
     pub menu: Option<Address>,
+    /// What KWin's own interfaces know it by.
+    pub uuid: String,
+    pub is_minimized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,9 +71,141 @@ pub fn focus_window(id: u64) {
     });
 }
 
+/// Minimizes the window.
+pub fn minimize_window(id: u64) {
+    with_window(id, |window| {
+        window.set_state(STATE_MINIMIZED, STATE_MINIMIZED);
+    });
+}
+
 /// Asks the window to close, the same as its close button would.
 pub fn close_window(id: u64) {
     with_window(id, OrgKdePlasmaWindow::close);
+}
+
+#[zbus::proxy(
+    interface = "org.kde.KWin.ScreenShot2",
+    default_service = "org.kde.KWin",
+    default_path = "/org/kde/KWin/ScreenShot2"
+)]
+trait ScreenShot {
+    fn capture_window(
+        &self,
+        handle: &str,
+        options: HashMap<&str, Value<'_>>,
+        pipe: Fd<'_>,
+    ) -> zbus::Result<HashMap<String, OwnedValue>>;
+}
+
+/// The window's picture, at most `max_size` pixels on its longer side. KWin sends it down a pipe.
+pub async fn capture_window(uuid: String, max_size: u32) -> Option<image::Handle> {
+    let result: zbus::Result<_> = async {
+        let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
+        let proxy = ScreenShotProxy::new(&connection).await?;
+        let (reader, writer) = io::pipe().map_err(|err| zbus::Error::Failure(err.to_string()))?;
+        let (sender, pixels) = oneshot::channel();
+        thread::spawn(move || {
+            let mut reader = reader;
+            let mut bytes = Vec::new();
+            let _ = sender.send(reader.read_to_end(&mut bytes).map(|_| bytes));
+        });
+        let options = HashMap::from([
+            ("include-decoration", Value::Bool(true)),
+            ("native-resolution", Value::Bool(true)),
+        ]);
+        let metadata = proxy
+            .capture_window(&uuid, options, Fd::from(writer.as_fd()))
+            .await?;
+        // The reader only finishes once nothing holds the pipe's other end.
+        drop(writer);
+        let bytes = pixels
+            .await
+            .map_err(|err| zbus::Error::Failure(err.to_string()))?
+            .map_err(|err| zbus::Error::Failure(err.to_string()))?;
+        Ok((metadata, bytes))
+    }
+    .await;
+    let (metadata, bytes) = result
+        .inspect_err(|err| log::warn!("can't capture a window: {err}"))
+        .ok()?;
+    let number = |name: &str| u32::try_from(metadata.get(name)?).ok();
+    let (width, height, stride, format) = (
+        number("width")?,
+        number("height")?,
+        number("stride")?,
+        number("format")?,
+    );
+    thumbnail(&bytes, width, height, stride, format, max_size)
+}
+
+/// QImage's formats: what KWin sends, either way around.
+const QIMAGE_ARGB32_PREMULTIPLIED: u32 = 6;
+const QIMAGE_RGBA8888_PREMULTIPLIED: u32 = 17;
+
+fn thumbnail(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: u32,
+    max_size: u32,
+) -> Option<image::Handle> {
+    if width == 0 || height == 0 || bytes.len() < (stride * height) as usize {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    for line in bytes.chunks_exact(stride as usize).take(height as usize) {
+        for pixel in line[..(width * 4) as usize].chunks_exact(4) {
+            let [r, g, b, a] = match format {
+                // In memory, little-endian: blue first.
+                QIMAGE_ARGB32_PREMULTIPLIED => [pixel[2], pixel[1], pixel[0], pixel[3]],
+                QIMAGE_RGBA8888_PREMULTIPLIED => [pixel[0], pixel[1], pixel[2], pixel[3]],
+                _ => return None,
+            };
+            // iced wants straight alpha.
+            let straight = |c: u8| match a {
+                0 => 0,
+                a => (u16::from(c) * 255 / u16::from(a)).min(255) as u8,
+            };
+            rgba.extend_from_slice(&[straight(r), straight(g), straight(b), a]);
+        }
+    }
+    let full = ::image::RgbaImage::from_raw(width, height, rgba)?;
+    let scale = (max_size as f32 / width.max(height) as f32).min(1.0);
+    let small = ::image::imageops::thumbnail(
+        &full,
+        ((width as f32 * scale) as u32).max(1),
+        ((height as f32 * scale) as u32).max(1),
+    );
+    let (width, height) = small.dimensions();
+    Some(image::Handle::from_rgba(width, height, small.into_raw()))
+}
+
+#[zbus::proxy(
+    interface = "org.kde.KWin.Effect.WindowView1",
+    default_service = "org.kde.KWin.Effect.WindowView1",
+    default_path = "/org/kde/KWin/Effect/WindowView1"
+)]
+trait WindowView {
+    // KDE names its members in camelCase.
+    #[zbus(name = "activate")]
+    fn activate(&self, handles: &[&str]) -> zbus::Result<()>;
+}
+
+/// Shows these windows, by their uuids, side by side, like macOS's Show All Windows.
+pub async fn show_windows(uuids: Vec<String>) {
+    let result = async {
+        let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
+        let handles: Vec<&str> = uuids.iter().map(String::as_str).collect();
+        WindowViewProxy::new(&connection)
+            .await?
+            .activate(&handles)
+            .await
+    }
+    .await;
+    if let Err(err) = result {
+        log::warn!("can't show an app's windows: {err}");
+    }
 }
 
 pub async fn switch_layout(index: usize) {
@@ -167,6 +306,7 @@ struct Tracker {
 #[derive(Default)]
 struct Tracked {
     menu: Option<Address>,
+    uuid: String,
     app_id: Option<String>,
     title: Option<String>,
     state: u32,
@@ -189,6 +329,8 @@ impl Tracker {
                 is_urgent: w.state & STATE_DEMANDS_ATTENTION != 0,
                 focused_at: w.focused_at,
                 menu: w.menu.clone(),
+                uuid: w.uuid.clone(),
+                is_minimized: w.state & STATE_MINIMIZED != 0,
             })
             .collect();
         windows.sort_by_key(|w| w.id);
@@ -208,9 +350,15 @@ impl Dispatch<OrgKdePlasmaWindowManagement, ()> for Tracker {
         if let org_kde_plasma_window_management::Event::WindowWithUuid { uuid, .. } = event {
             let id = state.next_id;
             state.next_id += 1;
-            let window = manager.get_window_by_uuid(uuid, queue, id);
+            let window = manager.get_window_by_uuid(uuid.clone(), queue, id);
             WINDOWS.lock().unwrap().insert(id, window);
-            state.windows.insert(id, Tracked::default());
+            state.windows.insert(
+                id,
+                Tracked {
+                    uuid,
+                    ..Tracked::default()
+                },
+            );
         }
     }
 }

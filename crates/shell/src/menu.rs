@@ -5,7 +5,7 @@ use iced_widget::core::text::{LineHeight, Paragraph as _, Shaping, Wrapping};
 use iced_widget::core::{
     Alignment, Background, Border, Color, Font, Length, Padding, Size, alignment,
 };
-use iced_widget::{Space, button, column, container, mouse_area, row, text};
+use iced_widget::{Space, button, column, container, image, mouse_area, row, text};
 
 use crate::app::{Element, Message};
 use crate::fonts;
@@ -20,6 +20,8 @@ const PADDING: f32 = 5.0;
 /// Inside an item, between its highlight and its text.
 const ITEM_PADDING_X: f32 = 8.0;
 const CHECK_WIDTH: f32 = 18.0;
+const ICON_SIZE: f32 = 14.0;
+const ICON_COLUMN: f32 = ICON_SIZE + 7.0;
 const SHORTCUT_GAP: f32 = 24.0;
 const CHEVRON_SIZE: f32 = 10.0;
 /// How far a submenu overlaps its menu.
@@ -39,11 +41,20 @@ pub const ACCENT: Color = Color::from_rgba(0.7, 0.18, 0.69, 0.95);
 const DISABLED_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.4);
 const SHORTCUT_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.45);
 
+/// What can lead a menu item, like macOS's monochrome symbols.
+#[derive(Debug, Clone)]
+pub enum Icon {
+    Glyph(Glyph),
+    Image(image::Handle),
+}
+
 #[derive(Debug, Clone)]
 pub enum Entry {
     Item {
         label: String,
-        checked: bool,
+        /// What goes in the column for check marks.
+        mark: &'static str,
+        icon: Option<Icon>,
         enabled: bool,
         /// The keys that do the same, shown at its end.
         shortcut: Option<String>,
@@ -58,7 +69,8 @@ impl Entry {
     pub fn item(label: &str, on_select: Message) -> Self {
         Self::Item {
             label: truncate(label),
-            checked: false,
+            mark: "",
+            icon: None,
             enabled: true,
             shortcut: None,
             submenu: None,
@@ -66,9 +78,21 @@ impl Entry {
         }
     }
 
-    pub fn checked(mut self, value: bool) -> Self {
-        if let Self::Item { checked, .. } = &mut self {
-            *checked = value;
+    pub fn checked(self, value: bool) -> Self {
+        if value { self.marked("✓") } else { self }
+    }
+
+    /// Puts something other than a check mark in that column, like a minimized window's ◇.
+    pub fn marked(mut self, value: &'static str) -> Self {
+        if let Self::Item { mark, .. } = &mut self {
+            *mark = value;
+        }
+        self
+    }
+
+    pub fn icon(mut self, value: Icon) -> Self {
+        if let Self::Item { icon, .. } = &mut self {
+            *icon = Some(value);
         }
         self
     }
@@ -140,7 +164,8 @@ pub fn size(entries: &[Entry]) -> (u32, u32) {
             Entry::Separator => None,
         })
         .fold(0.0, f32::max);
-    let width = (label_width + 2.0 * ITEM_PADDING_X + 2.0 * PADDING).max(MIN_WIDTH);
+    let icons = if has_icons(entries) { ICON_COLUMN } else { 0.0 };
+    let width = (label_width + icons + 2.0 * ITEM_PADDING_X + 2.0 * PADDING).max(MIN_WIDTH);
 
     let height = 2.0 * PADDING + entries.iter().map(entry_height).sum::<f32>();
 
@@ -171,6 +196,12 @@ pub fn tail_center(width: u32, x: f32, target: f32) -> f32 {
     (target - x).clamp(margin, (width as f32 - margin).max(margin))
 }
 
+fn has_icons(entries: &[Entry]) -> bool {
+    entries
+        .iter()
+        .any(|entry| matches!(entry, Entry::Item { icon: Some(_), .. }))
+}
+
 /// Where a submenu of the row at `index` attaches to its menu: beside the row, overlapping the menu
 /// a little, so that the submenu's first row lines up with it.
 pub fn submenu_anchor(entries: &[Entry], index: usize, menu_width: u32) -> (i32, i32, i32, i32) {
@@ -185,6 +216,30 @@ pub fn submenu_anchor(entries: &[Entry], index: usize, menu_width: u32) -> (i32,
         menu_width as i32 - 2 * SUBMENU_OVERLAP,
         1,
     )
+}
+
+/// The icon column, if the menu has one: every row keeps its text in line, with an icon or without.
+fn leading_icon<'a>(icon: Option<&Icon>, enabled: bool, shown: bool) -> Element<'a> {
+    let ink = if enabled { Color::WHITE } else { DISABLED_TEXT };
+    match icon {
+        Some(icon) => {
+            let content: Element<'a> = match icon {
+                Icon::Glyph(glyph) => icons::icon(*glyph, ICON_SIZE, ink),
+                Icon::Image(handle) => image(handle.clone())
+                    .width(ICON_SIZE)
+                    .height(ICON_SIZE)
+                    .opacity(ink.a)
+                    .into(),
+            };
+            container(content)
+                .width(ICON_COLUMN)
+                .align_y(alignment::Vertical::Center)
+                .into()
+        }
+        None => Space::new()
+            .width(if shown { ICON_COLUMN } else { 0.0 })
+            .into(),
+    }
 }
 
 fn entry_height(entry: &Entry) -> f32 {
@@ -202,13 +257,15 @@ pub fn view(
     open_row: Option<usize>,
     has_tail: bool,
 ) -> Element<'_> {
+    let icons_shown = has_icons(entries);
     let rows = entries
         .iter()
         .enumerate()
         .map(|(index, entry)| match entry {
             Entry::Item {
                 label,
-                checked,
+                mark,
+                icon,
                 enabled,
                 shortcut,
                 submenu,
@@ -223,9 +280,8 @@ pub fn view(
                 let row = button(
                     container(
                         row![
-                            text(if *checked { "✓" } else { "" })
-                                .size(TEXT_SIZE)
-                                .width(CHECK_WIDTH),
+                            text(*mark).size(TEXT_SIZE).width(CHECK_WIDTH),
+                            leading_icon(icon.as_ref(), *enabled, icons_shown),
                             // The width is measured to fit, but rounding mustn't wrap it onto two lines.
                             text(label).size(TEXT_SIZE).wrapping(Wrapping::None),
                             Space::new().width(Length::Fill),

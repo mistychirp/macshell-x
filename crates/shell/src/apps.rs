@@ -17,6 +17,8 @@ use resvg::{tiny_skia, usvg};
 /// Pixel size SVG icons are rasterized at: enough for a 128px magnified dock icon at 2x scale,
 /// so the GPU only ever scales them down.
 const SVG_RASTER_SIZE: u32 = 256;
+/// Menu icons are small, even at a high scale, and there can be many of them to draw at once.
+const MENU_ICON_RASTER_SIZE: u32 = 48;
 
 #[derive(Debug)]
 pub struct App {
@@ -42,6 +44,7 @@ pub struct AppIndex {
     cache: HashMap<String, Rc<App>>,
     /// Theme icons looked up by name, like the dock's places and file types.
     themed_icons: HashMap<String, Option<image::Handle>>,
+    menu_icons: HashMap<String, Option<image::Handle>>,
 }
 
 impl AppIndex {
@@ -60,6 +63,7 @@ impl AppIndex {
             icon_theme,
             cache: HashMap::new(),
             themed_icons: HashMap::new(),
+            menu_icons: HashMap::new(),
         }
     }
 
@@ -127,6 +131,38 @@ impl AppIndex {
         Some(image::Handle::from_rgba(width, height, rgba))
     }
 
+    /// An icon for a menu: small, and white, like macOS's monochrome ones.
+    pub fn menu_icon(&mut self, name: &str) -> Option<image::Handle> {
+        if let Some(icon) = self.menu_icons.get(name) {
+            return icon.clone();
+        }
+        let path = freedesktop_icons::lookup(name)
+            .with_theme(&self.icon_theme)
+            .with_size(16)
+            .with_cache()
+            .find();
+        let icon = path.and_then(|path| {
+            let (width, height, mut rgba) = if path.extension().is_some_and(|ext| ext == "svg") {
+                rasterize_svg_at(&path, MENU_ICON_RASTER_SIZE)?
+            } else {
+                load_rgba(&path)?
+            };
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel[0] = 255;
+                pixel[1] = 255;
+                pixel[2] = 255;
+            }
+            Some(image::Handle::from_rgba(width, height, rgba))
+        });
+        self.menu_icons.insert(name.to_owned(), icon.clone());
+        icon
+    }
+
+    /// Where the app's desktop entry is.
+    pub fn entry_path(&self, app_id: &str) -> Option<PathBuf> {
+        find_app_by_id(&self.entries, Ascii::new(app_id)).map(|entry| entry.path.clone())
+    }
+
     /// The command that opens `uris` with the app `app_id`.
     pub fn command_with_uris(&self, app_id: &str, uris: &[&str]) -> Option<Vec<String>> {
         find_app_by_id(&self.entries, Ascii::new(app_id))?
@@ -180,6 +216,10 @@ fn load_rgba(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
 }
 
 fn rasterize_svg(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    rasterize_svg_at(path, SVG_RASTER_SIZE)
+}
+
+fn rasterize_svg_at(path: &Path, size: u32) -> Option<(u32, u32, Vec<u8>)> {
     let data = fs::read(path)
         .inspect_err(|err| log::warn!("can't read {}: {err}", path.display()))
         .ok()?;
@@ -187,7 +227,6 @@ fn rasterize_svg(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
         .inspect_err(|err| log::warn!("can't parse {}: {err}", path.display()))
         .ok()?;
 
-    let size = SVG_RASTER_SIZE;
     let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
     let svg_size = tree.size();
     let scale = size as f32 / svg_size.width().max(svg_size.height());

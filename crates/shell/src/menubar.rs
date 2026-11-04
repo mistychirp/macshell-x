@@ -289,16 +289,19 @@ pub fn logo_names(configured: Option<&str>, monochrome: bool) -> Vec<String> {
 }
 
 pub fn system_menu() -> Vec<menu::Entry> {
-    let item = |label, action| menu::Entry::item(label, Message::System(action));
+    let item = |label: &str, glyph, action| {
+        menu::Entry::item(label, Message::System(action)).icon(menu::Icon::Glyph(glyph))
+    };
     vec![
-        item("Sleep", SystemAction::Sleep),
-        item("Restart…", SystemAction::Restart),
-        item("Shut Down…", SystemAction::ShutDown),
+        item("Sleep", Glyph::Sleep, SystemAction::Sleep),
+        item("Restart…", Glyph::Restart, SystemAction::Restart),
+        item("Shut Down…", Glyph::Power, SystemAction::ShutDown),
         menu::Entry::Separator,
-        item("Lock Screen", SystemAction::Lock),
-        menu::Entry::item(
+        item("Lock Screen", Glyph::Lock, SystemAction::Lock),
+        item(
             &format!("Log Out {}…", user_name()),
-            Message::System(SystemAction::LogOut),
+            Glyph::Person,
+            SystemAction::LogOut,
         ),
     ]
 }
