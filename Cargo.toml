@@ -10,3 +10,5 @@ edition = "2024"
 [patch.crates-io]
 # Adds `window::Action::Run`, which we need to reach a surface's `wl_surface`. See vendor/README.md.
 iced_layershell = { path = "vendor/iced_layershell" }
+# Avoids surface formats with too little alpha for translucent surfaces. See vendor/README.md.
+iced_wgpu = { path = "vendor/iced_wgpu" }
