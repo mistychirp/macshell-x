@@ -392,6 +392,9 @@ where
                 self.handle_closed_event(ev, layer_shell_id)
             }
             IcedLayerShellEvent::Window(window_event) => {
+                if let LayerShellWindowEvent::CursorEnter { .. } = window_event {
+                    self.restore_cursor(ev, layer_shell_id);
+                }
                 self.handle_window_event(layer_shell_id, window_event)
             }
             IcedLayerShellEvent::UserAction(user_action) => {
@@ -623,6 +626,22 @@ where
         // if now there is no windows now, then break the compositor, and unlink the clipboard
         if self.window_manager.is_empty() {
             self.remove_compositor();
+        }
+    }
+
+    /// The compositor keeps showing the last cursor until the surface the pointer entered sets its
+    /// own, even when that surface's interaction hasn't changed since it was last set.
+    fn restore_cursor(&mut self, ev: &mut WindowState<IcedId>, layer_shell_id: Option<LayerShellId>) {
+        let Some((_, window)) =
+            layer_shell_id.and_then(|id| self.window_manager.get_mut_alias(id))
+        else {
+            return;
+        };
+        for pointer in ev.get_pointers() {
+            ev.append_return_data(ReturnData::RequestSetCursorShape((
+                conversion::mouse_interaction(window.mouse_interaction),
+                pointer,
+            )));
         }
     }
 

@@ -13,6 +13,10 @@ Patch: redraw only the windows an update changed (`src/redraw.rs`, `src/multi_wi
 redraws every window after any message, including a full-screen wallpaper at pointer rate. The
 application marks changed windows with `redraw::mark_changed`.
 
+Patch: set the cursor whenever the pointer enters a surface (`restore_cursor` in
+`src/multi_window.rs`). Upstream only sets it when a surface's interaction changes, so after a window
+edge's resize cursor, the desktop and the bars went on showing it.
+
 The first commit that adds this directory contains the pristine 0.19.1 sources, so
 `git diff <that commit> -- vendor/iced_layershell` shows the patch. Drop the vendored copy
 once upstream ships the fix.
