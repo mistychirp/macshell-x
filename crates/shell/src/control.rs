@@ -36,6 +36,13 @@ const CAPSULE_END_PADDING: f32 = 6.0;
 const TILE_TEXT_WIDTH: f32 = WIDE - 2.0 * TILE_PADDING;
 const TEXT_GAP: f32 = 9.0;
 const TILE_PADDING: f32 = 14.0;
+/// Room around the bubbles for the blur behind them to fade out, like Tahoe's: it's at full strength
+/// about 50 points to their left, and gone by about 100.
+const BLUR_LEFT: f32 = 110.0;
+const BLUR_BOTTOM: f32 = 90.0;
+const BLUR_TOP_FADE: f32 = 30.0;
+/// Between the bubbles and the edge of the screen, which the blur reaches.
+const MARGIN_RIGHT: f32 = 8.0;
 
 const BOLD: Font = Font {
     weight: font::Weight::Bold,
@@ -74,8 +81,8 @@ enum Module {
 
 /// Where each module goes, in surface-local logical pixels, with its corner radius.
 fn modules(panel: &Panel) -> Vec<(Module, Rectangle, f32)> {
-    let rect = |x, y, width, height| Rectangle {
-        x,
+    let rect = |x: f32, y, width, height| Rectangle {
+        x: BLUR_LEFT + x,
         y,
         width,
         height,
@@ -127,22 +134,39 @@ pub fn size(panel: &Panel) -> (u32, u32) {
         .iter()
         .map(|(_, rect, _)| rect.y + rect.height)
         .fold(0.0, f32::max);
-    (WIDTH as u32, height as u32)
+    (
+        (BLUR_LEFT + WIDTH + MARGIN_RIGHT) as u32,
+        (height + BLUR_BOTTOM) as u32,
+    )
 }
 
 pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
-    modules(panel)
-        .iter()
-        .map(|(_, rect, radius)| material::Shape {
-            rect: (
-                rect.x as i32,
-                rect.y as i32,
-                rect.width as i32,
-                rect.height as i32,
-            ),
-            radius: *radius as i32,
-            style: material::Style::Control,
-        })
+    let (width, height) = size(panel);
+    let backdrop = material::Shape {
+        rect: (0, 0, width as i32, height as i32),
+        radius: 0,
+        style: material::Style::Backdrop([
+            BLUR_LEFT as u32,
+            BLUR_TOP_FADE as u32,
+            MARGIN_RIGHT as u32,
+            BLUR_BOTTOM as u32,
+        ]),
+    };
+    std::iter::once(backdrop)
+        .chain(
+            modules(panel)
+                .iter()
+                .map(|(_, rect, radius)| material::Shape {
+                    rect: (
+                        rect.x as i32,
+                        rect.y as i32,
+                        rect.width as i32,
+                        rect.height as i32,
+                    ),
+                    radius: *radius as i32,
+                    style: material::Style::Control,
+                }),
+        )
         .collect()
 }
 

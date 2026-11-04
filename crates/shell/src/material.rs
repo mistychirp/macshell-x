@@ -46,9 +46,10 @@ pub enum Style {
     Card,
     /// A very wide blur under a light grey tint, inside an even rim, for small buttons.
     Chip,
-    /// A blur that fades out on every side instead of ending at an edge, to set text apart from
-    /// a busy background. Dropped where that isn't supported.
-    Backdrop,
+    /// A blur that fades out instead of ending at an edge, to set things apart from a busy
+    /// background. It fades in over this many logical pixels from the left, top, right and bottom.
+    /// Dropped where that isn't supported.
+    Backdrop([u32; 4]),
     /// Nothing at all, like macOS's menu bar; the shape only says where to measure brightness
     /// (see [`Material::track_brightness`]). Dropped where that isn't supported.
     Transparent,
@@ -136,7 +137,7 @@ impl Material {
         let queue = event_queue.handle();
         let compositor: WlCompositor = globals.bind(&queue, 1..=6, ()).ok()?;
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=3, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=4, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -194,6 +195,12 @@ impl Material {
                 glass.clear();
                 for shape in shapes {
                     let (x, y, width, height) = shape.rect;
+                    if let Style::Backdrop([left, top, right, bottom]) = shape.style {
+                        if glass.version() >= 4 {
+                            glass.add_backdrop(x, y, width, height, left, top, right, bottom);
+                        }
+                        continue;
+                    }
                     let style = match shape.style {
                         Style::Clear => macshell_glass_v1::Style::Clear,
                         Style::Frosted => macshell_glass_v1::Style::Frosted,
@@ -210,10 +217,7 @@ impl Material {
                         Style::Transparent if glass.version() >= 2 => {
                             macshell_glass_v1::Style::Transparent
                         }
-                        Style::Backdrop if glass.version() >= 3 => {
-                            macshell_glass_v1::Style::Backdrop
-                        }
-                        Style::Transparent | Style::Backdrop => continue,
+                        Style::Transparent | Style::Backdrop(_) => continue,
                     };
                     glass.add_rounded_rect(x, y, width, height, shape.radius.max(0) as u32, style);
                 }
@@ -223,7 +227,7 @@ impl Material {
                 let region = self.compositor.create_region(&self.queue, ());
                 for shape in shapes
                     .iter()
-                    .filter(|shape| !matches!(shape.style, Style::Transparent | Style::Backdrop))
+                    .filter(|shape| !matches!(shape.style, Style::Transparent | Style::Backdrop(_)))
                 {
                     let (x, y, width, height) = shape.rect;
                     for (rx, ry, rw, rh) in rounded_rect(width, height, shape.radius) {

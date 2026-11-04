@@ -37,7 +37,7 @@
     their glass is, to pick a text color that stays legible over it.
   </description>
 
-  <interface name="macshell_glass_manager_v1" version="3">
+  <interface name="macshell_glass_manager_v1" version="4">
     <description summary="glass factory">
       Creates glass objects for surfaces.
     </description>
@@ -63,7 +63,7 @@
     </request>
   </interface>
 
-  <interface name="macshell_glass_v1" version="3">
+  <interface name="macshell_glass_v1" version="4">
     <description summary="glass shapes behind a surface">
       Holds a list of glass shapes rendered behind the surface. The list is
       double-buffered state, applied on the next wl_surface.commit, and starts
@@ -103,12 +103,26 @@
              summary="a tint like frosted glass's over a lens like liquid glass's, for notifications"/>
       <entry name="chip" value="8" since="3"
              summary="a very wide blur under a light grey tint, inside an even rim; for small buttons"/>
-      <entry name="backdrop" value="6" since="3"
-             summary="a blur that fades out on every side instead of ending at an edge; the radius is ignored"/>
     </enum>
 
     <request name="clear">
       <description summary="remove all pending shapes"/>
+    </request>
+
+    <request name="add_backdrop" since="4">
+      <description summary="add a blur that fades out instead of ending at an edge">
+        Appends a blurred area to the pending list, in surface-local logical
+        coordinates. Rather than having an edge, it fades in from each side
+        over the given distance, in logical pixels.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="fade_left" type="uint"/>
+      <arg name="fade_top" type="uint"/>
+      <arg name="fade_right" type="uint"/>
+      <arg name="fade_bottom" type="uint"/>
     </request>
 
     <request name="add_rounded_rect">

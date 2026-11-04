@@ -223,6 +223,11 @@ impl Bar<'_> {
         )
     }
 
+    /// Where a panel that reaches the screen's edge attaches: under the bar's right end.
+    pub fn screen_edge_anchor(&self) -> (i32, i32, i32, i32) {
+        (self.width as i32 - 1, 0, 1, HEIGHT as i32 + MENU_GAP)
+    }
+
     /// Where a title's menu attaches: under its left edge, a little below the bar.
     pub fn menu_anchor(&self, title: Title) -> Option<(i32, i32, i32, i32)> {
         let (_, rect) = self.titles().into_iter().find(|(t, _)| *t == title)?;

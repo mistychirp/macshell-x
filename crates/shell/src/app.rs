@@ -476,15 +476,15 @@ impl Shell {
             // A popup's grab only closes it for clicks on other apps. The wallpaper, the bar and the
             // dock are ours, so they have to do it themselves.
             Message::SurfacePressed(id) => {
-                let center_open = matches!(
+                let panel_open = matches!(
                     self.popup.as_ref().map(|popup| &popup.content),
-                    Some(PopupContent::NotificationCenter)
+                    Some(PopupContent::NotificationCenter | PopupContent::ControlCenter)
                 );
-                // Notification Center's surface runs down the screen, mostly empty.
+                // The surfaces of these panels are mostly empty.
                 if matches!(
                     self.surfaces.get(&id),
                     Some(Surface::Wallpaper | Surface::MenuBar | Surface::Dock)
-                ) || (center_open && self.surfaces.get(&id) == Some(&Surface::Popup))
+                ) || (panel_open && self.surfaces.get(&id) == Some(&Surface::Popup))
                 {
                     return self.close_popup();
                 }
@@ -946,7 +946,7 @@ impl Shell {
             menubar::Title::ControlCenter => {
                 self.control.volume = audio::volume();
                 let reread = Task::perform(brightness::level(), Message::BrightnessRead);
-                let anchor = self.bar().right_edge_anchor();
+                let anchor = self.bar().screen_edge_anchor();
                 let settings = IcedNewPopupSettings::new(
                     self.menubar_id,
                     control::size(&self.control),

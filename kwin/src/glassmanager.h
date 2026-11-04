@@ -14,6 +14,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QRect>
+#include <QVector4D>
 
 #include <optional>
 
@@ -44,6 +45,8 @@ struct Shape {
     QRect rect;
     int radius = 0;
     Style style = Style::Clear;
+    /// For a backdrop: how far it fades in from the left, top, right and bottom.
+    QVector4D softEdges;
 };
 
 class GlassSurface;
@@ -94,6 +97,7 @@ protected:
     void macshell_glass_v1_destroy(Resource *resource) override;
     void macshell_glass_v1_clear(Resource *resource) override;
     void macshell_glass_v1_add_rounded_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style) override;
+    void macshell_glass_v1_add_backdrop(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t fade_left, uint32_t fade_top, uint32_t fade_right, uint32_t fade_bottom) override;
     void macshell_glass_v1_track_brightness(Resource *resource) override;
 
 private:

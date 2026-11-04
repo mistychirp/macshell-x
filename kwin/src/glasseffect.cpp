@@ -126,10 +126,6 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.controlRim = group.readEntry("ControlRim", defaults.controlRim);
     m_settings.chipTint = group.readEntry("ChipTint", defaults.chipTint);
     m_settings.chipRim = group.readEntry("ChipRim", defaults.chipRim);
-    m_settings.backdropFadeLeft = group.readEntry("BackdropFadeLeft", defaults.backdropFadeLeft);
-    m_settings.backdropFadeTop = group.readEntry("BackdropFadeTop", defaults.backdropFadeTop);
-    m_settings.backdropFadeRight = group.readEntry("BackdropFadeRight", defaults.backdropFadeRight);
-    m_settings.backdropFadeBottom = group.readEntry("BackdropFadeBottom", defaults.backdropFadeBottom);
     m_settings.bubbleTint = group.readEntry("BubbleTint", defaults.bubbleTint);
     m_settings.bubbleEdgeGain = group.readEntry("BubbleEdgeGain", defaults.bubbleEdgeGain);
     effects->addRepaintFull();
@@ -454,7 +450,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("rim", control ? m_settings.controlRim : chip ? m_settings.chipRim : 0.0f);
         m_glassShader->setUniform("rimDirectional", control ? 1.0f : 0.0f);
         m_glassShader->setUniform("rimInner", control ? 0.33f : 1.0f);
-        m_glassShader->setUniform("softEdges", shape.style == Style::Backdrop ? QVector4D(m_settings.backdropFadeLeft, m_settings.backdropFadeTop, m_settings.backdropFadeRight, m_settings.backdropFadeBottom) : QVector4D());
+        m_glassShader->setUniform("softEdges", shape.softEdges);
         m_glassShader->setUniform("edgeFade", frosted ? 0.0f : m_settings.liquidEdgeFade);
         m_glassShader->setUniform("edgeGain", bubble ? m_settings.bubbleEdgeGain : frosted ? 1.0f : m_settings.liquidEdgeGain);
         m_glassShader->setUniform("edgeWhite", frosted ? m_settings.frostEdgeWhite : 0.0f);

@@ -14,7 +14,7 @@
 namespace Macshell
 {
 
-static constexpr int s_version = 3;
+static constexpr int s_version = 4;
 
 /// Reading pixels back stalls the GPU, so brightness is measured at most this often.
 static constexpr int s_probeIntervalMs = 500;
@@ -151,8 +151,6 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect(Resource *resource, int32_
         shapeStyle = Style::Bubble;
     } else if (style == style_control) {
         shapeStyle = Style::Control;
-    } else if (style == style_backdrop) {
-        shapeStyle = Style::Backdrop;
     } else if (style == style_card) {
         shapeStyle = Style::Card;
     } else if (style == style_chip) {
@@ -162,6 +160,21 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect(Resource *resource, int32_
         .rect = QRect(x, y, width, height),
         .radius = int(std::min<uint32_t>(radius, std::min(width, height) / 2)),
         .style = shapeStyle,
+    });
+    m_dirty = true;
+}
+
+void GlassSurface::macshell_glass_v1_add_backdrop(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t fade_left, uint32_t fade_top, uint32_t fade_right, uint32_t fade_bottom)
+{
+    if (width <= 0 || height <= 0) {
+        wl_resource_post_error(resource->handle, error_invalid_shape, "glass shapes need a positive width and height");
+        return;
+    }
+    m_pending.append(Shape{
+        .rect = QRect(x, y, width, height),
+        .radius = 0,
+        .style = Style::Backdrop,
+        .softEdges = QVector4D(fade_left, fade_top, fade_right, fade_bottom),
     });
     m_dirty = true;
 }

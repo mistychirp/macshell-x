@@ -120,12 +120,6 @@ ControlRim=0.55
 # much the rim whitens.
 ChipTint=0.6
 ChipRim=0.15
-# Backdrops (behind Notification Center's message when it's empty): how far in from each side the
-# blur takes to reach full strength.
-BackdropFadeLeft=190
-BackdropFadeTop=30
-BackdropFadeRight=100
-BackdropFadeBottom=110
 # Bubbles (the dock's labels): how strong the dark tint is, and how the edge is dimmed.
 BubbleTint=0.5
 BubbleEdgeGain=0.85

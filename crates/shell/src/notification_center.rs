@@ -154,7 +154,7 @@ pub fn material_shapes(
         return vec![material::Shape {
             rect: (0, 0, WIDTH as i32, BACKDROP_HEIGHT as i32),
             radius: 0,
-            style: material::Style::Backdrop,
+            style: material::Style::Backdrop([190, 30, 100, 110]),
         }];
     }
     let mut shapes = Vec::new();

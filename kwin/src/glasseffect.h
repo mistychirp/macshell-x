@@ -62,13 +62,6 @@ struct GlassSettings {
     float chipTint = 0.6;
     float chipRim = 0.15;
 
-    /// Backdrops, like the one behind Notification Center's message when it's empty: how far in
-    /// from each side the blur takes to reach full strength, in logical pixels.
-    float backdropFadeLeft = 190.0;
-    float backdropFadeTop = 30.0;
-    float backdropFadeRight = 100.0;
-    float backdropFadeBottom = 110.0;
-
     /// Bubbles, for small labels like the dock's: tinted like menus, with liquid glass's edge,
     /// dimmed to stay legible.
     float bubbleTint = 0.5;
