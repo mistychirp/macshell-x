@@ -155,6 +155,8 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect(Resource *resource, int32_
         shapeStyle = Style::Backdrop;
     } else if (style == style_card) {
         shapeStyle = Style::Card;
+    } else if (style == style_chip) {
+        shapeStyle = Style::Chip;
     }
     m_pending.append(Shape{
         .rect = QRect(x, y, width, height),

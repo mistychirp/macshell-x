@@ -49,8 +49,9 @@ const MAX_BODY_LINES: f32 = 4.0;
 const MAX_BODY_CHARS: usize = 600;
 const MAX_ACTIONS: usize = 3;
 const ACTIONS_HEIGHT: f32 = 32.0;
-pub const CLOSE_SIZE: f32 = 20.0;
-const CLOSE_INK: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.8);
+pub const CLOSE_SIZE: f32 = 19.0;
+/// What's on a chip, like the ✕ on its button.
+pub const CHIP_INK: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.75);
 
 const BOLD: Font = Font {
     weight: font::Weight::Bold,
@@ -361,9 +362,9 @@ fn action_button<'a>(label: &str, width: f32, on_press: Message) -> Element<'a> 
 /// The round ✕ that dismisses something, on the glass of [`close_shape`].
 pub fn close_button<'a>(on_press: Message, material: Option<material::Kind>) -> Element<'a> {
     mouse_area(
-        container(icons::icon(Glyph::Close, 9.0, CLOSE_INK))
+        container(icons::icon(Glyph::Close, 9.0, CHIP_INK))
             .center(CLOSE_SIZE)
-            .style(move |_| control_style(material, CLOSE_SIZE / 2.0)),
+            .style(move |_| panel_style(material, CLOSE_SIZE / 2.0)),
     )
     .on_press(on_press)
     .into()
@@ -371,26 +372,16 @@ pub fn close_button<'a>(on_press: Message, material: Option<material::Kind>) -> 
 
 /// The glass of a [`close_button`] at this position.
 pub fn close_shape(x: f32, y: f32) -> material::Shape {
-    control_shape(x, y, CLOSE_SIZE)
+    chip_shape(x, y, CLOSE_SIZE, CLOSE_SIZE)
 }
 
-/// The glass of a small control like a [`close_button`], [`CLOSE_SIZE`] tall.
-pub fn control_shape(x: f32, y: f32, width: f32) -> material::Shape {
+/// The glass of a small button.
+pub fn chip_shape(x: f32, y: f32, width: f32, height: f32) -> material::Shape {
     material::Shape {
-        rect: (x as i32, y as i32, width as i32, CLOSE_SIZE as i32),
-        radius: (CLOSE_SIZE / 2.0) as i32,
-        // Untinted: it can sit on top of a card, whose tint would double up.
-        style: material::Style::Liquid,
+        rect: (x as i32, y as i32, width as i32, height as i32),
+        radius: (height / 2.0) as i32,
+        style: material::Style::Chip,
     }
-}
-
-/// A small control's own fill. Tahoe's are a little lighter than what's behind them.
-pub fn control_style(material: Option<material::Kind>, radius: f32) -> container::Style {
-    let mut style = panel_style(material, radius);
-    if material == Some(material::Kind::Glass) {
-        style.background = Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.06)));
-    }
-    style
 }
 
 /// A panel's own fill: nothing over glass, enough to read its text otherwise.

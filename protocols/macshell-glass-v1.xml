@@ -101,6 +101,8 @@
              summary="a brightened lens inside a rim that catches the light, for control modules"/>
       <entry name="card" value="7" since="3"
              summary="a tint like frosted glass's over a lens like liquid glass's, for notifications"/>
+      <entry name="chip" value="8" since="3"
+             summary="a very wide blur under a light grey tint, inside an even rim; for small buttons"/>
       <entry name="backdrop" value="6" since="3"
              summary="a blur that fades out on every side instead of ending at an edge; the radius is ignored"/>
     </enum>

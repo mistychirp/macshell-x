@@ -36,6 +36,7 @@ enum class Style {
     Control,
     Backdrop,
     Card,
+    Chip,
 };
 
 struct Shape {

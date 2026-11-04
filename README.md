@@ -116,6 +116,10 @@ LiquidEdgeGain=1.06
 ControlBrightness=1.15
 ControlSaturation=1.1
 ControlRim=0.55
+# Chips (small buttons, like a notification's close button): how strong the grey tint is, and how
+# much the rim whitens.
+ChipTint=0.6
+ChipRim=0.15
 # Backdrops (behind Notification Center's message when it's empty): how far in from each side the
 # blur takes to reach full strength.
 BackdropFadeLeft=190

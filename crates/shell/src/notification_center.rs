@@ -13,8 +13,8 @@ use iced_widget::{Space, container, image, mouse_area, pin, row, stack, text};
 
 use crate::app::{Element, Message};
 use crate::notifications::{
-    CARD_WIDTH, CLOSE_SIZE, Notification, OVERHANG, RADIUS, card, close_button, close_shape,
-    control_shape, control_style, panel_style,
+    CARD_WIDTH, CHIP_INK, CLOSE_SIZE, Notification, OVERHANG, RADIUS, card, chip_shape,
+    close_button, close_shape, panel_style,
 };
 use crate::{dock, material, menu, menubar};
 
@@ -24,7 +24,10 @@ const RIGHT_PADDING: f32 = 8.0;
 const CARD_X: f32 = WIDTH - RIGHT_PADDING - CARD_WIDTH;
 const GAP: f32 = 8.0;
 const HEADER_HEIGHT: f32 = 26.0;
-const SHOW_LESS_WIDTH: f32 = 76.0;
+const SHOW_LESS_WIDTH: f32 = 73.0;
+/// How tall "Show less" is; its ✕ is a little shorter, centered beside it.
+const SHOW_LESS_HEIGHT: f32 = 21.0;
+const CONTROL_GAP: f32 = 8.0;
 /// The edge of the group's next card, under its first.
 const PEEK_INSET: f32 = 14.0;
 const PEEK_HEIGHT: f32 = 9.0;
@@ -159,12 +162,16 @@ pub fn material_shapes(
         match row {
             Row::Header { .. } => {
                 let close_x = CARD_X + CARD_WIDTH - CLOSE_SIZE;
-                shapes.push(control_shape(
-                    close_x - 6.0 - SHOW_LESS_WIDTH,
+                shapes.push(chip_shape(
+                    close_x - CONTROL_GAP - SHOW_LESS_WIDTH,
                     y,
                     SHOW_LESS_WIDTH,
+                    SHOW_LESS_HEIGHT,
                 ));
-                shapes.push(close_shape(close_x, y));
+                shapes.push(close_shape(
+                    close_x,
+                    y + (SHOW_LESS_HEIGHT - CLOSE_SIZE) / 2.0,
+                ));
             }
             Row::Card {
                 notification,
@@ -401,10 +408,10 @@ fn box_blur(values: &mut [f32], width: usize, height: usize) {
 /// An open group's "Show less", and the ✕ that clears it.
 fn header<'a>(app_key: &str, material: Option<material::Kind>) -> Element<'a> {
     let show_less = mouse_area(
-        container(text("Show less").size(12).color(Color::WHITE))
+        container(text("Show less").size(12).color(CHIP_INK))
             .center_x(SHOW_LESS_WIDTH)
-            .center_y(CLOSE_SIZE)
-            .style(move |_| control_style(material, CLOSE_SIZE / 2.0)),
+            .center_y(SHOW_LESS_HEIGHT)
+            .style(move |_| panel_style(material, SHOW_LESS_HEIGHT / 2.0)),
     )
     .on_press(Message::NotificationGroupClosed(app_key.to_owned()));
 
@@ -416,9 +423,9 @@ fn header<'a>(app_key: &str, material: Option<material::Kind>) -> Element<'a> {
             material
         ),
     ]
-    .spacing(6)
+    .spacing(CONTROL_GAP)
     .width(CARD_WIDTH)
-    .height(HEADER_HEIGHT)
-    .align_y(Alignment::Start)
+    .height(SHOW_LESS_HEIGHT)
+    .align_y(Alignment::Center)
     .into()
 }

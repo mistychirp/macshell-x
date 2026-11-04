@@ -124,6 +124,8 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.controlBrightness = group.readEntry("ControlBrightness", defaults.controlBrightness);
     m_settings.controlSaturation = group.readEntry("ControlSaturation", defaults.controlSaturation);
     m_settings.controlRim = group.readEntry("ControlRim", defaults.controlRim);
+    m_settings.chipTint = group.readEntry("ChipTint", defaults.chipTint);
+    m_settings.chipRim = group.readEntry("ChipRim", defaults.chipRim);
     m_settings.backdropFadeLeft = group.readEntry("BackdropFadeLeft", defaults.backdropFadeLeft);
     m_settings.backdropFadeTop = group.readEntry("BackdropFadeTop", defaults.backdropFadeTop);
     m_settings.backdropFadeRight = group.readEntry("BackdropFadeRight", defaults.backdropFadeRight);
@@ -433,6 +435,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         const bool liquid = shape.style == Style::Liquid;
         const bool bubble = shape.style == Style::Bubble;
         const bool control = shape.style == Style::Control;
+        const bool chip = shape.style == Style::Chip;
         const float saturation = control ? m_settings.controlSaturation : liquid ? m_settings.liquidSaturation : blurred ? m_settings.frostSaturation : 1.0f;
         const float tintAlpha = frosted || shape.style == Style::Card ? m_settings.frostTint : bubble ? m_settings.bubbleTint : 0.0f;
         ShaderManager::instance()->pushShader(m_glassShader.get());
@@ -441,13 +444,16 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("cornerRadius", float(shape.radius * scale));
         m_glassShader->setUniform("deviceScale", float(viewport.scale()));
         m_glassShader->setUniform("wide", 1);
-        m_glassShader->setUniform("lensStrength", frosted ? 0.0f : m_settings.lensStrength);
+        m_glassShader->setUniform("lensStrength", frosted || chip ? 0.0f : m_settings.lensStrength);
         m_glassShader->setUniform("lensRadius", m_settings.lensRadius);
         m_glassShader->setUniform("brightness", control ? m_settings.controlBrightness : liquid ? m_settings.liquidBrightness : 1.0f);
         m_glassShader->setUniform("colorMatrix", saturationMatrix(saturation));
-        // Measured from Tahoe's menus: a dark tint with a hint of purple, under the edge.
-        m_glassShader->setUniform("tint", QVector4D(0.09, 0.06, 0.1, tintAlpha));
-        m_glassShader->setUniform("rim", control ? m_settings.controlRim : 0.0f);
+        // Measured from Tahoe: menus have a dark tint with a hint of purple, under the edge, and its
+        // small buttons a light grey one.
+        m_glassShader->setUniform("tint", chip ? QVector4D(0.21, 0.23, 0.27, m_settings.chipTint) : QVector4D(0.09, 0.06, 0.1, tintAlpha));
+        m_glassShader->setUniform("rim", control ? m_settings.controlRim : chip ? m_settings.chipRim : 0.0f);
+        m_glassShader->setUniform("rimDirectional", control ? 1.0f : 0.0f);
+        m_glassShader->setUniform("rimInner", control ? 0.33f : 1.0f);
         m_glassShader->setUniform("softEdges", shape.style == Style::Backdrop ? QVector4D(m_settings.backdropFadeLeft, m_settings.backdropFadeTop, m_settings.backdropFadeRight, m_settings.backdropFadeBottom) : QVector4D());
         m_glassShader->setUniform("edgeFade", frosted ? 0.0f : m_settings.liquidEdgeFade);
         m_glassShader->setUniform("edgeGain", bubble ? m_settings.bubbleEdgeGain : frosted ? 1.0f : m_settings.liquidEdgeGain);
@@ -458,7 +464,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         glActiveTexture(GL_TEXTURE1);
         render.textures[blurred ? wideLevel : 0]->bind();
         glActiveTexture(GL_TEXTURE0);
-        render.textures[blurred ? 1 : 0]->bind();
+        render.textures[chip ? wideLevel : blurred ? 1 : 0]->bind();
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         vbo->draw(GL_TRIANGLES, 0, vertexCount);

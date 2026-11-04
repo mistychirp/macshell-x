@@ -57,6 +57,11 @@ struct GlassSettings {
     float controlSaturation = 1.1;
     float controlRim = 0.55;
 
+    /// Chips, for small buttons like a notification's ✕: a very wide blur under a light grey tint,
+    /// inside a rim that's even all the way around.
+    float chipTint = 0.6;
+    float chipRim = 0.15;
+
     /// Backdrops, like the one behind Notification Center's message when it's empty: how far in
     /// from each side the blur takes to reach full strength, in logical pixels.
     float backdropFadeLeft = 190.0;

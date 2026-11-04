@@ -35,9 +35,12 @@ uniform float edgeFade;
 uniform float edgeGain;
 uniform float edgeWhite;
 uniform float outerAlpha;
-// A rim instead of an edge, for control modules: how much its outer device pixel whitens where it's
-// lit. The next one does about a third as much. 0 means no rim.
+// A rim instead of an edge: how much its outer device pixel whitens where it's lit. 0 means no rim.
 uniform float rim;
+// How much of the rim's light depends on its direction, from 0 (even all around) to 1.
+uniform float rimDirectional;
+// How much the next device pixel whitens, relative to the outer one.
+uniform float rimInner;
 // A backdrop instead of a shape: just the blur, fading in from each side over this many logical
 // pixels (left, top, right, bottom), with no edge. All 0 means it isn't one.
 uniform vec4 softEdges;
@@ -120,7 +123,8 @@ void main(void)
         // Light falls along the top-left to bottom-right diagonal: the rim is even across those two
         // quadrants and almost gone at the other two corners, measured around Tahoe's buttons.
         float lit = mix(0.12, 1.0, smoothstep(0.25, 0.72, abs(dot(n, vec2(0.7071)))));
-        float line = band(pixels, 0.0, 1.0) + band(pixels, 1.0, 2.0) * 0.33;
+        lit = mix(1.0, lit, rimDirectional);
+        float line = band(pixels, 0.0, 1.0) + band(pixels, 1.0, 2.0) * rimInner;
         color.rgb = mix(color.rgb, vec3(1.0), line * lit * rim);
     } else if (edgeFade > 0.0) {
         color.rgb = mix(color.rgb, edge, 1.0 - smoothstep(0.0, edgeFade, -d));

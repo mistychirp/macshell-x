@@ -44,6 +44,8 @@ pub enum Style {
     Control,
     /// A menu's tint over the dock's lens, for notifications.
     Card,
+    /// A very wide blur under a light grey tint, inside an even rim, for small buttons.
+    Chip,
     /// A blur that fades out on every side instead of ending at an edge, to set text apart from
     /// a busy background. Dropped where that isn't supported.
     Backdrop,
@@ -199,9 +201,12 @@ impl Material {
                         Style::Bubble if glass.version() >= 2 => macshell_glass_v1::Style::Bubble,
                         Style::Control if glass.version() >= 2 => macshell_glass_v1::Style::Control,
                         Style::Card if glass.version() >= 3 => macshell_glass_v1::Style::Card,
-                        Style::Liquid | Style::Bubble | Style::Control | Style::Card => {
-                            macshell_glass_v1::Style::Frosted
-                        }
+                        Style::Chip if glass.version() >= 3 => macshell_glass_v1::Style::Chip,
+                        Style::Liquid
+                        | Style::Bubble
+                        | Style::Control
+                        | Style::Card
+                        | Style::Chip => macshell_glass_v1::Style::Frosted,
                         Style::Transparent if glass.version() >= 2 => {
                             macshell_glass_v1::Style::Transparent
                         }
