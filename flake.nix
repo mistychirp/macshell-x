@@ -13,7 +13,11 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
+      # A "macshell" login session: programs.macshell.enable = true;
+      nixosModules.default = ./nix/module.nix;
+
       packages = forAllSystems (pkgs: {
+        macshell = pkgs.callPackage ./nix/macshell.nix { };
         kwin-macshell = pkgs.kdePackages.callPackage ./kwin/package.nix { };
       });
 

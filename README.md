@@ -19,7 +19,18 @@ cargo run
 
 ## Running on KWin
 
-KWin only lets the shell follow and manage windows if a desktop entry grants it, with
+On NixOS, the flake's module adds a "macshell" login session: KWin with the shell and its glass
+plugin, both built from the system's own packages, so the plugin always matches the KWin it loads
+into. The session shares KWin's configuration (`kwinrc`, `kxkbrc`, shortcuts) with Plasma.
+
+```nix
+# In your flake: inputs.macshell.url = "github:mistychirp/macshell-x";
+imports = [ inputs.macshell.nixosModules.default ];
+programs.macshell.enable = true;
+```
+
+Elsewhere, install the desktop entry yourself. KWin only lets the shell follow and manage windows
+if a desktop entry grants it, with
 `X-KDE-Wayland-Interfaces=org_kde_plasma_window_management` and an `Exec` that is the absolute
 path of the shell binary. Install [contrib/macshell.desktop](contrib/macshell.desktop) with
 `@macshell@` replaced by that path, somewhere in `$XDG_DATA_DIRS/applications`.
