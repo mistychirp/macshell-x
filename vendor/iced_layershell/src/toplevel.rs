@@ -13,6 +13,18 @@ use crate::reexport::IcedId;
 thread_local! {
     static PENDING: RefCell<HashMap<IcedId, IcedXdgWindowSettings>> = RefCell::new(HashMap::new());
     static SEAT: RefCell<Option<WlSeat>> = const { RefCell::new(None) };
+    static KEYBOARD_TARGET: RefCell<Option<IcedId>> = const { RefCell::new(None) };
+}
+
+/// Sends the keyboard to this window, or stops doing so. `layershellev` sends keys to whichever
+/// surface it heard of last, which goes for the pointer entering one too, so without this, typing in
+/// a window stops working as soon as the pointer is over anything else.
+pub fn set_keyboard_target(window: Option<IcedId>) {
+    KEYBOARD_TARGET.with_borrow_mut(|target| *target = window);
+}
+
+pub(crate) fn keyboard_target() -> Option<IcedId> {
+    KEYBOARD_TARGET.with_borrow(|target| *target)
 }
 
 /// The seat that moves are asked for on. `layershellev` keeps its own to itself, so the application

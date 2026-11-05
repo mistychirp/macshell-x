@@ -1956,6 +1956,7 @@ dependencies = [
  "raw-window-handle",
  "resvg",
  "serde",
+ "tokio",
  "toml",
  "toml_edit",
  "wayland-client",

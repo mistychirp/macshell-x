@@ -46,6 +46,8 @@ pub enum Title {
     App,
     /// The keyboard layout.
     Input,
+    /// A wired connection, shown when there's no Wi-Fi.
+    Ethernet,
     /// The Control Center's switches.
     ControlCenter,
     /// The clock, which opens Notification Center.
@@ -177,6 +179,8 @@ pub struct Bar<'a> {
     pub backdrop: Option<Backdrop>,
     /// Short name of the keyboard layout, when there's more than one.
     pub input: Option<&'a str>,
+    /// The machine is on a cable, with no Wi-Fi.
+    pub ethernet: bool,
     pub tray: &'a [tray::Icon],
     /// The names of the focused app's menus.
     pub app_menus: &'a [String],
@@ -211,6 +215,10 @@ impl Bar<'_> {
         if self.input.is_some() {
             x -= STATUS_WIDTH;
             titles.push((Title::Input, rect(x, STATUS_WIDTH)));
+        }
+        if self.ethernet {
+            x -= STATUS_WIDTH;
+            titles.push((Title::Ethernet, rect(x, STATUS_WIDTH)));
         }
         for index in (0..self.tray.len()).rev() {
             x -= STATUS_WIDTH;
@@ -370,6 +378,7 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
                 .wrapping(Wrapping::None)
                 .into(),
             Title::Input => input_badge(bar.input.unwrap_or_default(), ink),
+            Title::Ethernet => icons::icon(Glyph::Ethernet, 17.0, ink),
             Title::ControlCenter => icons::icon(Glyph::ControlCenter, 17.0, ink),
             Title::Clock => text(bar.clock).into(),
             Title::Tray(index) => match bar.tray.get(index).and_then(|icon| {
@@ -462,6 +471,17 @@ fn input_badge<'a>(label: &str, ink: Color) -> Element<'a> {
 }
 
 /// The keyboard layout menu: every layout, with a check on the active one.
+pub fn ethernet_menu() -> Vec<menu::Entry> {
+    vec![
+        menu::Entry::item("Ethernet: Connected", Message::Nothing).enabled(false),
+        menu::Entry::Separator,
+        menu::Entry::item(
+            "Network Settings…",
+            Message::ControlSettings("kcm_networkmanagement"),
+        ),
+    ]
+}
+
 pub fn input_menu(layouts: &KeyboardLayouts) -> Vec<menu::Entry> {
     layouts
         .names

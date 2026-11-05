@@ -653,7 +653,23 @@ where
         layer_shell_id: Option<LayerShellId>,
         event: LayerShellWindowEvent,
     ) {
-        let id_and_window = if let Some(layer_shell_id) = layer_shell_id {
+        let keyboard_target = crate::toplevel::keyboard_target();
+        if keyboard_target.is_some()
+            && matches!(event, LayerShellWindowEvent::Focused | LayerShellWindowEvent::Unfocus)
+        {
+            // These follow the pointer as well as the keyboard, so they mean nothing to the target.
+            return;
+        }
+        let id_and_window = if let Some(target) = keyboard_target.filter(|_| {
+            matches!(
+                event,
+                LayerShellWindowEvent::KeyBoardInput { .. }
+                    | LayerShellWindowEvent::ModifiersChanged(_)
+                    | LayerShellWindowEvent::Ime(_)
+            )
+        }) {
+            self.window_manager.get_mut(target).map(|window| (target, window))
+        } else if let Some(layer_shell_id) = layer_shell_id {
             self.window_manager.get_mut_alias(layer_shell_id)
         } else {
             self.window_manager.iter_mut().next()

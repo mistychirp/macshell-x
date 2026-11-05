@@ -38,6 +38,10 @@ Patch: make ordinary windows usable (`src/toplevel.rs`, `src/actions.rs`, `src/m
 buffer, and `window::Action::Drag` starts an interactive move. Upstream drops that action.
 `layershellev` keeps its seat private, so the application hands one in with `toplevel::set_seat`.
 
+Patch: send the keyboard to a chosen window (`toplevel::set_keyboard_target`, `src/multi_window.rs`).
+`layershellev` tags key events with the surface it heard of last, which also changes as the pointer
+enters surfaces.
+
 The first commit that adds this directory contains the pristine 0.19.1 sources, so
 `git diff <that commit> -- vendor/iced_layershell` shows the patch. Drop the vendored copy
 once upstream ships the fix.

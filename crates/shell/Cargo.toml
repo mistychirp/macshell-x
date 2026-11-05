@@ -31,4 +31,6 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-scanner = "0.31"
 # Already in the tree through iced_layershell; talks to NetworkManager, BlueZ and media players.
+# Already in the tree through iced_futures and zbus.
+tokio = { version = "1", features = ["time"] }
 zbus = "5.19"

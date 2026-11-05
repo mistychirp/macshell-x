@@ -29,8 +29,8 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appmenu, audio, autostart, bluetooth, brightness, control, dbusmenu, dock, fonts, launcher,
-    media, menu, menubar, network, notification_center, stack, tray, wallpaper,
+    appmenu, audio, autostart, bluetooth, brightness, control, dbusmenu, dock, fonts, icons,
+    launcher, media, menu, menubar, network, notification_center, stack, tray, wallpaper,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -161,6 +161,13 @@ pub enum Message {
     AlertAnswered(bool),
     /// The alert was pressed where there's no button.
     AlertDragged,
+    AlertPasswordChanged(String),
+    AlertPasswordShown(bool),
+    /// News from NetworkManager's requests for passwords.
+    WifiAgent(network::AgentEvent),
+    /// Whether the machine's on a cable with no Wi-Fi.
+    EthernetChecked(bool),
+    CheckEthernet,
     /// Return or Escape was pressed: whether it was Return.
     ReturnOrEscape(bool),
     SurfaceClosed(IcedId),
@@ -327,6 +334,10 @@ struct Shell {
     app_menu: Vec<dbusmenu::Item>,
     app_menu_titles: Vec<String>,
     alert: Option<OpenAlert>,
+    /// A network's password that NetworkManager wants, waiting for the alert that's up to go.
+    waiting_secret: Option<network::SecretRequest>,
+    /// The machine's on a cable, with no Wi-Fi.
+    ethernet: bool,
     /// Desktop entry id of the app that opens folders and the trash.
     file_manager: String,
     downloads_dir: PathBuf,
@@ -478,6 +489,8 @@ impl Shell {
             app_menu: Vec::new(),
             app_menu_titles: Vec::new(),
             alert: None,
+            waiting_secret: None,
+            ethernet: false,
             file_manager,
             downloads_dir: places::downloads_dir(),
             trash_dir,
@@ -913,7 +926,11 @@ impl Shell {
                     detail: String::from("Unsaved changes in open apps may be lost."),
                     confirm: confirmation.confirm.to_owned(),
                     on_confirm: Message::SystemConfirmed(action),
-                    icon: self.system_icon.clone(),
+                    icon: self
+                        .system_icon
+                        .clone()
+                        .map_or(alert::Icon::None, alert::Icon::Image),
+                    password: None,
                 };
                 return Task::batch([close, self.open_alert(alert)]);
             }
@@ -934,10 +951,57 @@ impl Shell {
                 let close = self.close_popup();
                 return Task::batch([close, self.run_dock_action(action)]);
             }
+            Message::AlertPasswordChanged(value) => {
+                if let Some(password) = self.alert_password() {
+                    password.value = value;
+                }
+            }
+            Message::AlertPasswordShown(visible) => {
+                if let Some(password) = self.alert_password() {
+                    password.visible = visible;
+                }
+            }
+            Message::WifiAgent(network::AgentEvent::Asks(request)) => {
+                // After a wrong password it asks again right away, while the last alert is still
+                // closing. That one's turn comes when the alert is gone.
+                if self.alert.is_some() {
+                    if let Some(older) = self.waiting_secret.replace(request) {
+                        network::answer(older.id, None);
+                    }
+                    return Task::none();
+                }
+                return self.ask_for_password(request);
+            }
+            Message::WifiAgent(network::AgentEvent::Withdrawn(request)) => {
+                if self
+                    .waiting_secret
+                    .as_ref()
+                    .is_some_and(|waiting| waiting.id == request)
+                {
+                    self.waiting_secret = None;
+                }
+                if let Some(open) = &mut self.alert
+                    && let Some(password) = &open.alert.password
+                    && password.request == request
+                {
+                    open.alert.password = None;
+                    return iced_runtime::window::close(open.id);
+                }
+            }
+            Message::CheckEthernet => {
+                return Task::perform(network::on_ethernet_only(), Message::EthernetChecked);
+            }
+            Message::EthernetChecked(ethernet) => self.ethernet = ethernet,
             Message::AlertAnswered(confirmed) => {
-                let Some(open) = &self.alert else {
+                let Some(open) = &mut self.alert else {
                     return Task::none();
                 };
+                if confirmed && !open.alert.can_confirm() {
+                    return Task::none();
+                }
+                if let Some(password) = open.alert.password.take() {
+                    network::answer(password.request, confirmed.then_some(password.value));
+                }
                 let close = iced_runtime::window::close(open.id);
                 if confirmed {
                     return Task::batch([close, Task::done(open.alert.on_confirm.clone())]);
@@ -956,7 +1020,17 @@ impl Shell {
                 }
             }
             Message::SurfaceOpened(id, _) if self.alert.as_ref().is_some_and(|a| a.id == id) => {
-                return self.reach_surface(id);
+                let reach = self.reach_surface(id);
+                let has_field = self
+                    .alert
+                    .as_ref()
+                    .is_some_and(|open| open.alert.password.is_some());
+                return if has_field {
+                    let focus = iced_runtime::widget::operation::focus(Alert::field_id());
+                    Task::batch([reach, focus])
+                } else {
+                    reach
+                };
             }
             Message::DockThumbnailPressed(id) => kwin::focus_window(id),
             Message::DockThumbnailMenu(id) => {
@@ -1172,9 +1246,18 @@ impl Shell {
                 }
                 if self.alert.as_ref().is_some_and(|open| open.id == id)
                     && let Some(open) = self.alert.take()
-                    && let Some(material) = open.material
                 {
-                    material.destroy();
+                    iced_layershell::toplevel::set_keyboard_target(None);
+                    // Closed some other way than by answering it, like with Alt+F4.
+                    if let Some(password) = open.alert.password {
+                        network::answer(password.request, None);
+                    }
+                    if let Some(material) = open.material {
+                        material.destroy();
+                    }
+                    if let Some(request) = self.waiting_secret.take() {
+                        return self.ask_for_password(request);
+                    }
                 }
                 if self.banners_surface == Some(id) {
                     self.banners_surface = None;
@@ -1251,6 +1334,7 @@ impl Shell {
                     .unwrap_or_default();
                 menubar::app_menu(app, windows)
             }
+            menubar::Title::Ethernet => menubar::ethernet_menu(),
             menubar::Title::Input => match &self.keyboard_layouts {
                 Some(layouts) => menubar::input_menu(layouts),
                 None => return Task::none(),
@@ -1580,6 +1664,7 @@ impl Shell {
             open: self.popup.as_ref().and_then(|popup| popup.title),
             backdrop: self.bar_backdrop,
             input: self.input_label.as_deref(),
+            ethernet: self.ethernet,
             tray: &self.tray,
             app_menus: &self.app_menu_titles,
         }
@@ -1738,6 +1823,7 @@ impl Shell {
         }
         let (id, open) = Message::base_window_open(alert::settings(&alert));
         self.surfaces.insert(id, Surface::Alert);
+        iced_layershell::toplevel::set_keyboard_target(Some(id));
         self.alert = Some(OpenAlert {
             id,
             alert,
@@ -1745,6 +1831,31 @@ impl Shell {
             active: true,
         });
         open
+    }
+
+    fn ask_for_password(&mut self, request: network::SecretRequest) -> Task<Message> {
+        let detail = if request.retry {
+            "That password didn't work. Check it and try again."
+        } else {
+            "Enter the network's password to join it."
+        };
+        self.open_alert(Alert {
+            title: format!("The Wi-Fi network “{}” requires a password.", request.ssid),
+            detail: detail.to_owned(),
+            confirm: String::from("Join"),
+            on_confirm: Message::Nothing,
+            icon: alert::Icon::Glyph(icons::Glyph::Wifi),
+            password: Some(alert::Password {
+                request: request.id,
+                value: String::new(),
+                visible: false,
+                min_length: request.min_length,
+            }),
+        })
+    }
+
+    fn alert_password(&mut self) -> Option<&mut alert::Password> {
+        self.alert.as_mut()?.alert.password.as_mut()
     }
 
     /// Closes the open popup, if any. Its state is cleaned up once the surface is gone.
@@ -1959,7 +2070,11 @@ impl Shell {
                     detail: String::from("You can't undo this action."),
                     confirm: String::from("Empty Trash"),
                     on_confirm: Message::DockMenu(dock::MenuAction::EmptyTrash),
-                    icon: self.apps.themed_icon("user-trash-full"),
+                    icon: self
+                        .apps
+                        .themed_icon("user-trash-full")
+                        .map_or(alert::Icon::None, alert::Icon::Image),
+                    password: None,
                 };
                 return self.open_alert(alert);
             }
@@ -2157,6 +2272,8 @@ impl Shell {
             banner_frames,
             menu_hover,
             notifications::events().map(Message::Notification),
+            network::secret_agent().map(Message::WifiAgent),
+            time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),
             tray::items().map(Message::TrayItems),
             launcher::updates().map(Message::LauncherUpdate),
             app_menu,
