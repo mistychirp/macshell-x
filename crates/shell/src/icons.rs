@@ -37,6 +37,13 @@ pub enum Glyph {
     Window,
     /// Where sound goes: a screen with sound coming from it, like AirPlay's.
     Outputs,
+    Cloud,
+    Moon,
+    Rain,
+    Snow,
+    Bolt,
+    /// A picture of mountains.
+    Photo,
     /// A folder with a plus, for making one.
     NewFolder,
     /// An i in a circle.
@@ -163,6 +170,41 @@ impl Glyph {
                 r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>
                 <path d="M7 10.5a1 1 0 0 1 1-1h1.5l1-1.5h3l1 1.5H16a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1z" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::Cloud => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <path d="M6.6 19.5a4.6 4.6 0 0 1-.7-9.15 6.3 6.3 0 0 1 12-1.25 5.3 5.3 0 0 1-.4 10.4z"/>
+                </svg>"##
+            }
+            Glyph::Moon => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <path d="M20.5 14.6A8.9 8.9 0 0 1 9.4 3.5a9 9 0 1 0 11.1 11.1z"/>
+                </svg>"##
+            }
+            Glyph::Rain => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <path d="M6.6 15a4.1 4.1 0 0 1-.6-8.15 5.8 5.8 0 0 1 11-1.15A4.8 4.8 0 0 1 17 15z"/>
+                <path d="M8 17.5l-1.2 3M12.6 17.5l-1.2 3M17.2 17.5l-1.2 3" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round"/>
+                </svg>"##
+            }
+            Glyph::Snow => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <path d="M6.6 15a4.1 4.1 0 0 1-.6-8.15 5.8 5.8 0 0 1 11-1.15A4.8 4.8 0 0 1 17 15z"/>
+                <circle cx="8" cy="18.2" r="1.3"/><circle cx="12" cy="20.3" r="1.3"/><circle cx="16" cy="18.2" r="1.3"/>
+                </svg>"##
+            }
+            Glyph::Bolt => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <path d="M6.6 14a4.1 4.1 0 0 1-.6-8.15 5.8 5.8 0 0 1 11-1.15A4.8 4.8 0 0 1 17 14h-2.7l-2-1.2L9 14z"/>
+                <path d="M12.8 13l-3.4 4.8h2.7l-1.3 4.2 4.4-5.8h-2.7l1.6-3.2z"/>
+                </svg>"##
+            }
+            Glyph::Photo => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round">
+                <rect x="3" y="4.5" width="18" height="15" rx="2.6"/>
+                <circle cx="8.3" cy="9.5" r="1.7" fill="#000" stroke="none"/>
+                <path d="M3.5 17.5l5.2-4.6 3.3 2.7 3.7-4 5 5"/>
                 </svg>"##
             }
             Glyph::NewFolder => {

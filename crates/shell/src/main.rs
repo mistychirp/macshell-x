@@ -32,6 +32,7 @@ mod shadow_protocol;
 mod stack;
 mod tray;
 mod wallpaper;
+mod widgets;
 mod window_shadow;
 
 fn main() -> Result<(), iced_layershell::Error> {

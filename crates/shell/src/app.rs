@@ -31,7 +31,7 @@ use crate::places::{self, Place};
 use crate::{
     appmenu, audio, autostart, bluetooth, brightness, control, dbusmenu, desktop, dock, fonts,
     icons, launcher, media, menu, menubar, network, notification_center, portal, stack, tray,
-    wallpaper,
+    wallpaper, widgets,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -71,6 +71,8 @@ enum Surface {
     Wallpaper,
     /// The icons and widgets above the wallpaper.
     Desktop,
+    /// Where to choose widgets from, while editing them.
+    WidgetGallery,
     MenuBar,
     Dock,
     Popup,
@@ -168,6 +170,11 @@ pub enum Message {
     /// The alert was answered: confirmed, or cancelled.
     AlertAnswered(bool),
     Desktop(desktop::Action),
+    Widget(widgets::Action),
+    WidgetPhotoChosen(u64, Option<PathBuf>),
+    WidgetPhotoLoaded(PathBuf, Option<image::Handle>),
+    FetchWeather,
+    WeatherFetched(Option<widgets::Weather>),
     DesktopPressed,
     DesktopRightPressed,
     DesktopRefresh,
@@ -180,8 +187,8 @@ pub enum Message {
     WallpaperChosen(Option<PathBuf>),
     /// The alert was pressed where there's no button.
     AlertDragged,
-    AlertPasswordChanged(String),
-    AlertPasswordShown(bool),
+    AlertFieldChanged(String),
+    AlertFieldShown(bool),
     /// News from NetworkManager's requests for passwords.
     WifiAgent(network::AgentEvent),
     /// Whether the machine's on a cable with no Wi-Fi.
@@ -287,6 +294,9 @@ struct Shell {
     wallpaper_loaded: Option<iced_runtime::image::Allocation>,
     desktop_id: IcedId,
     desktop: desktop::Desktop,
+    widgets: widgets::Widgets,
+    gallery_id: Option<IcedId>,
+    gallery_material: Option<MaterialSurface>,
     /// Keeps icons on the GPU once they've loaded.
     loaded_icons: HashMap<iced_widget::core::image::Id, Option<iced_runtime::image::Allocation>>,
     apps: AppIndex,
@@ -467,6 +477,9 @@ impl Shell {
             wallpaper_loaded: None,
             desktop_id,
             desktop: desktop::Desktop::load(),
+            widgets: widgets::Widgets::load(),
+            gallery_id: None,
+            gallery_material: None,
             loaded_icons: HashMap::new(),
             wallpaper: config
                 .desktop
@@ -579,6 +592,7 @@ impl Shell {
             .filter_map(|item| item.app.icon.as_ref())
             .chain(self.place_icons.iter().flatten())
             .chain(self.desktop.icons())
+            .chain(self.widgets.photo_handles())
             .filter(|handle| !self.loaded_icons.contains_key(&handle.id()))
             .cloned()
             .collect();
@@ -602,7 +616,12 @@ impl Shell {
         for (&id, &surface) in &self.surfaces {
             let content = match surface {
                 Surface::Wallpaper => self.wallpaper_loaded.is_some().to_string(),
-                Surface::Desktop => self.desktop.content_key(self.focused_app.is_none()),
+                Surface::Desktop => format!(
+                    "{} {}",
+                    self.desktop.content_key(self.focused_app.is_none()),
+                    self.widgets.content_key()
+                ),
+                Surface::WidgetGallery => self.widgets.content_key(),
                 Surface::MenuBar => format!("{:?}", self.bar()),
                 Surface::Dock => {
                     format!(
@@ -925,7 +944,11 @@ impl Shell {
             {
                 self.screen_height = size.height;
                 self.desktop.set_size(size);
-                return Task::done(Message::DesktopRefresh);
+                return Task::batch([
+                    Task::done(Message::DesktopRefresh),
+                    Task::done(Message::FetchWeather),
+                    self.load_widget_photos(),
+                ]);
             }
             Message::DesktopRefresh => {
                 return Task::perform(desktop::list(self.desktop.folder()), Message::DesktopListed);
@@ -958,9 +981,41 @@ impl Shell {
             }
             Message::DesktopThumbnail(_, None) => {}
             Message::PointerMoved(id, point) if id == self.desktop_id => {
-                self.desktop.pointer_moved(point);
+                self.widgets.pointer_moved(point);
+                if !self.widgets.is_dragging() {
+                    self.desktop.pointer_moved(point);
+                }
             }
-            Message::PointerReleased(id) if id == self.desktop_id => self.desktop.released(),
+            Message::PointerReleased(id) if id == self.desktop_id => {
+                self.widgets.released();
+                self.desktop.released();
+            }
+            Message::Widget(action) => {
+                let close = self.close_popup();
+                return Task::batch([close, self.run_widget_action(action)]);
+            }
+            Message::WidgetPhotoChosen(id, Some(path)) => {
+                self.widgets.set_photo(id, path);
+                return self.load_widget_photos();
+            }
+            Message::WidgetPhotoChosen(_, None) => {}
+            Message::WidgetPhotoLoaded(path, Some(picture)) => {
+                self.widgets.set_photo_picture(path, picture);
+            }
+            Message::WidgetPhotoLoaded(_, None) => {}
+            Message::FetchWeather => {
+                if self.widgets.has_weather()
+                    && let Some(city) = &self.widgets.city
+                {
+                    return Task::perform(
+                        widgets::fetch_weather(city.clone()),
+                        Message::WeatherFetched,
+                    );
+                }
+            }
+            Message::WeatherFetched(Some(weather)) => self.widgets.weather = Some(weather),
+            // Whatever it last said is still the best guess.
+            Message::WeatherFetched(None) => {}
             Message::AddingModifiers(adding) => self.desktop.adding = adding,
             Message::DesktopPressed => {
                 // A click that closes a menu doesn't do anything else.
@@ -968,6 +1023,13 @@ impl Shell {
                     return self.close_popup();
                 }
                 let finished_rename = self.finish_desktop_rename();
+                let (action, on_widget) = self.widgets.pressed();
+                if let Some(action) = action {
+                    return Task::batch([finished_rename, self.run_widget_action(action)]);
+                }
+                if on_widget {
+                    return finished_rename;
+                }
                 return match self.desktop.pressed() {
                     desktop::Pressed::Open => {
                         self.open_desktop_selection();
@@ -978,7 +1040,10 @@ impl Shell {
             }
             Message::DesktopRightPressed => {
                 let finished_rename = self.finish_desktop_rename();
-                let entries = self.desktop.context_menu();
+                let entries = self
+                    .widgets
+                    .context_menu()
+                    .unwrap_or_else(|| self.desktop.context_menu());
                 let size = menu::size(&entries);
                 let (x, y) = self.desktop.pointer();
                 let settings = IcedNewPopupSettings::new(self.desktop_id, size, (x, y, 1, 1))
@@ -1091,7 +1156,7 @@ impl Shell {
                         .system_icon
                         .clone()
                         .map_or(alert::Icon::None, alert::Icon::Image),
-                    password: None,
+                    field: None,
                 };
                 return Task::batch([close, self.open_alert(alert)]);
             }
@@ -1112,14 +1177,14 @@ impl Shell {
                 let close = self.close_popup();
                 return Task::batch([close, self.run_dock_action(action)]);
             }
-            Message::AlertPasswordChanged(value) => {
-                if let Some(password) = self.alert_password() {
-                    password.value = value;
+            Message::AlertFieldChanged(value) => {
+                if let Some(field) = self.alert_field() {
+                    field.value = value;
                 }
             }
-            Message::AlertPasswordShown(visible) => {
-                if let Some(password) = self.alert_password() {
-                    password.visible = visible;
+            Message::AlertFieldShown(visible) => {
+                if let Some(field) = self.alert_field() {
+                    field.visible = visible;
                 }
             }
             Message::WifiAgent(network::AgentEvent::Asks(request)) => {
@@ -1142,10 +1207,13 @@ impl Shell {
                     self.waiting_secret = None;
                 }
                 if let Some(open) = &mut self.alert
-                    && let Some(password) = &open.alert.password
-                    && password.request == request
+                    && open
+                        .alert
+                        .field
+                        .as_ref()
+                        .is_some_and(|field| field.purpose == alert::Purpose::Password(request))
                 {
-                    open.alert.password = None;
+                    open.alert.field = None;
                     return iced_runtime::window::close(open.id);
                 }
             }
@@ -1160,10 +1228,27 @@ impl Shell {
                 if confirmed && !open.alert.can_confirm() {
                     return Task::none();
                 }
-                if let Some(password) = open.alert.password.take() {
-                    network::answer(password.request, confirmed.then_some(password.value));
-                }
+                let field = open.alert.field.take();
                 let close = iced_runtime::window::close(open.id);
+                match field {
+                    Some(alert::Field {
+                        purpose: alert::Purpose::Password(request),
+                        value,
+                        ..
+                    }) => network::answer(request, confirmed.then_some(value)),
+                    Some(alert::Field {
+                        purpose: alert::Purpose::City,
+                        value,
+                        ..
+                    }) if confirmed => {
+                        self.widgets.set_city(value.trim().to_owned());
+                        return Task::batch([close, Task::done(Message::FetchWeather)]);
+                    }
+                    _ => {}
+                }
+                let Some(open) = &self.alert else {
+                    return close;
+                };
                 if confirmed {
                     return Task::batch([close, Task::done(open.alert.on_confirm.clone())]);
                 }
@@ -1193,12 +1278,15 @@ impl Shell {
                     return self.start_desktop_rename(path.clone());
                 }
             }
+            Message::SurfaceOpened(id, _) if Some(id) == self.gallery_id => {
+                return self.reach_surface(id);
+            }
             Message::SurfaceOpened(id, _) if self.alert.as_ref().is_some_and(|a| a.id == id) => {
                 let reach = self.reach_surface(id);
                 let has_field = self
                     .alert
                     .as_ref()
-                    .is_some_and(|open| open.alert.password.is_some());
+                    .is_some_and(|open| open.alert.field.is_some());
                 return if has_field {
                     let focus = iced_runtime::widget::operation::focus(Alert::field_id());
                     Task::batch([reach, focus])
@@ -1418,13 +1506,23 @@ impl Shell {
                         None => relayout,
                     };
                 }
+                if self.gallery_id == Some(id) {
+                    self.gallery_id = None;
+                    if let Some(material) = self.gallery_material.take() {
+                        material.destroy();
+                    }
+                }
                 if self.alert.as_ref().is_some_and(|open| open.id == id)
                     && let Some(open) = self.alert.take()
                 {
                     iced_layershell::toplevel::set_keyboard_target(None);
                     // Closed some other way than by answering it, like with Alt+F4.
-                    if let Some(password) = open.alert.password {
-                        network::answer(password.request, None);
+                    if let Some(alert::Field {
+                        purpose: alert::Purpose::Password(request),
+                        ..
+                    }) = open.alert.field
+                    {
+                        network::answer(request, None);
                     }
                     if let Some(material) = open.material {
                         material.destroy();
@@ -1822,6 +1920,10 @@ impl Shell {
                 self.banners_material = Some(target);
             }
             // Closed before it could be reached, or not a surface with material.
+            Some(Surface::WidgetGallery) => {
+                material.set_shapes(&target, &widgets::gallery_shapes());
+                self.gallery_material = Some(target);
+            }
             Some(Surface::Wallpaper | Surface::Desktop) | None => target.destroy(),
         }
     }
@@ -2019,8 +2121,8 @@ impl Shell {
             confirm: String::from("Join"),
             on_confirm: Message::Nothing,
             icon: alert::Icon::Glyph(icons::Glyph::Wifi),
-            password: Some(alert::Password {
-                request: request.id,
+            field: Some(alert::Field {
+                purpose: alert::Purpose::Password(request.id),
                 value: String::new(),
                 visible: false,
                 min_length: request.min_length,
@@ -2087,7 +2189,7 @@ impl Shell {
             Action::ChangeWallpaper => {
                 return Task::perform(portal::choose_image(), Message::WallpaperChosen);
             }
-            Action::EditWidgets => {}
+            Action::EditWidgets => return self.run_widget_action(widgets::Action::Edit),
             Action::SortBy(sort) => self.desktop.set_sort(sort),
             Action::CleanUp => self.desktop.clean_up_action(None),
             Action::CleanUpBy(sort) => self.desktop.clean_up_action(Some(sort)),
@@ -2095,8 +2197,75 @@ impl Shell {
         Task::none()
     }
 
-    fn alert_password(&mut self) -> Option<&mut alert::Password> {
-        self.alert.as_mut()?.alert.password.as_mut()
+    fn alert_field(&mut self) -> Option<&mut alert::Field> {
+        self.alert.as_mut()?.alert.field.as_mut()
+    }
+
+    fn ask_for_city(&mut self) -> Task<Message> {
+        let glyph = alert::Icon::Glyph(icons::Glyph::Cloud);
+        self.open_alert(Alert {
+            title: String::from("Which city's weather should this show?"),
+            detail: String::from("Its name goes to Open-Meteo, to look up the forecast."),
+            confirm: String::from("Show"),
+            on_confirm: Message::Nothing,
+            icon: glyph,
+            field: Some(alert::Field {
+                purpose: alert::Purpose::City,
+                value: self.widgets.city.clone().unwrap_or_default(),
+                visible: true,
+                min_length: 1,
+            }),
+        })
+    }
+
+    fn run_widget_action(&mut self, action: widgets::Action) -> Task<Message> {
+        use widgets::{Action, Kind};
+        match action {
+            Action::Add(kind) => {
+                let id = self.widgets.add(kind.clone());
+                match kind {
+                    Kind::Weather if self.widgets.city.is_none() => return self.ask_for_city(),
+                    Kind::Weather => return Task::done(Message::FetchWeather),
+                    Kind::Photo { .. } => return self.choose_widget_photo(id),
+                    _ => {}
+                }
+            }
+            Action::Remove(id) => self.widgets.remove(id),
+            Action::ChoosePhoto(id) => return self.choose_widget_photo(id),
+            Action::ChangeCity => return self.ask_for_city(),
+            Action::Edit => {
+                if !self.widgets.editing {
+                    self.widgets.editing = true;
+                    let (id, open) = Message::layershell_open(widgets::gallery_settings());
+                    self.surfaces.insert(id, Surface::WidgetGallery);
+                    self.gallery_id = Some(id);
+                    return open;
+                }
+            }
+            Action::Done => {
+                self.widgets.editing = false;
+                if let Some(id) = self.gallery_id {
+                    return iced_runtime::window::close(id);
+                }
+            }
+        }
+        Task::none()
+    }
+
+    fn choose_widget_photo(&self, id: u64) -> Task<Message> {
+        Task::perform(portal::choose_image(), move |path| {
+            Message::WidgetPhotoChosen(id, path)
+        })
+    }
+
+    /// Reads the photos that widgets show and haven't been read yet.
+    fn load_widget_photos(&self) -> Task<Message> {
+        Task::batch(self.widgets.photos_to_load().into_iter().map(|path| {
+            let reading = path.clone();
+            Task::perform(widgets::load_photo(reading), move |picture| {
+                Message::WidgetPhotoLoaded(path.clone(), picture)
+            })
+        }))
     }
 
     /// Closes the open popup, if any. Its state is cleaned up once the surface is gone.
@@ -2315,7 +2484,7 @@ impl Shell {
                         .apps
                         .themed_icon("user-trash-full")
                         .map_or(alert::Icon::None, alert::Icon::Image),
-                    password: None,
+                    field: None,
                 };
                 return self.open_alert(alert);
             }
@@ -2399,8 +2568,13 @@ impl Shell {
                 Some(handle) => wallpaper::view(handle),
                 None => Space::new().into(),
             },
-            Some(Surface::Desktop) => {
-                desktop::view(&self.desktop, self.focused_app.is_none(), Vec::new())
+            Some(Surface::Desktop) => desktop::view(
+                &self.desktop,
+                self.focused_app.is_none(),
+                self.widgets.layers(),
+            ),
+            Some(Surface::WidgetGallery) => {
+                widgets::gallery(&self.widgets, self.material.as_ref().map(|m| m.kind()))
             }
             Some(Surface::MenuBar) => menubar::view(&self.bar()),
             Some(Surface::Dock) => dock::view(
@@ -2519,6 +2693,7 @@ impl Shell {
             network::secret_agent().map(Message::WifiAgent),
             time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),
             time::every(Duration::from_secs(2)).map(|_| Message::DesktopRefresh),
+            time::every(widgets::WEATHER_INTERVAL).map(|_| Message::FetchWeather),
             tray::items().map(Message::TrayItems),
             launcher::updates().map(Message::LauncherUpdate),
             app_menu,

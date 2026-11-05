@@ -41,8 +41,8 @@ pub struct Alert {
     /// What confirming does.
     pub on_confirm: Message,
     pub icon: Icon,
-    /// A password to ask for, for an alert about getting on a network.
-    pub password: Option<Password>,
+    /// Something to type in, like a network's password.
+    pub field: Option<Field>,
 }
 
 pub enum Icon {
@@ -51,29 +51,38 @@ pub enum Icon {
     Glyph(Glyph),
 }
 
-pub struct Password {
-    /// Which of NetworkManager's requests it answers.
-    pub request: u64,
+/// What an alert's field is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// A network's password, for one of NetworkManager's requests.
+    Password(u64),
+    /// Where the weather widget should look.
+    City,
+}
+
+pub struct Field {
+    pub purpose: Purpose,
     pub value: String,
+    /// Whether what's typed shows. A password can choose.
     pub visible: bool,
     pub min_length: usize,
 }
 
-impl Password {
+impl Field {
     pub fn is_acceptable(&self) -> bool {
-        self.value.chars().count() >= self.min_length
+        self.value.trim().chars().count() >= self.min_length
     }
 }
 
 impl Alert {
     /// Whether it can be confirmed yet.
     pub fn can_confirm(&self) -> bool {
-        self.password.as_ref().is_none_or(Password::is_acceptable)
+        self.field.as_ref().is_none_or(Field::is_acceptable)
     }
 
     /// The widget to give the keyboard when it opens.
     pub fn field_id() -> iced_widget::Id {
-        iced_widget::Id::new("alert-password")
+        iced_widget::Id::new("alert-field")
     }
 }
 
@@ -88,9 +97,12 @@ fn height(alert: &Alert) -> f32 {
         + TITLE_GAP
         + lines(&alert.detail, fonts::REGULAR)
         + alert
-            .password
+            .field
             .as_ref()
-            .map_or(0.0, |_| FIELD_GAP + FIELD_HEIGHT + SHOW_GAP + SHOW_HEIGHT)
+            .map_or(0.0, |field| match field.purpose {
+                Purpose::Password(_) => FIELD_GAP + FIELD_HEIGHT + SHOW_GAP + SHOW_HEIGHT,
+                Purpose::City => FIELD_GAP + FIELD_HEIGHT,
+            })
         + BUTTONS_GAP
         + BUTTON_HEIGHT
         + PADDING_BOTTOM
@@ -123,8 +135,8 @@ pub fn view(alert: &Alert, active: bool, material: Option<material::Kind>) -> El
         Icon::Glyph(glyph) => icons::icon(*glyph, ICON_SIZE, Color::WHITE),
         Icon::None => Space::new().height(ICON_SIZE).into(),
     };
-    let password: Element<'_> = match &alert.password {
-        Some(password) => password_view(password),
+    let field: Element<'_> = match &alert.field {
+        Some(field) => field_view(field),
         None => Space::new().into(),
     };
 
@@ -141,7 +153,7 @@ pub fn view(alert: &Alert, active: bool, material: Option<material::Kind>) -> El
             .size(TEXT_SIZE)
             .line_height(LineHeight::Absolute(LINE_HEIGHT.into()))
             .color(Color::from_rgba(1.0, 1.0, 1.0, 0.85)),
-        password,
+        field,
         Space::new().height(BUTTONS_GAP),
         row![
             alert_button("Cancel", Some(Message::AlertAnswered(false)), false),
@@ -171,11 +183,15 @@ pub fn view(alert: &Alert, active: bool, material: Option<material::Kind>) -> El
     mouse_area(content).on_press(Message::AlertDragged).into()
 }
 
-fn password_view(password: &Password) -> Element<'_> {
-    let field = text_input("Password", &password.value)
+fn field_view(field: &Field) -> Element<'_> {
+    let placeholder = match field.purpose {
+        Purpose::Password(_) => "Password",
+        Purpose::City => "City",
+    };
+    let input = text_input(placeholder, &field.value)
         .id(Alert::field_id())
-        .secure(!password.visible)
-        .on_input(Message::AlertPasswordChanged)
+        .secure(!field.visible)
+        .on_input(Message::AlertFieldChanged)
         .size(TEXT_SIZE)
         .line_height(LineHeight::Absolute(LINE_HEIGHT.into()))
         .padding([(FIELD_HEIGHT - LINE_HEIGHT - 2.0) / 2.0, 9.0])
@@ -199,7 +215,11 @@ fn password_view(password: &Password) -> Element<'_> {
             }
         });
 
-    let visible = password.visible;
+    if field.purpose == Purpose::City {
+        return column![Space::new().height(FIELD_GAP), input].into();
+    }
+
+    let visible = field.visible;
     let tick: Element<'_> = if visible {
         icons::icon(Glyph::Check, BOX_SIZE - 3.0, Color::WHITE)
     } else {
@@ -231,11 +251,11 @@ fn password_view(password: &Password) -> Element<'_> {
         .spacing(7)
         .align_y(iced_widget::core::Alignment::Center),
     )
-    .on_press(Message::AlertPasswordShown(!visible));
+    .on_press(Message::AlertFieldShown(!visible));
 
     column![
         Space::new().height(FIELD_GAP),
-        field,
+        input,
         Space::new().height(SHOW_GAP),
         show,
     ]
