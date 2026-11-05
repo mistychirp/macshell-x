@@ -29,8 +29,9 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appmenu, audio, autostart, bluetooth, brightness, control, dbusmenu, dock, fonts, icons,
-    launcher, media, menu, menubar, network, notification_center, stack, tray, wallpaper,
+    appmenu, audio, autostart, bluetooth, brightness, control, dbusmenu, desktop, dock, fonts,
+    icons, launcher, media, menu, menubar, network, notification_center, portal, stack, tray,
+    wallpaper,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -68,6 +69,8 @@ pub fn run() -> Result<(), iced_layershell::Error> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Surface {
     Wallpaper,
+    /// The icons and widgets above the wallpaper.
+    Desktop,
     MenuBar,
     Dock,
     Popup,
@@ -130,6 +133,11 @@ pub enum Message {
     DockFrame(Instant),
     SurfaceOpened(IcedId, Size),
     SurfaceResized(IcedId, Size),
+    /// An icon finished loading.
+    IconLoaded(
+        iced_widget::core::image::Id,
+        Result<iced_runtime::image::Allocation, iced_runtime::image::Error>,
+    ),
     /// The wallpaper finished uploading to the GPU.
     WallpaperLoaded(Result<iced_runtime::image::Allocation, iced_runtime::image::Error>),
     /// A surface's `wl_surface`, if it could be reached, to put material behind.
@@ -159,6 +167,17 @@ pub enum Message {
     PlaceMenuRequested(Place),
     /// The alert was answered: confirmed, or cancelled.
     AlertAnswered(bool),
+    Desktop(desktop::Action),
+    DesktopPressed,
+    DesktopRightPressed,
+    DesktopRefresh,
+    DesktopListed(Vec<desktop::Entry>),
+    DesktopThumbnail(PathBuf, Option<image::Handle>),
+    DesktopRenameChanged(String),
+    /// Ctrl or Shift are held, or not.
+    AddingModifiers(bool),
+    /// A new wallpaper was picked, if one was.
+    WallpaperChosen(Option<PathBuf>),
     /// The alert was pressed where there's no button.
     AlertDragged,
     AlertPasswordChanged(String),
@@ -266,6 +285,10 @@ struct Shell {
     /// Keeps the wallpaper on the GPU. Big images upload in the background and draw as nothing
     /// until they're ready, and the wallpaper doesn't otherwise redraw to catch up.
     wallpaper_loaded: Option<iced_runtime::image::Allocation>,
+    desktop_id: IcedId,
+    desktop: desktop::Desktop,
+    /// Keeps icons on the GPU once they've loaded.
+    loaded_icons: HashMap<iced_widget::core::image::Id, Option<iced_runtime::image::Allocation>>,
     apps: AppIndex,
     pinned: Vec<String>,
     /// The app of the focused window.
@@ -421,6 +444,7 @@ impl Shell {
             dock::ICON_SIZE
         };
         let (dock_id, open_dock) = Message::layershell_open(dock::settings(dock_max_icon));
+        let (desktop_id, open_desktop) = Message::layershell_open(desktop::settings());
 
         let file_manager = config
             .file_manager
@@ -441,6 +465,9 @@ impl Shell {
             surfaces: HashMap::from([(menubar_id, Surface::MenuBar), (dock_id, Surface::Dock)]),
             surface_contents: HashMap::new(),
             wallpaper_loaded: None,
+            desktop_id,
+            desktop: desktop::Desktop::load(),
+            loaded_icons: HashMap::new(),
             wallpaper: config
                 .desktop
                 .wallpaper
@@ -526,6 +553,8 @@ impl Shell {
             shell.surfaces.insert(id, Surface::Wallpaper);
             opening.push(open);
         }
+        shell.surfaces.insert(desktop_id, Surface::Desktop);
+        opening.push(open_desktop);
 
         (shell, Task::batch(opening))
     }
@@ -534,7 +563,33 @@ impl Shell {
         let task = self.apply(message);
         self.update_panel_shapes();
         self.mark_changed_surfaces();
-        task
+        match self.load_new_icons() {
+            Some(loading) => Task::batch([task, loading]),
+            None => task,
+        }
+    }
+
+    /// Images load in the background and draw as nothing until they're ready, and the surfaces
+    /// that show icons only redraw when something changes. So icons are loaded here first, and those
+    /// surfaces redraw when one is ready. Without this, an icon can stay blank until it's hovered.
+    fn load_new_icons(&mut self) -> Option<Task<Message>> {
+        let new: Vec<image::Handle> = self
+            .dock
+            .iter()
+            .filter_map(|item| item.app.icon.as_ref())
+            .chain(self.place_icons.iter().flatten())
+            .chain(self.desktop.icons())
+            .filter(|handle| !self.loaded_icons.contains_key(&handle.id()))
+            .cloned()
+            .collect();
+        if new.is_empty() {
+            return None;
+        }
+        Some(Task::batch(new.into_iter().map(|handle| {
+            let id = handle.id();
+            self.loaded_icons.insert(id, None);
+            iced_runtime::image::allocate(handle).map(move |loaded| Message::IconLoaded(id, loaded))
+        })))
     }
 
     /// Asks for a redraw of the surfaces whose content changed, so that a clock tick doesn't
@@ -547,6 +602,7 @@ impl Shell {
         for (&id, &surface) in &self.surfaces {
             let content = match surface {
                 Surface::Wallpaper => self.wallpaper_loaded.is_some().to_string(),
+                Surface::Desktop => self.desktop.content_key(self.focused_app.is_none()),
                 Surface::MenuBar => format!("{:?}", self.bar()),
                 Surface::Dock => {
                     format!(
@@ -644,7 +700,7 @@ impl Shell {
                 // The surfaces of these panels are mostly empty.
                 if matches!(
                     self.surfaces.get(&id),
-                    Some(Surface::Wallpaper | Surface::MenuBar | Surface::Dock)
+                    Some(Surface::Wallpaper | Surface::Desktop | Surface::MenuBar | Surface::Dock)
                 ) || (panel_open && self.surfaces.get(&id) == Some(&Surface::Popup))
                 {
                     return self.close_popup();
@@ -864,6 +920,101 @@ impl Shell {
                 }
                 return relayout;
             }
+            Message::SurfaceOpened(id, size) | Message::SurfaceResized(id, size)
+                if id == self.desktop_id =>
+            {
+                self.screen_height = size.height;
+                self.desktop.set_size(size);
+                return Task::done(Message::DesktopRefresh);
+            }
+            Message::DesktopRefresh => {
+                return Task::perform(desktop::list(self.desktop.folder()), Message::DesktopListed);
+            }
+            Message::DesktopListed(entries) => {
+                let apps = &mut self.apps;
+                let wanted = self.desktop.merge(entries, |entry| {
+                    apps.themed_icon(places::icon_name(&places::Download {
+                        path: entry.path.clone(),
+                        name: entry.name.clone(),
+                        is_dir: entry.is_dir,
+                    }))
+                });
+                let thumbnails = Task::batch(wanted.into_iter().map(|path| {
+                    let reading = path.clone();
+                    Task::perform(desktop::thumbnail(reading), move |thumbnail| {
+                        Message::DesktopThumbnail(path.clone(), thumbnail)
+                    })
+                }));
+                if self.desktop.take_rename_focus() {
+                    let field = desktop::rename_field();
+                    let focus = iced_runtime::widget::operation::focus(field.clone());
+                    let select = iced_runtime::widget::operation::select_all(field);
+                    return Task::batch([thumbnails, focus.chain(select)]);
+                }
+                return thumbnails;
+            }
+            Message::DesktopThumbnail(path, Some(thumbnail)) => {
+                self.desktop.set_thumbnail(&path, thumbnail);
+            }
+            Message::DesktopThumbnail(_, None) => {}
+            Message::PointerMoved(id, point) if id == self.desktop_id => {
+                self.desktop.pointer_moved(point);
+            }
+            Message::PointerReleased(id) if id == self.desktop_id => self.desktop.released(),
+            Message::AddingModifiers(adding) => self.desktop.adding = adding,
+            Message::DesktopPressed => {
+                // A click that closes a menu doesn't do anything else.
+                if self.popup.is_some() {
+                    return self.close_popup();
+                }
+                let finished_rename = self.finish_desktop_rename();
+                return match self.desktop.pressed() {
+                    desktop::Pressed::Open => {
+                        self.open_desktop_selection();
+                        finished_rename
+                    }
+                    desktop::Pressed::Nothing => finished_rename,
+                };
+            }
+            Message::DesktopRightPressed => {
+                let finished_rename = self.finish_desktop_rename();
+                let entries = self.desktop.context_menu();
+                let size = menu::size(&entries);
+                let (x, y) = self.desktop.pointer();
+                let settings = IcedNewPopupSettings::new(self.desktop_id, size, (x, y, 1, 1))
+                    .anchor(PopupAnchor::BottomRight)
+                    .gravity(PopupGravity::BottomRight);
+                let open = self.open_popup(None, settings, PopupContent::Menu(entries), 0.0, None);
+                return Task::batch([finished_rename, open]);
+            }
+            Message::Desktop(action) => {
+                let close = self.close_popup();
+                return Task::batch([close, self.run_desktop_action(action)]);
+            }
+            Message::DesktopRenameChanged(value) => {
+                if let Some(rename) = &mut self.desktop.rename {
+                    rename.value = value;
+                }
+            }
+            Message::WallpaperChosen(None) => {}
+            Message::WallpaperChosen(Some(path)) => {
+                if let Err(err) = config::save_wallpaper(&path) {
+                    log::warn!("can't save the wallpaper: {err}");
+                }
+                let handle = image::Handle::from_path(path);
+                self.wallpaper = Some(handle.clone());
+                self.wallpaper_loaded = None;
+                if self
+                    .surfaces
+                    .values()
+                    .any(|surface| *surface == Surface::Wallpaper)
+                {
+                    return iced_runtime::image::allocate(handle).map(Message::WallpaperLoaded);
+                }
+                let (id, open) = Message::layershell_open(wallpaper::settings());
+                self.surfaces.insert(id, Surface::Wallpaper);
+                return open;
+            }
             Message::SurfaceOpened(id, size)
                 if self.surfaces.get(&id) == Some(&Surface::Wallpaper) =>
             {
@@ -872,6 +1023,16 @@ impl Shell {
                     return iced_runtime::image::allocate(handle.clone())
                         .map(Message::WallpaperLoaded);
                 }
+            }
+            Message::IconLoaded(id, loaded) => {
+                match loaded {
+                    Ok(allocation) => {
+                        self.loaded_icons.insert(id, Some(allocation));
+                    }
+                    Err(err) => log::warn!("can't load an icon: {err}"),
+                }
+                iced_layershell::redraw::mark_changed(self.dock_id);
+                iced_layershell::redraw::mark_changed(self.desktop_id);
             }
             Message::WallpaperLoaded(Ok(allocation)) => self.wallpaper_loaded = Some(allocation),
             Message::WallpaperLoaded(Err(err)) => log::error!("can't load the wallpaper: {err}"),
@@ -1017,6 +1178,19 @@ impl Shell {
             Message::ReturnOrEscape(confirmed) => {
                 if self.alert.as_ref().is_some_and(|open| open.active) {
                     return Task::done(Message::AlertAnswered(confirmed));
+                }
+                if self.desktop.rename.is_some() {
+                    if !confirmed {
+                        self.desktop.rename = None;
+                    }
+                    return self.finish_desktop_rename();
+                }
+                // Return renames what's selected, like on macOS.
+                if confirmed
+                    && self.focused_app.is_none()
+                    && let [path] = self.desktop.selection().as_slice()
+                {
+                    return self.start_desktop_rename(path.clone());
                 }
             }
             Message::SurfaceOpened(id, _) if self.alert.as_ref().is_some_and(|a| a.id == id) => {
@@ -1648,7 +1822,7 @@ impl Shell {
                 self.banners_material = Some(target);
             }
             // Closed before it could be reached, or not a surface with material.
-            Some(Surface::Wallpaper) | None => target.destroy(),
+            Some(Surface::Wallpaper | Surface::Desktop) | None => target.destroy(),
         }
     }
 
@@ -1852,6 +2026,73 @@ impl Shell {
                 min_length: request.min_length,
             }),
         })
+    }
+
+    fn start_desktop_rename(&mut self, path: PathBuf) -> Task<Message> {
+        self.desktop.start_rename(path);
+        iced_layershell::toplevel::set_keyboard_target(Some(self.desktop_id));
+        // Its field is there once this update has been drawn.
+        Task::done(Message::DesktopRefresh)
+    }
+
+    /// Gives the keyboard back, keeping the new name if there's one.
+    fn finish_desktop_rename(&mut self) -> Task<Message> {
+        self.desktop.commit_rename();
+        if self.alert.is_none() {
+            iced_layershell::toplevel::set_keyboard_target(None);
+        }
+        Task::done(Message::DesktopRefresh)
+    }
+
+    fn open_desktop_selection(&self) {
+        for path in self.desktop.selection() {
+            apps::spawn(vec![
+                String::from("xdg-open"),
+                path.to_string_lossy().into_owned(),
+            ]);
+        }
+    }
+
+    fn run_desktop_action(&mut self, action: desktop::Action) -> Task<Message> {
+        use desktop::Action;
+        match action {
+            Action::NewFolder => match desktop::new_folder(&self.desktop.folder()) {
+                Ok(path) => {
+                    self.desktop.select_only(path.clone());
+                    return self.start_desktop_rename(path);
+                }
+                Err(err) => log::warn!("can't make a new folder: {err}"),
+            },
+            Action::Open => self.open_desktop_selection(),
+            Action::Rename => {
+                if let [path] = self.desktop.selection().as_slice() {
+                    return self.start_desktop_rename(path.clone());
+                }
+            }
+            Action::MoveToTrash => {
+                for path in self.desktop.selection() {
+                    if let Err(err) = places::move_to_trash(&path) {
+                        log::warn!("can't move {} to the trash: {err}", path.display());
+                    }
+                }
+                return Task::done(Message::DesktopRefresh);
+            }
+            Action::GetInfo => {
+                let mut paths = self.desktop.selection();
+                if paths.is_empty() {
+                    paths.push(self.desktop.folder());
+                }
+                return Task::future(desktop::get_info(paths)).discard();
+            }
+            Action::ChangeWallpaper => {
+                return Task::perform(portal::choose_image(), Message::WallpaperChosen);
+            }
+            Action::EditWidgets => {}
+            Action::SortBy(sort) => self.desktop.set_sort(sort),
+            Action::CleanUp => self.desktop.clean_up_action(None),
+            Action::CleanUpBy(sort) => self.desktop.clean_up_action(Some(sort)),
+        }
+        Task::none()
     }
 
     fn alert_password(&mut self) -> Option<&mut alert::Password> {
@@ -2158,6 +2399,9 @@ impl Shell {
                 Some(handle) => wallpaper::view(handle),
                 None => Space::new().into(),
             },
+            Some(Surface::Desktop) => {
+                desktop::view(&self.desktop, self.focused_app.is_none(), Vec::new())
+            }
             Some(Surface::MenuBar) => menubar::view(&self.bar()),
             Some(Surface::Dock) => dock::view(
                 &self.dock,
@@ -2274,6 +2518,7 @@ impl Shell {
             notifications::events().map(Message::Notification),
             network::secret_agent().map(Message::WifiAgent),
             time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),
+            time::every(Duration::from_secs(2)).map(|_| Message::DesktopRefresh),
             tray::items().map(Message::TrayItems),
             launcher::updates().map(Message::LauncherUpdate),
             app_menu,
@@ -2291,6 +2536,9 @@ impl Shell {
                     Some(Message::SurfaceResized(id, size))
                 }
                 Event::Window(window::Event::Closed) => Some(Message::SurfaceClosed(id)),
+                Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => Some(
+                    Message::AddingModifiers(modifiers.control() || modifiers.shift()),
+                ),
                 Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(key),
                     ..

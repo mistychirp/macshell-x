@@ -1,5 +1,6 @@
 //! The dock's places on the right: the Downloads folder and the Trash.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use std::{env, fs, io};
@@ -31,24 +32,67 @@ pub struct Download {
 
 /// The Downloads folder from the XDG user dirs, or `~/Downloads`.
 pub fn downloads_dir() -> PathBuf {
-    let home = home();
-    let user_dirs = config_home().join("user-dirs.dirs");
-    if let Ok(text) = fs::read_to_string(user_dirs) {
-        for line in text.lines() {
-            let Some(value) = line.trim().strip_prefix("XDG_DOWNLOAD_DIR=") else {
-                continue;
-            };
-            let value = value.trim_matches('"');
-            let path = match value.strip_prefix("$HOME") {
-                Some(rest) => home.join(rest.trim_start_matches('/')),
-                None => PathBuf::from(value),
-            };
-            if path.is_absolute() {
-                return path;
-            }
+    user_dir("XDG_DOWNLOAD_DIR").unwrap_or_else(|| home().join("Downloads"))
+}
+
+/// One of the folders in XDG's `user-dirs.dirs`, like `XDG_DESKTOP_DIR`.
+pub fn user_dir(key: &str) -> Option<PathBuf> {
+    let text = fs::read_to_string(config_home().join("user-dirs.dirs")).ok()?;
+    for line in text.lines() {
+        let Some(value) = line
+            .trim()
+            .strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix('='))
+        else {
+            continue;
+        };
+        let value = value.trim_matches('"');
+        let path = match value.strip_prefix("$HOME") {
+            Some(rest) => home().join(rest.trim_start_matches('/')),
+            None => PathBuf::from(value),
+        };
+        if path.is_absolute() {
+            return Some(path);
         }
     }
-    home.join("Downloads")
+    None
+}
+
+/// Moves a file or folder to the trash, per the freedesktop trash spec, so it can be restored.
+pub fn move_to_trash(path: &Path) -> io::Result<()> {
+    let trash = trash_dir();
+    let files = trash.join("files");
+    let info = trash.join("info");
+    fs::create_dir_all(&files)?;
+    fs::create_dir_all(&info)?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("it has no name"))?
+        .to_string_lossy()
+        .into_owned();
+    let date = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
+    // The info file claims the name, atomically, before the file itself goes there.
+    for number in 1u32.. {
+        let unique = if number == 1 {
+            name.clone()
+        } else {
+            format!("{name}.{number}")
+        };
+        let info_path = info.join(format!("{unique}.trashinfo"));
+        let mut claim = match fs::File::create_new(&info_path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        };
+        let original = file_uri(path);
+        let encoded = original.strip_prefix("file://").unwrap_or(&original);
+        claim
+            .write_all(format!("[Trash Info]\nPath={encoded}\nDeletionDate={date}\n").as_bytes())?;
+        return fs::rename(path, files.join(&unique)).inspect_err(|_| {
+            let _ = fs::remove_file(&info_path);
+        });
+    }
+    unreachable!("there's always another number")
 }
 
 /// The newest entries in `dir`, newest first, without hidden files or unfinished downloads.
@@ -166,7 +210,7 @@ pub fn file_uri(path: &Path) -> String {
     uri
 }
 
-fn home() -> PathBuf {
+pub fn home() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 

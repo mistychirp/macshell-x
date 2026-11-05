@@ -37,6 +37,15 @@ pub enum Glyph {
     Window,
     /// Where sound goes: a screen with sound coming from it, like AirPlay's.
     Outputs,
+    /// A folder with a plus, for making one.
+    NewFolder,
+    /// An i in a circle.
+    Info,
+    /// Arrows up and down, for sorting.
+    Sort,
+    /// Dots in rows, for tidying up.
+    Grid,
+    Trash,
     /// Angle brackets around dots: a wired network, like macOS's.
     Ethernet,
     /// For a ticked box.
@@ -154,6 +163,39 @@ impl Glyph {
                 r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>
                 <path d="M7 10.5a1 1 0 0 1 1-1h1.5l1-1.5h3l1 1.5H16a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1z" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::NewFolder => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+                <path d="M3 18V7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <path d="M12 11v5.5M9.2 13.75h5.6"/>
+                </svg>"##
+            }
+            Glyph::Info => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round">
+                <circle cx="12" cy="12" r="9"/>
+                <path d="M12 11v5.6" stroke-width="2.1"/>
+                <circle cx="12" cy="7.8" r="1.25" fill="#000" stroke="none"/>
+                </svg>"##
+            }
+            Glyph::Sort => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 19.5V4.5M3.5 9 8 4.5 12.5 9"/>
+                <path d="M16 4.5v15M11.5 15l4.5 4.5 4.5-4.5"/>
+                </svg>"##
+            }
+            Glyph::Grid => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <rect x="3.5" y="4" width="4.6" height="4.6" rx="1"/><rect x="9.7" y="4" width="4.6" height="4.6" rx="1"/><rect x="15.9" y="4" width="4.6" height="4.6" rx="1"/>
+                <rect x="3.5" y="9.7" width="4.6" height="4.6" rx="1"/><rect x="9.7" y="9.7" width="4.6" height="4.6" rx="1"/><rect x="15.9" y="9.7" width="4.6" height="4.6" rx="1"/>
+                <rect x="3.5" y="15.4" width="4.6" height="4.6" rx="1"/><rect x="9.7" y="15.4" width="4.6" height="4.6" rx="1"/><rect x="15.9" y="15.4" width="4.6" height="4.6" rx="1"/>
+                </svg>"##
+            }
+            Glyph::Trash => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 6.5h16M9 6.5V4.8a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1.7"/>
+                <path d="M6 6.5l1 13a1.5 1.5 0 0 0 1.5 1.4h7a1.5 1.5 0 0 0 1.5-1.4l1-13"/>
+                <path d="M10 10.5v6.5M14 10.5v6.5"/>
                 </svg>"##
             }
             Glyph::Ethernet => {

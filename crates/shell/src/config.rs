@@ -54,6 +54,25 @@ pub struct MenuBarConfig {
 
 /// Rewrites `[dock] pinned` in the config file, keeping the rest of it (comments included).
 pub fn save_pinned(pinned: &[String]) -> io::Result<()> {
+    edit(|doc| {
+        if !doc.contains_table("dock") {
+            doc["dock"] = toml_edit::table();
+        }
+        doc["dock"]["pinned"] = toml_edit::value(pinned.iter().collect::<toml_edit::Array>());
+    })
+}
+
+/// Rewrites `[desktop] wallpaper` in the config file, the same way.
+pub fn save_wallpaper(wallpaper: &std::path::Path) -> io::Result<()> {
+    edit(|doc| {
+        if !doc.contains_table("desktop") {
+            doc["desktop"] = toml_edit::table();
+        }
+        doc["desktop"]["wallpaper"] = toml_edit::value(wallpaper.to_string_lossy().as_ref());
+    })
+}
+
+fn edit(change: impl FnOnce(&mut toml_edit::DocumentMut)) -> io::Result<()> {
     let path = config_path().ok_or_else(|| io::Error::other("no config directory"))?;
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -62,10 +81,7 @@ pub fn save_pinned(pinned: &[String]) -> io::Result<()> {
     };
 
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(io::Error::other)?;
-    if !doc.contains_table("dock") {
-        doc["dock"] = toml_edit::table();
-    }
-    doc["dock"]["pinned"] = toml_edit::value(pinned.iter().collect::<toml_edit::Array>());
+    change(&mut doc);
 
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
