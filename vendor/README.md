@@ -33,6 +33,11 @@ Patch: map cursors the way the shell wants them (`mouse_interaction` in `src/con
 and grab cursors of iced's buttons, sliders and mouse areas stay the arrow, like on macOS, and `Idle`
 is the arrow rather than upstream's busy cursor.
 
+Patch: make ordinary windows usable (`src/toplevel.rs`, `src/actions.rs`, `src/multi_window.rs`).
+`IcedXdgWindowSettings` gains an app ID, a title and a fixed size, applied before the window's first
+buffer, and `window::Action::Drag` starts an interactive move. Upstream drops that action.
+`layershellev` keeps its seat private, so the application hands one in with `toplevel::set_seat`.
+
 The first commit that adds this directory contains the pristine 0.19.1 sources, so
 `git diff <that commit> -- vendor/iced_layershell` shows the patch. Drop the vendored copy
 once upstream ships the fix.

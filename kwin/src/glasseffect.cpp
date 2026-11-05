@@ -5,6 +5,7 @@
 */
 
 #include "glasseffect.h"
+#include "window.h"
 #include "glassmanager.h"
 
 #include "core/rendertarget.h"
@@ -31,6 +32,14 @@ using namespace KWin;
 
 namespace Macshell
 {
+
+/// The app ID of the shell's dialogs, which the window manager places and keeps on top.
+static constexpr QLatin1StringView s_dialogAppId("macshell-alert");
+
+static bool isDialog(Style style)
+{
+    return style == Style::Window || style == Style::WindowInactive;
+}
 
 /// Brightness probes downsample the background to this many pixels before reading it back.
 static constexpr QSize s_probeSize(32, 4);
@@ -80,6 +89,7 @@ GlassEffect::GlassEffect()
     });
 
     // Glass can arrive before its window maps, and windows can go without dropping it.
+    connect(effects, &EffectsHandler::windowAdded, this, &GlassEffect::placeDialog);
     connect(effects, &EffectsHandler::windowAdded, this, &GlassEffect::updateWindow);
     connect(effects, &EffectsHandler::windowClosed, this, [this](EffectWindow *w) {
         if (auto it = m_windows.find(w); it != m_windows.end()) {
@@ -123,6 +133,8 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     const GlassSettings defaults;
     m_settings.blurPasses = std::clamp(group.readEntry("BlurPasses", defaults.blurPasses), 1, 4);
     m_settings.blurOffset = group.readEntry("BlurOffset", defaults.blurOffset);
+    m_settings.frostPasses = std::clamp(group.readEntry("FrostPasses", defaults.frostPasses), 1, 5);
+    m_settings.frostOffset = group.readEntry("FrostOffset", defaults.frostOffset);
     m_settings.lensStrength = group.readEntry("LensStrength", defaults.lensStrength);
     m_settings.lensRadius = group.readEntry("LensRadius", defaults.lensRadius);
     m_settings.frostSaturation = group.readEntry("FrostSaturation", defaults.frostSaturation);
@@ -133,14 +145,49 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.liquidSaturation = group.readEntry("LiquidSaturation", defaults.liquidSaturation);
     m_settings.liquidEdgeFade = group.readEntry("LiquidEdgeFade", defaults.liquidEdgeFade);
     m_settings.liquidEdgeGain = group.readEntry("LiquidEdgeGain", defaults.liquidEdgeGain);
-    m_settings.controlBrightness = group.readEntry("ControlBrightness", defaults.controlBrightness);
+    m_settings.controlTint = group.readEntry("ControlTint", defaults.controlTint);
+    m_settings.controlTintGrey = group.readEntry("ControlTintGrey", defaults.controlTintGrey);
     m_settings.controlSaturation = group.readEntry("ControlSaturation", defaults.controlSaturation);
+    m_settings.controlLensStrength = group.readEntry("ControlLensStrength", defaults.controlLensStrength);
+    m_settings.controlLensRadius = group.readEntry("ControlLensRadius", defaults.controlLensRadius);
     m_settings.controlRim = group.readEntry("ControlRim", defaults.controlRim);
+    m_settings.backdropBrightness = group.readEntry("BackdropBrightness", defaults.backdropBrightness);
+    m_settings.inactiveTint = group.readEntry("InactiveTint", defaults.inactiveTint);
     m_settings.chipTint = group.readEntry("ChipTint", defaults.chipTint);
     m_settings.chipRim = group.readEntry("ChipRim", defaults.chipRim);
     m_settings.bubbleTint = group.readEntry("BubbleTint", defaults.bubbleTint);
     m_settings.bubbleEdgeGain = group.readEntry("BubbleEdgeGain", defaults.bubbleEdgeGain);
     effects->addRepaintFull();
+}
+
+void GlassEffect::placeDialog(EffectWindow *w)
+{
+    if (!w->windowClass().contains(s_dialogAppId, Qt::CaseInsensitive)) {
+        return;
+    }
+    // Clients can't place their windows or keep them on top. A dialog has no business being lost
+    // behind others or listed among the apps.
+    Window *window = w->window();
+    window->setKeepAbove(true);
+    window->setSkipTaskbar(true);
+    window->setSkipSwitcher(true);
+    window->setSkipPager(true);
+    const RectF area = effects->clientArea(MaximizeArea, effects->activeScreen());
+    window->move(area.center() - QPointF(w->width(), w->height()) / 2);
+}
+
+void GlassEffect::windowMoved(EffectWindow *w, const RectF &oldGeometry)
+{
+    auto it = m_windows.find(w);
+    if (it == m_windows.end() || it->second.lastBounds.isEmpty()) {
+        return;
+    }
+    const QPointF moved = w->frameGeometry().topLeft() - oldGeometry.topLeft();
+    const Rect before = it->second.lastBounds;
+    const Rect after = RectF(before).translated(moved).roundedOut();
+    it->second.lastBounds = after;
+    const Rect touched = before | after;
+    effects->addRepaint(Rect(touched.x() - s_edgeRepaint, touched.y() - s_edgeRepaint, touched.width() + 2 * s_edgeRepaint, touched.height() + 2 * s_edgeRepaint));
 }
 
 void GlassEffect::updateWindow(EffectWindow *w)
@@ -179,18 +226,25 @@ void GlassEffect::updateWindow(EffectWindow *w)
     // Shapes are surface-local; the scene item wants frame-local.
     const QPointF offset = w->bufferGeometry().topLeft() - w->frameGeometry().topLeft();
     RectF bounds;
+    int passes = m_settings.blurPasses;
+    float blurOffset = m_settings.blurOffset;
     for (const Shape &shape : glass->shapes()) {
         bounds |= RectF(Rect(shape.rect)).translated(offset);
+        if (shape.style == Style::Frosted || isDialog(shape.style)) {
+            passes = m_settings.frostPasses;
+            blurOffset = m_settings.frostOffset;
+        }
     }
 
     WindowGlass &data = m_windows[w];
     data.shapes = glass->shapes();
     if (!data.item) {
         data.item = std::make_unique<BackgroundEffectItem>(w->windowItem());
+        connect(w, &EffectWindow::windowFrameGeometryChanged, this, &GlassEffect::windowMoved, Qt::UniqueConnection);
     }
     // The lens and the blur read the background well away from each pixel, so repaints under the
     // glass have to reach that far.
-    const int blurReach = m_settings.blurOffset * (1 << m_settings.blurPasses) * 2;
+    const int blurReach = blurOffset * (1 << passes) * 2;
     data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.lensStrength * 2) + blurReach);
     data.item->setEffectBoundingRect(bounds);
     w->addRepaintFull();
@@ -276,7 +330,7 @@ static void uploadQuad(GLVertexBuffer *vbo, const QSize &size)
     }
 }
 
-void GlassEffect::frost(ShapeRender &render)
+void GlassEffect::frost(ShapeRender &render, int passes, float offset)
 {
     // Dual Kawase, as in KWin's blur: halve the background each pass, then double it back up. All
     // the way down, then back up to the first level past the blur's own for the wide blur; then
@@ -290,7 +344,7 @@ void GlassEffect::frost(ShapeRender &render)
 
     ShaderManager::instance()->pushShader(m_downsampleShader.get());
     m_downsampleShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
-    m_downsampleShader->setUniform("offset", m_settings.blurOffset);
+    m_downsampleShader->setUniform("offset", offset);
     for (size_t i = 1; i < render.framebuffers.size(); ++i) {
         GLTexture *read = render.textures[i - 1].get();
         m_downsampleShader->setUniform("halfpixel", QVector2D(0.5 / read->width(), 0.5 / read->height()));
@@ -303,7 +357,7 @@ void GlassEffect::frost(ShapeRender &render)
 
     ShaderManager::instance()->pushShader(m_upsampleShader.get());
     m_upsampleShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
-    m_upsampleShader->setUniform("offset", m_settings.blurOffset);
+    m_upsampleShader->setUniform("offset", offset);
     const auto upsample = [&](size_t from, size_t to) {
         for (size_t i = from; i > to; --i) {
             GLTexture *read = render.textures[i].get();
@@ -314,8 +368,8 @@ void GlassEffect::frost(ShapeRender &render)
             GLFramebuffer::popFramebuffer();
         }
     };
-    upsample(render.framebuffers.size() - 1, m_settings.blurPasses + 1);
-    upsample(m_settings.blurPasses, 1);
+    upsample(render.framebuffers.size() - 1, passes + 1);
+    upsample(passes, 1);
     ShaderManager::instance()->popShader();
 
     vbo->unbindArrays();
@@ -392,10 +446,14 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
             continue;
         }
 
+        const bool frosted = shape.style == Style::Frosted || isDialog(shape.style);
+        const bool control = shape.style == Style::Control;
         ShapeRender &render = renders[i];
-        const bool blurred = shape.style != Style::Clear && shape.style != Style::Transparent;
+        // Controls sit on a backdrop, which has done the blurring for them.
+        const bool blurred = shape.style != Style::Clear && shape.style != Style::Transparent && !control;
+        const int passes = frosted ? m_settings.frostPasses : m_settings.blurPasses;
         // Beyond the blur's own levels: four more halvings for the wide blur.
-        const int wideLevel = m_settings.blurPasses + 1;
+        const int wideLevel = passes + 1;
         const int levels = blurred ? wideLevel + 4 : 1;
         const bool fresh = render.textures.empty() || render.textures[0]->size() != deviceRect.size();
         if (!ensureTextures(render, deviceRect.size(), format, levels)) {
@@ -439,7 +497,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         }
 
         if (blurred) {
-            frost(render);
+            frost(render, passes, frosted ? m_settings.frostOffset : m_settings.blurOffset);
         }
 
         // Draw where the window is being repainted, in device pixels relative to the shape.
@@ -478,29 +536,38 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         QMatrix4x4 projection = viewport.projectionMatrix();
         projection.translate(deviceRect.x(), deviceRect.y());
 
-        const bool frosted = shape.style == Style::Frosted;
         const bool liquid = shape.style == Style::Liquid;
         const bool bubble = shape.style == Style::Bubble;
-        const bool control = shape.style == Style::Control;
         const bool chip = shape.style == Style::Chip;
+        const bool backdrop = shape.style == Style::Backdrop;
         const float saturation = control ? m_settings.controlSaturation : liquid ? m_settings.liquidSaturation : blurred ? m_settings.frostSaturation : 1.0f;
-        const float tintAlpha = frosted || shape.style == Style::Card ? m_settings.frostTint : bubble ? m_settings.bubbleTint : 0.0f;
+        const float tintAlpha = shape.style == Style::WindowInactive ? m_settings.inactiveTint
+            : frosted || shape.style == Style::Card                  ? m_settings.frostTint
+            : bubble                                                 ? m_settings.bubbleTint
+            : control                                                ? m_settings.controlTint
+                                                                     : 0.0f;
         ShaderManager::instance()->pushShader(m_glassShader.get());
         m_glassShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
         m_glassShader->setUniform("geoSize", QVector2D(logical.width(), logical.height()));
         m_glassShader->setUniform("cornerRadius", float(shape.radius * scale));
         m_glassShader->setUniform("deviceScale", float(viewport.scale()));
         m_glassShader->setUniform("wide", 1);
-        m_glassShader->setUniform("lensStrength", frosted || chip ? 0.0f : m_settings.lensStrength);
-        m_glassShader->setUniform("lensRadius", m_settings.lensRadius);
-        m_glassShader->setUniform("brightness", control ? m_settings.controlBrightness : liquid ? m_settings.liquidBrightness : 1.0f);
+        m_glassShader->setUniform("sharp", 2);
+        m_glassShader->setUniform("lensStrength", frosted || chip ? 0.0f : control ? m_settings.controlLensStrength : m_settings.lensStrength);
+        m_glassShader->setUniform("lensRadius", control ? m_settings.controlLensRadius : m_settings.lensRadius);
+        m_glassShader->setUniform("lensMirrors", control ? 1.0f : 0.0f);
+        m_glassShader->setUniform("brightness", backdrop ? m_settings.backdropBrightness : liquid ? m_settings.liquidBrightness : 1.0f);
         m_glassShader->setUniform("colorMatrix", saturationMatrix(saturation));
         // Measured from Tahoe: menus have a dark tint with a hint of purple, under the edge, and its
         // small buttons a light grey one.
-        m_glassShader->setUniform("tint", chip ? QVector4D(0.21, 0.23, 0.27, m_settings.chipTint) : QVector4D(0.09, 0.06, 0.1, tintAlpha));
+        const QVector3D tintColor = chip   ? QVector3D(0.21, 0.23, 0.27)
+            : control                       ? QVector3D(m_settings.controlTintGrey, m_settings.controlTintGrey, m_settings.controlTintGrey)
+                                            : QVector3D(0.09, 0.06, 0.1);
+        m_glassShader->setUniform("tint", QVector4D(tintColor, chip ? m_settings.chipTint : tintAlpha));
         m_glassShader->setUniform("rim", control ? m_settings.controlRim : chip ? m_settings.chipRim : 0.0f);
         m_glassShader->setUniform("rimDirectional", control ? 1.0f : 0.0f);
-        m_glassShader->setUniform("rimInner", control ? 0.33f : 1.0f);
+        m_glassShader->setUniform("rimInner", 1.0f);
+        m_glassShader->setUniform("rimSoft", control ? 1.0f : 0.0f);
         m_glassShader->setUniform("softEdges", shape.softEdges);
         m_glassShader->setUniform("tail", QVector3D(shape.tail.x() * data.xScale(), shape.tail.y() * data.xScale(), shape.tail.z() * data.yScale()));
         m_glassShader->setUniform("edgeFade", frosted ? 0.0f : m_settings.liquidEdgeFade);
@@ -509,6 +576,8 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("outerAlpha", frosted ? m_settings.frostOuterEdge : 0.0f);
         m_glassShader->setUniform("opacity", opacity);
 
+        glActiveTexture(GL_TEXTURE2);
+        render.textures[0]->bind();
         glActiveTexture(GL_TEXTURE1);
         render.textures[blurred ? wideLevel : 0]->bind();
         glActiveTexture(GL_TEXTURE0);
@@ -517,6 +586,8 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         vbo->draw(GL_TRIANGLES, 0, vertexCount);
         glDisable(GL_BLEND);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);

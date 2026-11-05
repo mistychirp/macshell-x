@@ -456,6 +456,9 @@ where
                 .get_binding()
                 .copied()
                 .unwrap_or_else(IcedId::unique);
+            if let Some(toplevel) = wrapper.toplevel.as_ref() {
+                crate::toplevel::apply(iced_id, toplevel);
+            }
 
             let is_first = self.window_manager.is_empty();
 
@@ -817,6 +820,7 @@ where
                 id: iced_id,
                 ..
             } => {
+                crate::toplevel::remember(iced_id, settings);
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewXdgBase((
                     settings.into(),
@@ -1251,6 +1255,14 @@ pub(crate) fn run_action<P, C, E: Executor>(
             WindowAction::Run(id, f) => {
                 if let Some(window) = window_manager.get(id) {
                     f(window.raw.as_ref());
+                }
+            }
+            WindowAction::Drag(id) => {
+                if let Some(window) = window_manager.get(id)
+                    && let Some(toplevel) = window.raw.toplevel.as_ref()
+                    && let Some(serial) = ev.take_popup_grab_serial()
+                {
+                    crate::toplevel::start_move(toplevel, serial);
                 }
             }
             _ => {}

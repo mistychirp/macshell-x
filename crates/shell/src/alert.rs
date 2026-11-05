@@ -1,18 +1,18 @@
-//! Alerts: a centered glass dialog that asks before doing something that can't be undone, like
-//! macOS's alert sheets. A layer surface rather than a popup, so it doesn't depend on a pointer
-//! grab and stays until answered.
+//! Alerts: a glass dialog that asks before doing something that can't be undone, like macOS's. An
+//! ordinary window without a title bar, which can be dragged by anything that isn't a button. Our
+//! KWin plugin centers it and keeps it on top of other windows, since clients can't.
 
-use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
+use iced_layershell::actions::IcedXdgWindowSettings;
 use iced_widget::core::text::LineHeight;
 use iced_widget::core::{Background, Border, Color, Length};
-use iced_widget::{Space, button, column, container, image, row, text};
+use iced_widget::{Space, button, column, container, image, mouse_area, row, text};
 
 use crate::app::{Element, Message};
 use crate::{fonts, material, menu};
 
 // Measured from Tahoe's alerts.
 const WIDTH: f32 = 266.0;
-const RADIUS: f32 = 26.0;
+pub const RADIUS: f32 = 26.0;
 const PADDING_X: f32 = 21.0;
 const PADDING_TOP: f32 = 21.0;
 const PADDING_BOTTOM: f32 = 16.0;
@@ -25,6 +25,8 @@ const TITLE_GAP: f32 = 10.0;
 const BUTTONS_GAP: f32 = 16.0;
 const BUTTON_HEIGHT: f32 = 28.0;
 const BUTTON_SPACING: f32 = 8.0;
+/// What the KWin plugin recognizes dialogs by.
+pub const APP_ID: &str = "macshell-alert";
 
 pub struct Alert {
     pub title: String,
@@ -50,28 +52,25 @@ fn height(alert: &Alert) -> f32 {
         + PADDING_BOTTOM
 }
 
-pub fn settings(alert: &Alert) -> NewLayerShellSettings {
-    NewLayerShellSettings {
-        // No anchors: the compositor centers the surface.
-        anchor: Anchor::empty(),
-        layer: Layer::Overlay,
+pub fn settings(alert: &Alert) -> IcedXdgWindowSettings {
+    IcedXdgWindowSettings {
         size: Some((WIDTH as u32, height(alert).ceil() as u32)),
-        exclusive_zone: Some(-1),
-        keyboard_interactivity: KeyboardInteractivity::OnDemand,
-        namespace: Some(String::from("macshell-alert")),
-        ..Default::default()
+        client_side_decorations: true,
+        app_id: Some(APP_ID),
+        title: Some("macshell"),
+        fixed_size: true,
     }
 }
 
-pub fn material_shapes(alert: &Alert) -> Vec<material::Shape> {
+pub fn material_shapes(alert: &Alert, active: bool) -> Vec<material::Shape> {
     vec![material::Shape {
         rect: (0, 0, WIDTH as i32, height(alert).ceil() as i32),
         radius: RADIUS as i32,
-        style: material::Style::Frosted,
+        style: material::Style::Window { active },
     }]
 }
 
-pub fn view(alert: &Alert, material: Option<material::Kind>) -> Element<'_> {
+pub fn view(alert: &Alert, active: bool, material: Option<material::Kind>) -> Element<'_> {
     let icon: Element<'_> = match &alert.icon {
         Some(handle) => image(handle.clone())
             .width(ICON_SIZE)
@@ -81,7 +80,7 @@ pub fn view(alert: &Alert, material: Option<material::Kind>) -> Element<'_> {
     };
 
     let tint = material::panel_tint(material);
-    container(column![
+    let content = container(column![
         icon,
         Space::new().height(ICON_GAP),
         text(&alert.title)
@@ -96,7 +95,7 @@ pub fn view(alert: &Alert, material: Option<material::Kind>) -> Element<'_> {
         Space::new().height(BUTTONS_GAP),
         row![
             alert_button("Cancel", Message::AlertAnswered(false), false),
-            alert_button(&alert.confirm, Message::AlertAnswered(true), true),
+            alert_button(&alert.confirm, Message::AlertAnswered(true), active),
         ]
         .spacing(BUTTON_SPACING),
     ])
@@ -113,8 +112,9 @@ pub fn view(alert: &Alert, material: Option<material::Kind>) -> Element<'_> {
         border: material::panel_border(material, RADIUS),
         text_color: Some(Color::WHITE),
         ..Default::default()
-    })
-    .into()
+    });
+    // Buttons take their own presses, so this gets the rest.
+    mouse_area(content).on_press(Message::AlertDragged).into()
 }
 
 fn alert_button<'a>(label: &str, on_press: Message, primary: bool) -> Element<'a> {

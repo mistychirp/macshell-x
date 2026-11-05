@@ -8,6 +8,7 @@ mod event;
 mod multi_window;
 mod proxy;
 pub mod redraw;
+pub mod toplevel;
 mod user_interface;
 
 pub mod settings;

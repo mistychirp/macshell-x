@@ -10,9 +10,13 @@ use std::collections::HashMap;
 use raw_window_handle::RawWindowHandle;
 use wayland_client::backend::ObjectId;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
+use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_shm::WlShm;
+use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::{
@@ -22,6 +26,9 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
 
 use crate::glass_protocol::macshell_glass_manager_v1::MacshellGlassManagerV1;
 use crate::glass_protocol::macshell_glass_v1::{self, MacshellGlassV1};
+use crate::shadow_protocol::org_kde_kwin_shadow::OrgKdeKwinShadow;
+use crate::shadow_protocol::org_kde_kwin_shadow_manager::OrgKdeKwinShadowManager;
+use crate::window_shadow;
 
 /// A rectangle in surface-local logical coordinates: `(x, y, width, height)`.
 pub type Rect = (i32, i32, i32, i32);
@@ -40,11 +47,15 @@ pub enum Style {
     Liquid,
     /// A dark tint over a lens, for small labels like the dock's.
     Bubble,
-    /// A brightened lens inside a rim that catches the light, for Control Center's modules.
+    /// A grey veil over a lens that mirrors the far side at the edge, inside a rim that catches the
+    /// light, for Control Center's modules. It doesn't blur, so it needs a backdrop under it.
     Control,
     /// Frosted, with a tail pointing down from its bottom, like a dock menu's: where its tip is from
     /// the left, how wide it is and how tall. Plain frosted where that isn't supported.
     FrostedWithTail([i32; 3]),
+    /// Frosted for dialogs, and lighter when the dialog isn't active. Plain frosted where that
+    /// isn't supported.
+    Window { active: bool },
     /// A menu's tint over the dock's lens, for notifications.
     Card,
     /// A very wide blur under a light grey tint, inside an even rim, for small buttons.
@@ -106,6 +117,9 @@ pub struct Material {
     /// [`Material::brightness`] dispatches what it queued here.
     event_queue: RefCell<EventQueue<Globals>>,
     state: RefCell<Globals>,
+    shadows: Option<(OrgKdeKwinShadowManager, WlShm)>,
+    /// The shadow's pieces, once they've been drawn: for active windows and for the others.
+    shadow_tiles: RefCell<[Option<window_shadow::Tiles>; 2]>,
 }
 
 enum Manager {
@@ -117,6 +131,7 @@ enum Manager {
 pub struct MaterialSurface {
     surface: WlSurface,
     effect: Effect,
+    shadow: RefCell<Option<OrgKdeKwinShadow>>,
 }
 
 enum Effect {
@@ -139,8 +154,11 @@ impl Material {
             .ok()?;
         let queue = event_queue.handle();
         let compositor: WlCompositor = globals.bind(&queue, 1..=6, ()).ok()?;
+        if let Ok(seat) = globals.bind::<WlSeat, _, _>(&queue, 1..=1, ()) {
+            iced_layershell::toplevel::set_seat(seat);
+        }
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=5, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=6, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -160,6 +178,11 @@ impl Material {
             Manager::Blur(blur)
         };
 
+        let shadows = globals
+            .bind(&queue, 1..=2, ())
+            .ok()
+            .zip(globals.bind(&queue, 1..=1, ()).ok());
+
         Some(Self {
             connection: connection.clone(),
             compositor,
@@ -167,6 +190,8 @@ impl Material {
             queue,
             event_queue: RefCell::new(event_queue),
             state: RefCell::new(Globals::default()),
+            shadows,
+            shadow_tiles: RefCell::new([None, None]),
         })
     }
 
@@ -188,7 +213,32 @@ impl Material {
                 Effect::Blur(manager.get_background_effect(&surface, &self.queue, ()))
             }
         };
-        MaterialSurface { surface, effect }
+        MaterialSurface {
+            surface,
+            effect,
+            shadow: RefCell::new(None),
+        }
+    }
+
+    /// Gives a window of ours the shadow a decoration would have brought, which takes effect with
+    /// the surface's next commit. Set the shapes after this.
+    pub fn set_window_shadow(&self, target: &MaterialSurface, radius: f32, active: bool) {
+        let Some((manager, shm)) = &self.shadows else {
+            return;
+        };
+        let mut tiles = self.shadow_tiles.borrow_mut();
+        let tiles = &mut tiles[usize::from(active)];
+        if tiles.is_none() {
+            *tiles = window_shadow::Tiles::new(shm, &self.queue, radius, active);
+        }
+        let Some(tiles) = tiles else {
+            return;
+        };
+        let shadow = manager.create(&target.surface, &self.queue, ());
+        tiles.attach(&shadow);
+        if let Some(old) = target.shadow.replace(Some(shadow)) {
+            old.destroy();
+        }
     }
 
     /// Replaces the material shapes and commits them right away.
@@ -230,11 +280,18 @@ impl Material {
                         Style::Control if glass.version() >= 2 => macshell_glass_v1::Style::Control,
                         Style::Card if glass.version() >= 3 => macshell_glass_v1::Style::Card,
                         Style::Chip if glass.version() >= 3 => macshell_glass_v1::Style::Chip,
+                        Style::Window { active: true } if glass.version() >= 6 => {
+                            macshell_glass_v1::Style::Window
+                        }
+                        Style::Window { active: false } if glass.version() >= 6 => {
+                            macshell_glass_v1::Style::WindowInactive
+                        }
                         Style::Liquid
                         | Style::Bubble
                         | Style::Control
                         | Style::Card
-                        | Style::Chip => macshell_glass_v1::Style::Frosted,
+                        | Style::Chip
+                        | Style::Window { .. } => macshell_glass_v1::Style::Frosted,
                         Style::Transparent if glass.version() >= 2 => {
                             macshell_glass_v1::Style::Transparent
                         }
@@ -299,6 +356,9 @@ impl Material {
 impl MaterialSurface {
     /// Removes the material. Call it before the surface goes away, or the protocol objects leak.
     pub fn destroy(self) {
+        if let Some(shadow) = self.shadow.into_inner() {
+            shadow.destroy();
+        }
         match self.effect {
             Effect::Glass(glass) => glass.destroy(),
             Effect::Blur(effect) => effect.destroy(),
@@ -375,6 +435,12 @@ impl Dispatch<ExtBackgroundEffectManagerV1, ()> for Globals {
 }
 
 delegate_noop!(Globals: WlCompositor);
+delegate_noop!(Globals: ignore WlSeat);
+delegate_noop!(Globals: ignore WlShm);
+delegate_noop!(Globals: WlShmPool);
+delegate_noop!(Globals: ignore WlBuffer);
+delegate_noop!(Globals: OrgKdeKwinShadowManager);
+delegate_noop!(Globals: OrgKdeKwinShadow);
 delegate_noop!(Globals: WlRegion);
 delegate_noop!(Globals: ExtBackgroundEffectSurfaceV1);
 delegate_noop!(Globals: MacshellGlassManagerV1);

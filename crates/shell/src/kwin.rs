@@ -320,7 +320,12 @@ impl Tracker {
         let mut windows: Vec<WindowInfo> = self
             .windows
             .iter()
-            .filter(|(_, w)| w.ready && w.state & STATE_SKIP_TASKBAR == 0)
+            .filter(|(_, w)| {
+                // Dialogs are hidden from the taskbar, but the shell wants to know if they're active.
+                w.ready
+                    && (w.state & STATE_SKIP_TASKBAR == 0
+                        || w.app_id.as_deref() == Some(crate::alert::APP_ID))
+            })
             .map(|(&id, w)| WindowInfo {
                 id,
                 app_id: w.app_id.clone(),

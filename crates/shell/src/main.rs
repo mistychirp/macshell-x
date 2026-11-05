@@ -26,9 +26,11 @@ mod notification_center;
 mod notifications;
 mod places;
 mod plasma_protocol;
+mod shadow_protocol;
 mod stack;
 mod tray;
 mod wallpaper;
+mod window_shadow;
 
 fn main() -> Result<(), iced_layershell::Error> {
     env_logger::Builder::from_env(

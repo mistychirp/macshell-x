@@ -29,9 +29,12 @@ class GlassManager;
 /// Look of the glass, from the `Effect-macshell` group of kwinrc. The defaults are measured from
 /// Tahoe's menus and dock.
 struct GlassSettings {
-    /// The blur under frosted and liquid glass: dual Kawase passes and their sample offset.
+    /// The blur under liquid glass, cards and backdrops: dual Kawase passes and their sample offset.
     int blurPasses = 2;
     float blurOffset = 2.0;
+    /// The much wider blur under frosted glass, where text behind has to disappear completely.
+    int frostPasses = 4;
+    float frostOffset = 3.0;
 
     /// The lens of liquid glass and bubbles: how far it bends the background, in logical pixels, at
     /// one logical pixel from the edge, and how far in it reaches.
@@ -52,11 +55,22 @@ struct GlassSettings {
     float liquidEdgeFade = 2.0;
     float liquidEdgeGain = 1.06;
 
-    /// Control modules, like Control Center's capsules: the background brightened rather than
-    /// veiled, inside a rim that catches the light. No wide edge, so the lens shows right up to it.
-    float controlBrightness = 1.15;
+    /// Control modules, like Control Center's capsules, sit on a backdrop that's blurred already.
+    /// Measured from Tahoe: a grey veil keeps them legible on anything, taking white to 181 and
+    /// black to 31. Their lens is strong enough to mirror the far side of the capsule: it bends by
+    /// controlLensStrength * (1 - depth / controlLensRadius)^2, in logical pixels.
+    float controlTint = 0.35;
+    float controlTintGrey = 0.35;
     float controlSaturation = 1.1;
-    float controlRim = 0.55;
+    float controlLensStrength = 52.0;
+    float controlLensRadius = 17.0;
+    float controlRim = 0.88;
+
+    /// Backdrops, which set things apart from a busy background, dim it a little as well.
+    float backdropBrightness = 0.9;
+
+    /// A dialog that isn't active has a lighter tint than frostTint.
+    float inactiveTint = 0.38;
 
     /// Chips, for small buttons like a notification's ✕: a very wide blur under a light grey tint,
     /// inside a rim that's even all the way around.
@@ -119,9 +133,11 @@ public:
 
 private:
     void updateWindow(KWin::EffectWindow *w);
+    void windowMoved(KWin::EffectWindow *w, const KWin::RectF &oldGeometry);
+    void placeDialog(KWin::EffectWindow *w);
     void paintGlass(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data);
     bool ensureTextures(ShapeRender &render, const QSize &size, GLenum format, int levels);
-    void frost(ShapeRender &render);
+    void frost(ShapeRender &render, int passes, float offset);
     float measureLuminance(ShapeRender &render, bool linear);
 
     std::unique_ptr<GlassManager> m_manager;

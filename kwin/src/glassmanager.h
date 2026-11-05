@@ -39,6 +39,9 @@ enum class Style {
     Backdrop,
     Card,
     Chip,
+    /// Frosted, for dialogs, which have a lighter tint when they aren't active.
+    Window,
+    WindowInactive,
 };
 
 struct Shape {

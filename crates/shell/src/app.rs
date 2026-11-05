@@ -14,7 +14,7 @@ use iced_layershell::reexport::{
 };
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
-use iced_widget::core::{Color, Event, Point, Size, Theme, event, mouse, theme, window};
+use iced_widget::core::{Color, Event, Point, Size, Theme, event, keyboard, mouse, theme, window};
 use iced_widget::renderer::Renderer;
 use iced_widget::{Space, image};
 use wayland_client::Connection;
@@ -159,6 +159,10 @@ pub enum Message {
     PlaceMenuRequested(Place),
     /// The alert was answered: confirmed, or cancelled.
     AlertAnswered(bool),
+    /// The alert was pressed where there's no button.
+    AlertDragged,
+    /// Return or Escape was pressed: whether it was Return.
+    ReturnOrEscape(bool),
     SurfaceClosed(IcedId),
     /// An app sent or took back a notification.
     Notification(notifications::Event),
@@ -234,6 +238,8 @@ struct OpenAlert {
     id: IcedId,
     alert: Alert,
     material: Option<MaterialSurface>,
+    /// Whether it has the keyboard. An alert looks lighter when it doesn't.
+    active: bool,
 }
 
 enum PopupContent {
@@ -554,7 +560,22 @@ impl Shell {
 
     fn apply(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::WindowsChanged(windows) => {
+            Message::WindowsChanged(mut windows) => {
+                // An alert is a window to the compositor, but not to the rest of the shell.
+                let alert_active = windows
+                    .iter()
+                    .any(|w| w.is_focused && w.app_id.as_deref() == Some(alert::APP_ID));
+                windows.retain(|w| w.app_id.as_deref() != Some(alert::APP_ID));
+                if let Some(open) = &mut self.alert
+                    && open.active != alert_active
+                {
+                    open.active = alert_active;
+                    if let (Some(material), Some(target)) = (&self.material, &open.material) {
+                        material.set_window_shadow(target, alert::RADIUS, alert_active);
+                        material
+                            .set_shapes(target, &alert::material_shapes(&open.alert, alert_active));
+                    }
+                }
                 self.focused_app = windows
                     .iter()
                     .find(|w| w.is_focused)
@@ -922,6 +943,17 @@ impl Shell {
                     return Task::batch([close, Task::done(open.alert.on_confirm.clone())]);
                 }
                 return close;
+            }
+            Message::AlertDragged => {
+                return match &self.alert {
+                    Some(open) => iced_runtime::window::drag(open.id),
+                    None => Task::none(),
+                };
+            }
+            Message::ReturnOrEscape(confirmed) => {
+                if self.alert.as_ref().is_some_and(|open| open.active) {
+                    return Task::done(Message::AlertAnswered(confirmed));
+                }
             }
             Message::SurfaceOpened(id, _) if self.alert.as_ref().is_some_and(|a| a.id == id) => {
                 return self.reach_surface(id);
@@ -1520,7 +1552,8 @@ impl Shell {
             },
             Some(Surface::Alert) => match &mut self.alert {
                 Some(open) if open.id == id => {
-                    material.set_shapes(&target, &alert::material_shapes(&open.alert));
+                    material.set_window_shadow(&target, alert::RADIUS, open.active);
+                    material.set_shapes(&target, &alert::material_shapes(&open.alert, open.active));
                     open.material = Some(target);
                 }
                 _ => target.destroy(),
@@ -1703,12 +1736,13 @@ impl Shell {
         if self.alert.is_some() {
             return Task::none();
         }
-        let (id, open) = Message::layershell_open(alert::settings(&alert));
+        let (id, open) = Message::base_window_open(alert::settings(&alert));
         self.surfaces.insert(id, Surface::Alert);
         self.alert = Some(OpenAlert {
             id,
             alert,
             material: None,
+            active: true,
         });
         open
     }
@@ -2053,7 +2087,11 @@ impl Shell {
                 }
             }
             Some(Surface::Alert) => match &self.alert {
-                Some(open) => alert::view(&open.alert, self.material.as_ref().map(|m| m.kind())),
+                Some(open) => alert::view(
+                    &open.alert,
+                    open.active,
+                    self.material.as_ref().map(|m| m.kind()),
+                ),
                 None => Space::new().into(),
             },
             Some(Surface::Banners) => self.banners.view(
@@ -2136,6 +2174,16 @@ impl Shell {
                     Some(Message::SurfaceResized(id, size))
                 }
                 Event::Window(window::Event::Closed) => Some(Message::SurfaceClosed(id)),
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(key),
+                    ..
+                }) if matches!(
+                    key,
+                    keyboard::key::Named::Enter | keyboard::key::Named::Escape
+                ) =>
+                {
+                    Some(Message::ReturnOrEscape(key == keyboard::key::Named::Enter))
+                }
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
                     Some(Message::PointerMoved(id, position))
                 }

@@ -11,6 +11,8 @@
 uniform sampler2D sampler;
 // The same background, blurred very widely.
 uniform sampler2D wide;
+// The same background, not blurred at all.
+uniform sampler2D sharp;
 
 // The shape's size and corner radius, in logical pixels.
 uniform vec2 geoSize;
@@ -22,6 +24,9 @@ uniform float deviceScale;
 // edge, and how far in it reaches. A strength of 0 means no lens.
 uniform float lensStrength;
 uniform float lensRadius;
+// A lens that takes what's far in, right past the middle of a capsule, and mirrors it at the edge:
+// measured from Tahoe, it bends by lensStrength * (1 - depth / lensRadius)^2.
+uniform float lensMirrors;
 // Multiplies the background's color; below 1 darkens it.
 uniform float brightness;
 // Saturation of the background.
@@ -41,6 +46,9 @@ uniform float rim;
 uniform float rimDirectional;
 // How much the next device pixel whitens, relative to the outer one.
 uniform float rimInner;
+// Instead: a rim that's a logical pixel and a half wide, soft on the inside, the color of bright
+// glass rather than white.
+uniform float rimSoft;
 // A backdrop instead of a shape: just the blur, fading in from each side over this many logical
 // pixels (left, top, right, bottom), with no edge. All 0 means it isn't one.
 uniform vec4 softEdges;
@@ -48,6 +56,9 @@ uniform vec4 softEdges;
 // in logical pixels. The tail is part of geoSize. A height of 0 means none.
 uniform vec3 tail;
 uniform float opacity;
+
+// How wide the disc of samples of a backdrop's fade gets, in logical pixels.
+const float maxBackdropDisc = 8.0;
 
 // Texture coordinates: 0 to 1 across the shape, with y pointing up.
 in vec2 uv;
@@ -115,7 +126,21 @@ void main(void)
         vec2 far = geoSize - near;
         float amount = smoothstep(0.0, softEdges.x, near.x) * smoothstep(0.0, softEdges.y, near.y)
             * smoothstep(0.0, softEdges.z, far.x) * smoothstep(0.0, softEdges.w, far.y);
-        fragColor = vec4(sampleGeo(geo).rgb, 1.0) * amount * opacity;
+        // The blur grows instead of fading in, so nothing sharp shows through it: a disc of samples
+        // that widens, handing over to the real blur before its samples could be told apart.
+        const int samples = 16;
+        float radius = amount * maxBackdropDisc;
+        vec3 disc = vec3(0.0);
+        for (int i = 0; i < samples; ++i) {
+            float r = sqrt((float(i) + 0.5) / float(samples)) * radius;
+            float angle = float(i) * 2.39996;
+            vec2 at = geo + vec2(cos(angle), sin(angle)) * r / geoSize;
+            disc += texture(sharp, vec2(at.x, 1.0 - at.y)).rgb;
+        }
+        vec3 color = mix(disc / float(samples), sampleGeo(geo).rgb, smoothstep(0.3, 0.85, amount));
+        color *= mix(1.0, brightness, amount);
+        // Only so the very first pixels don't pick up rounding.
+        fragColor = vec4(color, 1.0) * clamp(amount * 20.0, 0.0, 1.0) * opacity;
         return;
     }
 
@@ -137,7 +162,12 @@ void main(void)
     // The lens bends the background toward the center, most at the edge. Thin shapes get a
     // proportionally smaller one.
     vec2 refracted = geo;
-    if (lensStrength > 0.0) {
+    if (lensMirrors > 0.0) {
+        // Measured on capsules 62 pixels tall; smaller shapes get a smaller one.
+        float fit = min(1.0, min(geoSize.x, geoSize.y) / 62.0);
+        float falloff = max(1.0 - max(-d, 0.0) / (lensRadius * fit), 0.0);
+        refracted = geo - n * fit * lensStrength * falloff * falloff / geoSize;
+    } else if (lensStrength > 0.0) {
         float fit = min(1.0, 0.35 * min(geoSize.x, geoSize.y) / lensRadius);
         float depth = max(-d, 0.5);
         float bend = fit * lensStrength * max(pow(depth / fit, -0.75) - pow(lensRadius, -0.75), 0.0);
@@ -153,7 +183,12 @@ void main(void)
     // The edge, with no dimming: it shows the surroundings, not what's right behind it.
     vec3 edge = mix(min(texture(wide, uv).rgb * edgeGain, vec3(1.0)), vec3(1.0), edgeWhite);
     float pixels = -d * deviceScale;
-    if (rim > 0.0) {
+    if (rimSoft > 0.0) {
+        float lit = mix(0.12, 1.0, smoothstep(0.25, 0.72, abs(dot(n, vec2(0.7071)))));
+        // Half a logical pixel in full, then fading out by one and a half.
+        float line = clamp(1.4 - max(-d, 0.0), 0.0, 1.0);
+        color.rgb = mix(color.rgb, vec3(0.85), line * lit * rim);
+    } else if (rim > 0.0) {
         // Light falls along the top-left to bottom-right diagonal: the rim is even across those two
         // quadrants and almost gone at the other two corners, measured around Tahoe's buttons.
         float lit = mix(0.12, 1.0, smoothstep(0.25, 0.72, abs(dot(n, vec2(0.7071)))));

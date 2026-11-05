@@ -14,7 +14,7 @@
 namespace Macshell
 {
 
-static constexpr int s_version = 5;
+static constexpr int s_version = 6;
 
 /// Reading pixels back stalls the GPU, so brightness is measured at most this often.
 static constexpr int s_probeIntervalMs = 500;
@@ -155,6 +155,10 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect(Resource *resource, int32_
         shapeStyle = Style::Card;
     } else if (style == style_chip) {
         shapeStyle = Style::Chip;
+    } else if (style == style_window) {
+        shapeStyle = Style::Window;
+    } else if (style == style_window_inactive) {
+        shapeStyle = Style::WindowInactive;
     }
     m_pending.append(Shape{
         .rect = QRect(x, y, width, height),
