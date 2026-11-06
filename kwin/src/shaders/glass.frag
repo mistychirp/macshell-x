@@ -53,7 +53,8 @@ uniform float rimSoft;
 // pixels (left, top, right, bottom), with no edge. All 0 means it isn't one.
 uniform vec4 softEdges;
 // A tail pointing down from the shape: where its tip is from the left, how wide it is and how tall,
-// in logical pixels. The tail is part of geoSize. A height of 0 means none.
+// in logical pixels. The tail is part of geoSize. A height of 0 means none, and a negative one means
+// it's on top, pointing up.
 uniform vec3 tail;
 uniform float opacity;
 
@@ -87,15 +88,20 @@ float sdTriangle(vec2 p, vec2 q)
 // Signed distance to the shape, which may have a tail flaring out of its bottom.
 float sdShape(vec2 p, vec2 halfSize, float r)
 {
-    if (tail.z <= 0.0) {
+    if (tail.z == 0.0) {
         return sdRoundedBox(p, halfSize, r);
     }
-    float body = sdRoundedBox(p + vec2(0.0, tail.z * 0.5), vec2(halfSize.x, halfSize.y - tail.z * 0.5), r);
+    // A tail on top is one at the bottom, upside down.
+    if (tail.z < 0.0) {
+        p.y = -p.y;
+    }
+    float tailHeight = abs(tail.z);
+    float body = sdRoundedBox(p + vec2(0.0, tailHeight * 0.5), vec2(halfSize.x, halfSize.y - tailHeight * 0.5), r);
     // The tip is rounded by pulling the triangle in and growing it back. It carries on into the
     // body at the same angle, so that the join is a clean one to smooth.
     const float tipRadius = 1.5;
     vec2 tip = vec2(p.x + halfSize.x - tail.x, halfSize.y - tipRadius * 1.6 - p.y);
-    vec2 reach = vec2(tail.y * 0.5, tail.z) * 1.5;
+    vec2 reach = vec2(tail.y * 0.5, tailHeight) * 1.5;
     float triangle = sdTriangle(tip, reach) - tipRadius;
     // A smooth union, which flares the tail's base into the body.
     const float flare = 5.0;

@@ -30,9 +30,9 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appmenu, audio, autostart, bluetooth, brightness, control, dbusmenu, desktop, dnd, dock, fonts,
-    icons, launcher, media, menu, menubar, network, notification_center, portal, stack, tray,
-    wallpaper, widgets,
+    appmenu, arrange, audio, autostart, bluetooth, brightness, control, dbusmenu, desktop, dnd,
+    dock, fonts, icons, launcher, media, menu, menubar, network, notification_center, portal,
+    stack, tray, wallpaper, widgets,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -77,6 +77,8 @@ enum Surface {
     Desktop,
     /// Where to choose widgets from, while editing them.
     WidgetGallery,
+    /// The green traffic light's menu.
+    ArrangeMenu,
     MenuBar,
     Dock,
     Popup,
@@ -173,6 +175,15 @@ pub enum Message {
     PlaceMenuRequested(Place),
     /// The alert was answered: confirmed, or cancelled.
     AlertAnswered(bool),
+    /// News from window decorations about their green lights.
+    Arrange(arrange::Event),
+    /// Which window a green light's menu is about, and where to open it.
+    ArrangeFound(Point, Option<(String, i32, i32)>),
+    ArrangeOverMenu(bool),
+    ArrangeSubmenu(bool),
+    ArrangeChosen(arrange::Layout),
+    /// The pointer left a while ago: closes the menu if this was the last time it did.
+    ArrangeLeft(u64),
     Desktop(desktop::Action),
     /// News about drags over the shell's surfaces, or from them.
     Dnd(dnd::Event),
@@ -305,6 +316,7 @@ struct Shell {
     /// Keeps the wallpaper on the GPU. Big images upload in the background and draw as nothing
     /// until they're ready, and the wallpaper doesn't otherwise redraw to catch up.
     wallpaper_loaded: Option<iced_runtime::image::Allocation>,
+    arrange_menu: Option<arrange::Open>,
     desktop_id: IcedId,
     desktop: desktop::Desktop,
     desktop_surface: Option<WlSurface>,
@@ -458,6 +470,8 @@ const FALLBACK_SCREEN_HEIGHT: f32 = 700.0;
 const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
 /// How big minimized windows' pictures are kept, on their longer side: enough for a magnified dock.
 const THUMBNAIL_SIZE: u32 = 512;
+/// How long the green light's menu waits for the pointer to come back.
+const ARRANGE_MENU_GRACE: Duration = Duration::from_millis(350);
 /// How soon to look up the weather again when that didn't work.
 const WEATHER_RETRY: Duration = Duration::from_secs(60);
 /// How many past notifications Notification Center keeps.
@@ -498,6 +512,7 @@ impl Shell {
             surfaces: HashMap::from([(menubar_id, Surface::MenuBar), (dock_id, Surface::Dock)]),
             surface_contents: HashMap::new(),
             wallpaper_loaded: None,
+            arrange_menu: None,
             desktop_id,
             desktop: desktop::Desktop::load(),
             desktop_surface: None,
@@ -652,6 +667,11 @@ impl Shell {
                     self.widgets.content_key(self.widgets_tinted())
                 ),
                 Surface::WidgetGallery => self.widgets.content_key(false),
+                // Only there for a moment, with its hovers its own.
+                Surface::ArrangeMenu => {
+                    iced_layershell::redraw::mark_changed(id);
+                    continue;
+                }
                 Surface::MenuBar => format!("{:?}", self.bar()),
                 Surface::Dock => {
                     format!(
@@ -1041,6 +1061,82 @@ impl Shell {
                 }
             }
             Message::Dnd(event) => return self.handle_drag(event),
+            Message::Arrange(arrange::Event::Hovered(x, y)) => {
+                if let Some(open) = &mut self.arrange_menu {
+                    open.over_light = true;
+                    return Task::none();
+                }
+                let at = Point::new(x as f32, y as f32);
+                return Task::perform(arrange::window_under_cursor(), move |found| {
+                    Message::ArrangeFound(at, found)
+                });
+            }
+            Message::Arrange(arrange::Event::Left) => {
+                if let Some(open) = &mut self.arrange_menu {
+                    open.over_light = false;
+                }
+                return self.arrange_pointer_left();
+            }
+            Message::ArrangeFound(_, None) => {}
+            Message::ArrangeFound(at, Some((window, x, y))) => {
+                if self.arrange_menu.is_some() {
+                    return Task::none();
+                }
+                let settings = arrange::settings(x + at.x as i32, y + at.y as i32);
+                let (id, open) = Message::layershell_open(settings);
+                self.surfaces.insert(id, Surface::ArrangeMenu);
+                self.arrange_menu = Some(arrange::Open {
+                    surface: id,
+                    window,
+                    material: None,
+                    submenu: false,
+                    over_menu: false,
+                    over_light: true,
+                    leaves: 0,
+                });
+                return open;
+            }
+            Message::SurfaceOpened(id, _)
+                if self.surfaces.get(&id) == Some(&Surface::ArrangeMenu) =>
+            {
+                return Task::batch([self.reach_surface(id), self.update_arrange_input()]);
+            }
+            Message::ArrangeOverMenu(over) => {
+                if let Some(open) = &mut self.arrange_menu {
+                    open.over_menu = over;
+                }
+                if !over {
+                    return self.arrange_pointer_left();
+                }
+            }
+            Message::ArrangeSubmenu(submenu) => {
+                if let Some(open) = &mut self.arrange_menu
+                    && open.submenu != submenu
+                {
+                    open.submenu = submenu;
+                    if let (Some(material), Some(target)) = (&self.material, &open.material) {
+                        material.set_shapes(target, &arrange::material_shapes(submenu));
+                    }
+                    return self.update_arrange_input();
+                }
+            }
+            Message::ArrangeChosen(layout) => {
+                let Some(open) = &self.arrange_menu else {
+                    return Task::none();
+                };
+                let close = iced_runtime::window::close(open.surface);
+                let choice = arrange::arrange(open.window.clone(), layout);
+                return Task::batch([close, Task::future(choice).discard()]);
+            }
+            Message::ArrangeLeft(leaves) => {
+                if let Some(open) = &self.arrange_menu
+                    && open.leaves == leaves
+                    && !open.over_menu
+                    && !open.over_light
+                {
+                    return iced_runtime::window::close(open.surface);
+                }
+            }
             Message::DesktopMetrics(metrics) => self.desktop.set_metrics(metrics),
             Message::DesktopReceived(names, at) => {
                 self.desktop.place_dropped(&names, at);
@@ -1584,6 +1680,15 @@ impl Shell {
                         None => relayout,
                     };
                 }
+                if self
+                    .arrange_menu
+                    .as_ref()
+                    .is_some_and(|open| open.surface == id)
+                    && let Some(open) = self.arrange_menu.take()
+                    && let Some(material) = open.material
+                {
+                    material.destroy();
+                }
                 if self.gallery_id == Some(id) {
                     self.gallery_id = None;
                     if let Some(material) = self.gallery_material.take() {
@@ -2000,6 +2105,13 @@ impl Shell {
                 self.banners_material = Some(target);
             }
             // Closed before it could be reached, or not a surface with material.
+            Some(Surface::ArrangeMenu) => match &mut self.arrange_menu {
+                Some(open) if open.surface == id => {
+                    material.set_shapes(&target, &arrange::material_shapes(open.submenu));
+                    open.material = Some(target);
+                }
+                _ => target.destroy(),
+            },
             Some(Surface::WidgetGallery) => {
                 material.set_shapes(&target, &widgets::gallery_shapes());
                 self.gallery_material = Some(target);
@@ -2230,6 +2342,33 @@ impl Shell {
             material.set_shapes(target, &shapes);
             self.desktop_shapes = shapes;
         }
+    }
+
+    /// A little time for the pointer to cross between the light and the menu.
+    fn arrange_pointer_left(&mut self) -> Task<Message> {
+        let Some(open) = &mut self.arrange_menu else {
+            return Task::none();
+        };
+        open.leaves += 1;
+        let leaves = open.leaves;
+        Task::perform(tokio::time::sleep(ARRANGE_MENU_GRACE), move |()| {
+            Message::ArrangeLeft(leaves)
+        })
+    }
+
+    fn update_arrange_input(&self) -> Task<Message> {
+        let Some(open) = &self.arrange_menu else {
+            return Task::none();
+        };
+        let region = arrange::input_region(open.submenu);
+        Task::done(Message::SetInputRegion {
+            id: open.surface,
+            callback: ActionCallback::new(move |wl_region| {
+                for &(x, y, width, height) in &region {
+                    wl_region.add(x, y, width, height);
+                }
+            }),
+        })
     }
 
     fn is_desktop(&self, surface: &ObjectId) -> bool {
@@ -2825,6 +2964,9 @@ impl Shell {
             Some(Surface::WidgetGallery) => {
                 widgets::gallery(&self.widgets, self.material.as_ref().map(|m| m.kind()))
             }
+            Some(Surface::ArrangeMenu) => {
+                arrange::view(self.arrange_menu.as_ref().is_some_and(|open| open.submenu))
+            }
             Some(Surface::MenuBar) => menubar::view(&self.bar()),
             Some(Surface::Dock) => dock::view(
                 &self.dock,
@@ -2944,6 +3086,7 @@ impl Shell {
             notifications::events().map(Message::Notification),
             network::secret_agent().map(Message::WifiAgent),
             dnd::events().map(Message::Dnd),
+            arrange::events().map(Message::Arrange),
             time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),
             time::every(Duration::from_secs(2)).map(|_| Message::DesktopRefresh),
             time::every(widgets::WEATHER_INTERVAL).map(|_| Message::FetchWeather),

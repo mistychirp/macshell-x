@@ -53,6 +53,9 @@ pub enum Style {
     /// Frosted, with a tail pointing down from its bottom, like a dock menu's: where its tip is from
     /// the left, how wide it is and how tall. Plain frosted where that isn't supported.
     FrostedWithTail([i32; 3]),
+    /// Like [`Style::FrostedWithTail`], with the tail on top, pointing up. Plain frosted where that
+    /// isn't supported.
+    FrostedWithTopTail([i32; 3]),
     /// Frosted for dialogs, and lighter when the dialog isn't active. Plain frosted where that
     /// isn't supported.
     Window { active: bool },
@@ -158,7 +161,7 @@ impl Material {
             iced_layershell::toplevel::set_seat(seat);
         }
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=6, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=7, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -270,11 +273,27 @@ impl Material {
                         );
                         continue;
                     }
+                    if let Style::FrostedWithTopTail([center, width_, height_]) = shape.style
+                        && glass.version() >= 7
+                    {
+                        glass.add_rounded_rect_with_top_tail(
+                            x,
+                            y,
+                            width,
+                            height,
+                            shape.radius.max(0) as u32,
+                            macshell_glass_v1::Style::Frosted,
+                            center,
+                            width_ as u32,
+                            height_ as u32,
+                        );
+                        continue;
+                    }
                     let style = match shape.style {
                         Style::Clear => macshell_glass_v1::Style::Clear,
-                        Style::Frosted | Style::FrostedWithTail(_) => {
-                            macshell_glass_v1::Style::Frosted
-                        }
+                        Style::Frosted
+                        | Style::FrostedWithTail(_)
+                        | Style::FrostedWithTopTail(_) => macshell_glass_v1::Style::Frosted,
                         Style::Liquid if glass.version() >= 2 => macshell_glass_v1::Style::Liquid,
                         Style::Bubble if glass.version() >= 2 => macshell_glass_v1::Style::Bubble,
                         Style::Control if glass.version() >= 2 => macshell_glass_v1::Style::Control,

@@ -5,6 +5,7 @@
 */
 
 #include "glasseffect.h"
+#include "arranger.h"
 #include "window.h"
 #include "glassmanager.h"
 
@@ -82,6 +83,7 @@ GlassEffect::GlassEffect()
     }
 
     m_manager = std::make_unique<GlassManager>(effects->waylandDisplay());
+    m_arranger = std::make_unique<Arranger>();
     connect(m_manager.get(), &GlassManager::glassChanged, this, [this](SurfaceInterface *surface) {
         if (EffectWindow *w = effects->findWindow(surface)) {
             updateWindow(w);

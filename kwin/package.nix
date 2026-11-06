@@ -6,6 +6,7 @@
   extra-cmake-modules,
   wayland-scanner,
   kwin,
+  kdecoration,
   qtbase,
   qtdeclarative,
   qtwayland,
@@ -29,6 +30,7 @@ stdenv.mkDerivation {
       ./CMakeLists.txt
       ./src
       ../protocols/macshell-glass-v1.xml
+      ../assets/fonts/Inter-SemiBold.ttf
     ];
   };
   sourceRoot = "source/kwin";
@@ -40,6 +42,7 @@ stdenv.mkDerivation {
   ];
   buildInputs = [
     kwin
+    kdecoration
     qtbase
     qtdeclarative
     qtwayland

@@ -2,6 +2,7 @@ mod alert;
 mod app;
 mod appmenu;
 mod apps;
+mod arrange;
 mod audio;
 mod autostart;
 mod banners;

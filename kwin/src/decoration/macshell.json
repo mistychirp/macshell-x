@@ -1,0 +1,15 @@
+{
+    "KPlugin": {
+        "Description": "Window decoration with macOS-style traffic lights, for macshell",
+        "EnabledByDefault": true,
+        "Id": "org.kde.macshell",
+        "Name": "macshell",
+        "ServiceTypes": [
+            "org.kde.kdecoration3"
+        ]
+    },
+    "org.kde.kdecoration3": {
+        "blur": false,
+        "recommendedBorderSize": "None"
+    }
+}

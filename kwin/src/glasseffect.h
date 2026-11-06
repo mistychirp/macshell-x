@@ -24,6 +24,7 @@ class SurfaceInterface;
 namespace Macshell
 {
 
+class Arranger;
 class GlassManager;
 
 /// Look of the glass, from the `Effect-macshell` group of kwinrc. The defaults are measured from
@@ -141,6 +142,7 @@ private:
     float measureLuminance(ShapeRender &render, bool linear);
 
     std::unique_ptr<GlassManager> m_manager;
+    std::unique_ptr<Arranger> m_arranger;
     GlassSettings m_settings;
 
     std::unique_ptr<KWin::GLShader> m_glassShader;

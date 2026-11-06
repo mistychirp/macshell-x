@@ -22,6 +22,10 @@ let
     # so portals and services started on demand can reach the session.
     ${pkgs.dbus}/bin/dbus-update-activation-environment --systemd --all
     systemctl --user start macshell-session.target
+    # The window decoration. This is KWin's shared configuration, but a session without our plugin
+    # falls back to its default.
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library org.kde.macshell
+    ${pkgs.dbus}/bin/dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure
     # Unlocks KWallet with the login password, which PAM kept for this.
     systemctl --user start --no-block plasma-kwallet-pam.service
 

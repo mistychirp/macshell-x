@@ -1,0 +1,5 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource prefix="/macshell/decoration">
+  <file alias="Inter-SemiBold.ttf">../../../assets/fonts/Inter-SemiBold.ttf</file>
+</qresource>
+</RCC>

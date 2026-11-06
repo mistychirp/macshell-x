@@ -18,12 +18,14 @@ find_package(Qt6 REQUIRED COMPONENTS Core DBus Gui Quick Widgets)
 find_package(QtWaylandScanner REQUIRED)
 find_package(KF6 REQUIRED COMPONENTS Config CoreAddons)
 find_package(KWin REQUIRED)
+find_package(KDecoration3 REQUIRED)
 
 kcoreaddons_add_plugin(macshell
     SOURCES
         src/main.cpp
         src/glasseffect.cpp
         src/glassmanager.cpp
+        src/arranger.cpp
         src/glass.qrc
     INSTALL_NAMESPACE "kwin/effects/plugins"
 )
@@ -37,6 +39,23 @@ target_link_libraries(macshell PRIVATE
     KWin::kwin
     KF6::ConfigCore
     Qt6::Core
+    Qt6::DBus
     Qt6::Gui
     Wayland::Server
+)
+
+# The window decoration: traffic lights and a title bar, loaded by KWin separately from the effect.
+kcoreaddons_add_plugin(macshell-decoration
+    SOURCES
+        src/decoration/decoration.cpp
+        src/decoration/decoration.qrc
+    INSTALL_NAMESPACE "org.kde.kdecoration3"
+)
+# KWin looks decorations up by the name of their file.
+set_target_properties(macshell-decoration PROPERTIES OUTPUT_NAME "org.kde.macshell")
+target_link_libraries(macshell-decoration PRIVATE
+    KDecoration3::KDecoration
+    KF6::CoreAddons
+    Qt6::DBus
+    Qt6::Gui
 )

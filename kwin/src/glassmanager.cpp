@@ -14,7 +14,7 @@
 namespace Macshell
 {
 
-static constexpr int s_version = 6;
+static constexpr int s_version = 7;
 
 /// Reading pixels back stalls the GPU, so brightness is measured at most this often.
 static constexpr int s_probeIntervalMs = 500;
@@ -176,6 +176,15 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect_with_tail(Resource *resour
         // The radius is clamped against what's left above the tail.
         const int body = std::min(width, height - int(tail_height));
         m_pending.last().radius = std::min<int>(radius, body / 2);
+    }
+}
+
+void GlassSurface::macshell_glass_v1_add_rounded_rect_with_top_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height)
+{
+    macshell_glass_v1_add_rounded_rect_with_tail(resource, x, y, width, height, radius, style, tail_center, tail_width, tail_height);
+    if (!m_pending.isEmpty() && tail_height < uint32_t(height)) {
+        // Negative means on top.
+        m_pending.last().tail.setZ(-float(tail_height));
     }
 }
 
