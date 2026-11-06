@@ -138,6 +138,7 @@ public:
 
     void reconfigure(ReconfigureFlags flags) override;
     void prePaintScreen(KWin::ScreenPrePaintData &data) override;
+    void paintScreen(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, int mask, const KWin::Region &deviceRegion, KWin::LogicalOutput *screen) override;
     void postPaintScreen() override;
     void prePaintWindow(KWin::RenderView *view, KWin::EffectWindow *w, KWin::WindowPrePaintData &data) override;
     void paintWindow(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, int mask, const KWin::Region &deviceRegion, KWin::WindowPaintData &data) override;
@@ -169,6 +170,9 @@ private:
     void frost(ShapeRender &render, int passes, float offset);
     float measureLuminance(ShapeRender &render, bool linear);
     QTimer *m_saveSoon = nullptr;
+    /// What the screen is being painted to. A window painted to anything else, like the genie's copy
+    /// of it, has no background there, so its glass shows what was last seen behind it.
+    const KWin::RenderTarget *m_screenTarget = nullptr;
 
     std::unique_ptr<GlassManager> m_manager;
     std::unique_ptr<Arranger> m_arranger;

@@ -12,6 +12,7 @@
 
 #include <QHash>
 #include <QRect>
+#include <QSet>
 #include <QUuid>
 
 namespace Macshell
@@ -37,14 +38,18 @@ public:
 
     int requestedEffectChainPosition() const override
     {
-        // Where KWin's own Magic Lamp goes.
-        return 50;
+        // Before the glass, so that it paints into what gets deformed, and the window's frame and
+        // contents move together.
+        return 19;
     }
 
 public Q_SLOTS:
     /// Where a minimized window's tile is, on the screen. With an empty id, where the next window to
     /// be minimized will go.
     Q_SCRIPTABLE void setTarget(const QString &id, int x, int y, int width, int height);
+    /// This window goes and comes back with no animation, next time: an app being hidden has nowhere
+    /// in the dock to go to.
+    Q_SCRIPTABLE void skip(const QString &id);
 
 protected:
     void apply(KWin::EffectWindow *window, int mask, KWin::WindowPaintData &data, KWin::WindowQuadList &quads) override;
@@ -64,6 +69,7 @@ private:
     QHash<KWin::EffectWindow *, Animation> m_animations;
     QHash<QUuid, QRect> m_targets;
     QRect m_nextTarget;
+    QSet<QUuid> m_skipped;
 };
 
 }

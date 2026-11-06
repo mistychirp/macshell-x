@@ -61,6 +61,11 @@ void GenieEffect::setTarget(const QString &id, int x, int y, int width, int heig
     }
 }
 
+void GenieEffect::skip(const QString &id)
+{
+    m_skipped.insert(QUuid(id));
+}
+
 void GenieEffect::windowAdded(EffectWindow *w)
 {
     connect(w, &EffectWindow::minimizedChanged, this, [this, w]() {
@@ -83,6 +88,9 @@ QRectF GenieEffect::targetFor(EffectWindow *w) const
 
 void GenieEffect::animate(EffectWindow *w, bool minimizing)
 {
+    if (minimizing ? m_skipped.contains(w->internalId()) : m_skipped.remove(w->internalId())) {
+        return;
+    }
     if (effects->activeFullScreenEffect()) {
         return;
     }
@@ -93,6 +101,10 @@ void GenieEffect::animate(EffectWindow *w, bool minimizing)
     } else {
         animation.visibleRef = EffectWindowVisibleRef(w, EffectWindow::PAINT_DISABLED_BY_MINIMIZE);
         animation.target = targetFor(w);
+        // Once it's back, its tile is gone. Next time, it goes where the next one goes.
+        if (!minimizing) {
+            m_targets.remove(w->internalId());
+        }
         animation.timeLine.setDirection(direction);
         animation.timeLine.setDuration(animationTime(s_duration));
         animation.timeLine.setEasingCurve(QEasingCurve::Linear);

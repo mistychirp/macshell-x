@@ -211,6 +211,26 @@ pub async fn arrange(window: String, layout: Layout) {
 trait Genie {
     #[zbus(name = "setTarget")]
     fn set_target(&self, id: &str, x: i32, y: i32, width: i32, height: i32) -> zbus::Result<()>;
+    #[zbus(name = "skip")]
+    fn skip(&self, id: &str) -> zbus::Result<()>;
+}
+
+/// Tells the genie to leave these windows alone when they go and come back.
+pub async fn skip_genie(ids: Vec<String>) {
+    let Some(connection) = dbus::session().await else {
+        return;
+    };
+    let result = async {
+        let genie = GenieProxy::new(&connection).await?;
+        for id in &ids {
+            genie.skip(id).await?;
+        }
+        zbus::Result::Ok(())
+    }
+    .await;
+    if let Err(err) = result {
+        log::debug!("can't tell the genie to skip a window: {err}");
+    }
 }
 
 /// Tells the genie where things go in the dock, on the screen: each window's id with its place, and

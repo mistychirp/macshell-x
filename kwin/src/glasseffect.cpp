@@ -146,7 +146,23 @@ GlassEffect::GlassEffect()
     m_valid = true;
 }
 
-GlassEffect::~GlassEffect() = default;
+GlassEffect::~GlassEffect()
+{
+    QDBusConnection::sessionBus().unregisterObject(QStringLiteral("/org/macshell/Glass"));
+    effects->makeOpenGLContextCurrent();
+    // Letting go of a closed window deletes it and its items, and tells us about it. So the items go
+    // first, and the windows once nothing here refers to them.
+    std::vector<EffectWindowDeletedRef> closed;
+    for (auto &[window, glass] : m_windows) {
+        glass.item.reset();
+        glass.render.clear();
+        if (glass.deletedRef) {
+            closed.push_back(std::move(*glass.deletedRef));
+            glass.deletedRef.reset();
+        }
+    }
+    m_windows.clear();
+}
 
 bool GlassEffect::supported()
 {
@@ -420,6 +436,13 @@ void GlassEffect::prePaintScreen(ScreenPrePaintData &data)
     effects->prePaintScreen(data);
 }
 
+void GlassEffect::paintScreen(const RenderTarget &renderTarget, const RenderViewport &viewport, int mask, const Region &deviceRegion, LogicalOutput *screen)
+{
+    m_screenTarget = &renderTarget;
+    effects->paintScreen(renderTarget, viewport, mask, deviceRegion, screen);
+    m_screenTarget = nullptr;
+}
+
 void GlassEffect::prePaintWindow(RenderView *view, EffectWindow *w, WindowPrePaintData &data)
 {
     if (m_awaitingGlass.contains(w)) {
@@ -663,27 +686,33 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         // Beyond the blur's own levels: four more halvings for the wide blur.
         const int wideLevel = passes + 1;
         const int levels = blurred ? wideLevel + 4 : 1;
+        // Nothing behind it here to read, so it keeps what it has, which may be a different size.
+        const bool offscreen = &renderTarget != m_screenTarget;
+        if (offscreen && render.textures.empty()) {
+            continue;
+        }
         const bool fresh = render.textures.empty() || render.textures[0]->size() != deviceRect.size();
-        if (!ensureTextures(render, deviceRect.size(), format, levels)) {
+        if (!offscreen && !ensureTextures(render, deviceRect.size(), format, levels)) {
             continue;
         }
 
         // Copy the part of the background that was just repainted; the rest is cached from
         // earlier frames. Copying more would pick up last frame's glass.
         const Rect logicalBounds = logical.roundedOut();
-        const Region logicalDirty = deviceRegion == Region::infinite()
+        const Region logicalDirty = offscreen ? Region()
+            : deviceRegion == Region::infinite()
             ? Region(logicalBounds)
             : viewport.mapFromDeviceCoordinatesContained(deviceRegion) & logicalBounds;
         for (const Rect &dirty : logicalDirty.rects()) {
             const Rect destination = viewport.mapToDeviceCoordinatesAligned(dirty).translated(-deviceRect.topLeft());
             render.framebuffers[0]->blitFromRenderTarget(renderTarget, viewport, dirty, destination);
         }
-        if (fresh && logicalDirty.boundingRect() != logicalBounds) {
+        if (!offscreen && fresh && logicalDirty.boundingRect() != logicalBounds) {
             // New textures start out empty; fill them in on the next frame.
             effects->addRepaint(logicalBounds);
         }
 
-        if (probe) {
+        if (probe && !offscreen) {
             if (const int wait = glass->msUntilProbe(); wait == 0) {
                 const float luminance = measureLuminance(render, linear);
                 if (luminance >= 0) {
@@ -704,7 +733,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
             continue;
         }
 
-        if (blurred) {
+        if (blurred && !offscreen) {
             frost(render, passes, frosted ? m_settings.frostOffset : m_settings.blurOffset);
         }
 
@@ -742,7 +771,9 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         vbo->bindArrays();
 
         QMatrix4x4 projection = viewport.projectionMatrix();
-        projection.translate(deviceRect.x(), deviceRect.y());
+        // The projection is in global device coordinates, and the rectangle is relative to the target.
+        const QPointF targetOrigin = viewport.renderRect().topLeft() * viewport.scale();
+        projection.translate(deviceRect.x() + targetOrigin.x(), deviceRect.y() + targetOrigin.y());
 
         const bool liquid = shape.style == Style::Liquid;
         const bool bubble = shape.style == Style::Bubble;

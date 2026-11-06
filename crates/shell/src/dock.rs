@@ -32,12 +32,13 @@ use crate::running::Process;
 pub const ICON_SIZE: f32 = 48.0;
 const DOT_SIZE: f32 = 4.0;
 const DOT_GAP: f32 = 3.0;
-const PADDING: f32 = 6.0;
-const PADDING_X: f32 = PADDING + 2.0;
+/// Above and below icons, which sit in the middle of the pill, with a running app's dot under them.
+const PADDING_Y: f32 = 10.0;
+const PADDING_X: f32 = 8.0;
 const SPACING: f32 = 4.0;
 const RADIUS: f32 = 20.0;
 const MARGIN: f32 = 6.0;
-const PILL_HEIGHT: f32 = ICON_SIZE + DOT_GAP + DOT_SIZE + 2.0 * PADDING;
+const PILL_HEIGHT: f32 = ICON_SIZE + 2.0 * PADDING_Y;
 /// What the dock keeps windows out of, at the bottom of the screen.
 pub const RESERVED_HEIGHT: f32 = PILL_HEIGHT + MARGIN;
 
@@ -120,6 +121,16 @@ pub struct Minimized {
 /// Which slot a place is in: Downloads comes before the minimized windows, and Trash after.
 pub fn place_slot(layout: &Layout, offset: usize) -> usize {
     layout.apps + if offset == 0 { 0 } else { 1 + layout.minimized }
+}
+
+/// Where the next window to be minimized will end up, on the surface: the Trash's slot, once the pill
+/// has grown to fit one more and stayed in the middle.
+pub fn next_minimized_tile(layout: &Layout) -> Option<Rectangle> {
+    let trash = *layout.icons.get(place_slot(layout, 1))?;
+    Some(Rectangle {
+        x: trash.x - (ICON_SIZE + SPACING) / 2.0,
+        ..trash
+    })
 }
 
 /// Which slot a minimized window is in.
@@ -283,7 +294,7 @@ pub fn layout(
         height: PILL_HEIGHT,
     };
 
-    let icon_bottom = pill.y + PADDING + ICON_SIZE;
+    let icon_bottom = pill.y + PADDING_Y + ICON_SIZE;
     let mut x = pill.x + PADDING_X;
     let mut separator = 0.0;
     let icons: Vec<Rectangle> = sizes
@@ -399,7 +410,7 @@ fn drag_layout(
             }
             let rect = Rectangle {
                 x: slot_x(slot),
-                y: pill.y + PADDING,
+                y: pill.y + PADDING_Y,
                 width: ICON_SIZE,
                 height: ICON_SIZE,
             };
@@ -411,7 +422,7 @@ fn drag_layout(
     let separator = slot_x(app_slots) - SPACING / 2.0 + SEPARATOR_GAP / 2.0;
     icons.extend((0..trailing).map(|index| Rectangle {
         x: slot_x(app_slots + index) + SEPARATOR_GAP,
-        y: pill.y + PADDING,
+        y: pill.y + PADDING_Y,
         width: ICON_SIZE,
         height: ICON_SIZE,
     }));
@@ -779,7 +790,7 @@ pub fn view<'a>(
 
     let mut layers: Vec<Element<'a>> = vec![pin(pill).x(layout.pill.x).y(layout.pill.y).into()];
 
-    let dot_y = layout.pill.y + PADDING + ICON_SIZE + DOT_GAP;
+    let dot_y = layout.pill.y + PADDING_Y + ICON_SIZE + DOT_GAP;
     for (index, (item, rect)) in items.iter().zip(&layout.icons).enumerate() {
         if layout.dragged == Some(index) {
             continue;
@@ -838,7 +849,7 @@ pub fn view<'a>(
     layers.push(
         pin(separator)
             .x(layout.separator - 0.5)
-            .y(layout.pill.y + PADDING + (ICON_SIZE - SEPARATOR_HEIGHT) / 2.0)
+            .y(layout.pill.y + PADDING_Y + (ICON_SIZE - SEPARATOR_HEIGHT) / 2.0)
             .into(),
     );
 

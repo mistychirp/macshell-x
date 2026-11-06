@@ -211,6 +211,8 @@ pub enum Message {
     WallpaperChosen(Option<PathBuf>),
     /// "System Settings…" was chosen in the menu.
     OpenSettings,
+    /// Hiding an app: its windows go, with no animation and no tile in the dock.
+    HideWindows(Vec<u64>),
     /// It's been a moment since an app with this id was asked to close its windows.
     QuitGraceOver(String),
     /// Time to see which apps are still running.
@@ -663,9 +665,8 @@ impl Shell {
         };
         let layout = &self.dock_layout;
         let mut targets = Vec::new();
-        // A new tile goes just before the Trash.
-        if let Some(next) = layout.icons.get(dock::place_slot(layout, 1)) {
-            targets.push((String::new(), on_screen(next)));
+        if let Some(next) = dock::next_minimized_tile(layout) {
+            targets.push((String::new(), on_screen(&next)));
         }
         for (index, minimized) in self.minimized.iter().enumerate() {
             if let Some(window) = self.windows.iter().find(|window| window.id == minimized.id)
@@ -1326,6 +1327,7 @@ impl Shell {
                     return self.relayout_dock();
                 }
             }
+            Message::HideWindows(ids) => ids.into_iter().for_each(kwin::minimize_window),
             Message::OpenSettings => {
                 let close = self.close_popup();
                 match self
@@ -1395,21 +1397,30 @@ impl Shell {
                 self.attach_material(id, surface);
             }
             Message::SurfaceReached(_, None) => log::warn!("can't reach a wl_surface; no material"),
-            Message::BarPressed(title) => return self.open_bar_menu(title),
-            // Like on macOS, while a bar menu is open, pointing at another title switches to its
-            // menu. The new popup can only take the grab once the old one is destroyed, so it
-            // opens when the old one reports closed.
+            // A new popup can only take the grab once the old one is destroyed, so another title's
+            // menu opens when the open one reports closed.
+            Message::BarPressed(title) => {
+                if let Some(open) = self.popup.as_ref().and_then(|popup| popup.title)
+                    && open != title
+                {
+                    self.next_bar_menu = Some(title);
+                    return self.close_popup();
+                }
+                return self.open_bar_menu(title);
+            }
+            // Like on macOS, pointing at another app menu while one's open switches to it. The
+            // items on the right take a click.
             Message::BarEntered(title) => {
-                let has_menu = match title {
-                    menubar::Title::Tray(index) => self
-                        .tray
-                        .get(index)
-                        .is_some_and(|icon| icon.item.has_menu()),
-                    _ => true,
+                let is_menu = |title| {
+                    matches!(
+                        title,
+                        menubar::Title::System | menubar::Title::App | menubar::Title::AppMenu(_)
+                    )
                 };
-                if has_menu
+                if is_menu(title)
                     && let Some(open) = self.popup.as_ref().and_then(|popup| popup.title)
                     && open != title
+                    && is_menu(open)
                 {
                     self.next_bar_menu = Some(title);
                     return self.close_popup();
@@ -3029,10 +3040,17 @@ impl Shell {
                 return Task::future(kwin::show_windows(uuids)).discard();
             }
             dock::MenuAction::Hide(ids) => {
-                for id in ids {
-                    self.hidden_windows.insert(id);
-                    kwin::minimize_window(id);
-                }
+                self.hidden_windows.extend(ids.iter().copied());
+                let uuids = self
+                    .windows
+                    .iter()
+                    .filter(|window| ids.contains(&window.id))
+                    .map(|window| window.uuid.clone())
+                    .collect();
+                // The genie has to hear before the windows go.
+                return Task::perform(arrange::skip_genie(uuids), move |()| {
+                    Message::HideWindows(ids.clone())
+                });
             }
             dock::MenuAction::Quit(app_id) => {
                 let Some(item) = self.dock.iter().find(|item| item.app.id == app_id) else {

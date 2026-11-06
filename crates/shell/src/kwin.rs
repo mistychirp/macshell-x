@@ -180,7 +180,37 @@ fn thumbnail(
         ((height as f32 * scale) as u32).max(1),
     );
     let (width, height) = small.dimensions();
-    Some(image::Handle::from_rgba(width, height, small.into_raw()))
+    Some(image::Handle::from_rgba(
+        width,
+        height,
+        on_dark_card(small).into_raw(),
+    ))
+}
+
+/// A window's picture on a dark rounded card. Glass isn't in the picture, and neither is what's behind
+/// a translucent window, which would otherwise show whatever's behind the dock through it.
+fn on_dark_card(mut picture: ::image::RgbaImage) -> ::image::RgbaImage {
+    const CARD: [f32; 3] = [34.0, 30.0, 40.0];
+    let (width, height) = (picture.width() as f32, picture.height() as f32);
+    let radius = width.max(height) * 0.03;
+    for (x, y, pixel) in picture.enumerate_pixels_mut() {
+        // How far outside the rounded corner the middle of this pixel is.
+        let dx = (radius - (x as f32 + 0.5))
+            .max(x as f32 + 0.5 - (width - radius))
+            .max(0.0);
+        let dy = (radius - (y as f32 + 0.5))
+            .max(y as f32 + 0.5 - (height - radius))
+            .max(0.0);
+        let outside = (dx * dx + dy * dy).sqrt() - radius;
+        let coverage = (0.5 - outside).clamp(0.0, 1.0);
+        let alpha = f32::from(pixel[3]) / 255.0;
+        for channel in 0..3 {
+            pixel[channel] =
+                (f32::from(pixel[channel]) * alpha + CARD[channel] * (1.0 - alpha)) as u8;
+        }
+        pixel[3] = (coverage * 255.0) as u8;
+    }
+    picture
 }
 
 #[zbus::proxy(
