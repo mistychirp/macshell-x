@@ -256,6 +256,8 @@ pub fn view(
     level: usize,
     open_row: Option<usize>,
     has_tail: bool,
+    // The row that was just chosen in this menu, if one was, and whether it's lit right now.
+    blink: Option<(usize, bool)>,
 ) -> Element<'_> {
     let icons_shown = has_icons(entries);
     let rows = entries
@@ -275,7 +277,7 @@ pub fn view(
                 let on_press = if submenu.is_some() {
                     Message::MenuRowPressed(level, index)
                 } else {
-                    on_select.clone()
+                    Message::MenuRowChosen(level, index, Box::new(on_select.clone()))
                 };
                 let row = button(
                     container(
@@ -307,8 +309,15 @@ pub fn view(
                 .height(ROW_HEIGHT)
                 .padding([0.0, ITEM_PADDING_X])
                 .style(move |_, status| button::Style {
-                    background: (open
-                        || matches!(status, button::Status::Hovered | button::Status::Pressed))
+                    background: match blink {
+                        Some((row, lit)) => row == index && lit,
+                        None => {
+                            open || matches!(
+                                status,
+                                button::Status::Hovered | button::Status::Pressed
+                            )
+                        }
+                    }
                     .then_some(Background::Color(ACCENT)),
                     text_color: if matches!(status, button::Status::Disabled) {
                         DISABLED_TEXT

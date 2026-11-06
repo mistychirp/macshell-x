@@ -170,6 +170,10 @@ pub enum Message {
     /// Time to check for news about the brightness behind the bar.
     BarBrightness,
     /// A dock icon was right-clicked; carries the app's id.
+    /// A menu's row was chosen, in a menu this many submenus deep, and what to do once it's blinked.
+    MenuRowChosen(usize, usize, Box<Message>),
+    MenuBlinkFrame,
+    WidgetTintFrame,
     DockMenuRequested(String),
     /// A minimized window's tile in the dock was pressed, or right-clicked.
     DockThumbnailPressed(u64),
@@ -341,6 +345,14 @@ struct Submenu {
     closing: bool,
 }
 
+/// A menu's row that was chosen, blinking before it does what it's for, like on macOS.
+struct MenuBlink {
+    level: usize,
+    row: usize,
+    started: Instant,
+    chosen: Message,
+}
+
 struct MenuHover {
     level: usize,
     row: usize,
@@ -426,6 +438,8 @@ struct Shell {
     /// What `dock_pointer.amount` is easing toward.
     dock_target: f32,
     dock_last_frame: Option<Instant>,
+    dock_room: dock::RoomTracker,
+    dock_was_dragged: bool,
     /// Size of a fully magnified icon.
     dock_max_icon: f32,
     /// The wallpaper as it's written in the config file.
@@ -469,6 +483,8 @@ struct Shell {
     submenus: Vec<Submenu>,
     /// A menu's row the pointer is over, and since when, that may change which submenus are open.
     menu_hover: Option<MenuHover>,
+    menu_blink: Option<MenuBlink>,
+    widget_tint: widgets::Tint,
     /// A submenu to open once those being closed are gone, since only the topmost popup can have
     /// one: the level and row of the menu it's opening from.
     next_submenu: Option<(usize, usize)>,
@@ -547,6 +563,10 @@ const FALLBACK_SCREEN_HEIGHT: f32 = 700.0;
 /// How long the pointer has to stay on a menu's row to change which submenus are open, so that
 /// heading for an open submenu across other rows doesn't close it.
 const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
+/// How long the dock fills up for as the session starts, which isn't worth animating.
+const DOCK_SETTLE: Duration = Duration::from_secs(3);
+/// How long a chosen menu row stays off, and then back on, measured from Tahoe's.
+const MENU_BLINK_PHASE: Duration = Duration::from_millis(70);
 /// How big minimized windows' pictures are kept, on their longer side: enough for a magnified dock.
 const THUMBNAIL_SIZE: u32 = 512;
 /// How long the green light's menu waits for the pointer to come back.
@@ -647,6 +667,8 @@ impl Shell {
             dock_pointer: dock::Pointer::default(),
             dock_target: 0.0,
             dock_last_frame: None,
+            dock_room: dock::RoomTracker::default(),
+            dock_was_dragged: false,
             dock_max_icon,
             dock_layout: dock::Layout::default(),
             material,
@@ -672,6 +694,8 @@ impl Shell {
             next_bar_menu: None,
             submenus: Vec::new(),
             menu_hover: None,
+            menu_blink: None,
+            widget_tint: widgets::Tint::default(),
             next_submenu: None,
             tray: Vec::new(),
             app_menu_address: None,
@@ -807,9 +831,9 @@ impl Shell {
                 Surface::Desktop => format!(
                     "{} {}",
                     self.desktop.content_key(self.focused_app.is_none()),
-                    self.widgets.content_key(self.widgets_tinted())
+                    self.widgets.content_key(self.widget_tint.value())
                 ),
-                Surface::WidgetGallery => self.widgets.content_key(false),
+                Surface::WidgetGallery => self.widgets.content_key(0.0),
                 // Only there for a moment, with its hovers its own.
                 Surface::ArrangeMenu => {
                     iced_layershell::redraw::mark_changed(id);
@@ -2082,6 +2106,29 @@ impl Shell {
                 self.menu_hover = None;
                 return self.show_submenu(level, row);
             }
+            Message::MenuRowChosen(level, row, chosen) => {
+                if self.menu_blink.is_none() {
+                    self.menu_hover = None;
+                    self.menu_blink = Some(MenuBlink {
+                        level,
+                        row,
+                        started: Instant::now(),
+                        chosen: *chosen,
+                    });
+                }
+            }
+            // What's drawn follows the time, in [`App::update`]'s redraw.
+            Message::WidgetTintFrame => {}
+            Message::MenuBlinkFrame => {
+                if self
+                    .menu_blink
+                    .as_ref()
+                    .is_some_and(|blink| blink.started.elapsed() >= 2 * MENU_BLINK_PHASE)
+                    && let Some(blink) = self.menu_blink.take()
+                {
+                    return Task::done(blink.chosen);
+                }
+            }
             Message::MenuHoverCheck => {
                 if let Some(hover) = &self.menu_hover
                     && hover.since.elapsed() >= MENU_HOVER_DELAY
@@ -2644,12 +2691,21 @@ impl Shell {
                 self.gallery_material = Some(target);
             }
             Some(Surface::Desktop) => {
-                self.desktop_shapes = self.widgets.material_shapes(self.widgets_tinted());
+                let tinted = self.widgets_tinted() || self.widget_tint.value() > 0.0;
+                self.desktop_shapes = self.widgets.material_shapes(tinted);
                 material.set_shapes(&target, &self.desktop_shapes);
                 self.desktop_material = Some(target);
             }
             Some(Surface::Wallpaper) | None => target.destroy(),
         }
+    }
+
+    /// The row blinking in a menu this deep, if any, and whether it's lit right now.
+    fn menu_blink_at(&self, level: usize) -> Option<(usize, bool)> {
+        self.menu_blink
+            .as_ref()
+            .filter(|blink| blink.level == level)
+            .map(|blink| (blink.row, blink.started.elapsed() >= MENU_BLINK_PHASE))
     }
 
     fn bar(&self) -> menubar::Bar<'_> {
@@ -2979,6 +3035,7 @@ impl Shell {
             self.dock_max_icon,
             Vec::new(),
             None,
+            &dock::Room::default(),
         );
         let tile_x = resting
             .icons
@@ -3240,9 +3297,14 @@ impl Shell {
         Task::batch(tasks)
     }
 
-    /// Keeps the glass behind widgets in line with them.
+    /// Keeps the glass behind widgets in line with them. It's there for as long as any of their
+    /// glass look is showing, and under their color on the way there and back.
     fn update_desktop_shapes(&mut self) {
-        let shapes = self.widgets.material_shapes(self.widgets_tinted());
+        let target = self.widgets_tinted();
+        self.widget_tint.aim(target);
+        let shapes = self
+            .widgets
+            .material_shapes(target || self.widget_tint.value() > 0.0);
         if shapes != self.desktop_shapes
             && let (Some(material), Some(target)) = (&self.material, &self.desktop_material)
         {
@@ -3829,6 +3891,15 @@ impl Shell {
         }
 
         let now = Instant::now();
+        // Not for what a drag already made room for, nor for the dock filling up as the session starts.
+        let dragging = self.dock_drag.is_some();
+        self.dock_room.update(
+            dock::slot_keys(&self.dock, &self.minimized),
+            !dragging && !self.dock_was_dragged && self.started.elapsed() > DOCK_SETTLE,
+            now,
+        );
+        self.dock_was_dragged = dragging;
+        let room = self.dock_room.room(now);
         let bounce = self
             .dock
             .iter()
@@ -3849,6 +3920,7 @@ impl Shell {
             self.dock_max_icon,
             bounce,
             self.dock_drag.as_ref(),
+            &room,
         );
         // Like macOS, an open menu or stack hides the name over the icon. It would show
         // through the popup's clear glass anyway.
@@ -3893,7 +3965,7 @@ impl Shell {
                 &self.desktop,
                 self.focused_app.is_none(),
                 self.widgets
-                    .layers(self.widgets_tinted(), self.screen_height),
+                    .layers(self.widget_tint.value(), self.screen_height),
             ),
             Some(Surface::WidgetGallery) => {
                 widgets::gallery(&self.widgets, self.material.as_ref().map(|m| m.kind()))
@@ -3930,6 +4002,7 @@ impl Shell {
                         index + 1,
                         open_row,
                         false,
+                        self.menu_blink_at(index + 1),
                     );
                 }
                 match self.popup.as_ref().map(|popup| &popup.content) {
@@ -3939,7 +4012,14 @@ impl Shell {
                             .popup
                             .as_ref()
                             .is_some_and(|popup| popup.tail.is_some());
-                        menu::view(entries, material, 0, open_row, has_tail)
+                        menu::view(
+                            entries,
+                            material,
+                            0,
+                            open_row,
+                            has_tail,
+                            self.menu_blink_at(0),
+                        )
                     }
                     Some(PopupContent::ViewOptions) => {
                         desktop::view_options(self.desktop.metrics())
@@ -3986,6 +4066,7 @@ impl Shell {
         // Only tick while something in the dock moves.
         let animating = self.dock_pointer.amount != self.dock_target
             || !self.launching.is_empty()
+            || self.dock_room.is_animating()
             || self.dock.iter().any(dock::Item::wants_attention);
         let dock_frames = if animating {
             time::every(Duration::from_millis(16)).map(Message::DockFrame)
@@ -4067,11 +4148,23 @@ impl Shell {
         } else {
             Subscription::none()
         };
+        let menu_blink = if self.menu_blink.is_some() {
+            time::every(Duration::from_millis(16)).map(|_| Message::MenuBlinkFrame)
+        } else {
+            Subscription::none()
+        };
+        let widget_tint = if self.widget_tint.is_animating() {
+            time::every(Duration::from_millis(16)).map(|_| Message::WidgetTintFrame)
+        } else {
+            Subscription::none()
+        };
 
         Subscription::batch([
             dock_frames,
             banner_frames,
             menu_hover,
+            menu_blink,
+            widget_tint,
             notifications::events().map(Message::Notification),
             network::secret_agent().map(Message::WifiAgent),
             dnd::events().map(Message::Dnd),

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, fs, io};
 
 use chrono::{Datelike, Local, NaiveDate, Timelike};
@@ -21,6 +21,7 @@ use iced_widget::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::{Element, Message};
+use crate::group::group;
 use crate::icons::{self, Glyph};
 use crate::{fonts, material, menu, menubar, places};
 
@@ -29,6 +30,8 @@ const SMALL: f32 = 158.0;
 const GAP: f32 = 16.0;
 const STEP: f32 = SMALL + GAP;
 const RADIUS: f32 = 22.0;
+/// How long widgets take to crossfade between color and glass, measured from Tahoe's.
+const TINT_TIME: Duration = Duration::from_millis(170);
 const MARGIN: f32 = 16.0;
 const MINUS_SIZE: f32 = 18.0;
 /// Where the middle of a widget's minus badge is, from its top left corner.
@@ -540,7 +543,7 @@ impl Widgets {
     }
 
     /// What decides whether the surface has to redraw.
-    pub fn content_key(&self, tinted: bool) -> String {
+    pub fn content_key(&self, tint: f32) -> String {
         let now = Local::now();
         let dragged = self
             .drag
@@ -555,7 +558,7 @@ impl Widgets {
             now.format("%F %H:%M")
         };
         format!(
-            "{:?} {:?} {} {dragged:?} {time} {:?} {tinted}",
+            "{:?} {:?} {} {dragged:?} {time} {:?} {tint}",
             self.placed,
             self.weather,
             self.editing,
@@ -563,9 +566,9 @@ impl Widgets {
         )
     }
 
-    /// The widgets, each as a layer of the desktop. `tinted`: they're glass, for a window being
-    /// active.
-    pub fn layers(&self, tinted: bool, screen_height: f32) -> Vec<Element<'_>> {
+    /// The widgets, each as a layer of the desktop. `tint`: how far along they are in turning to
+    /// glass, which they are for a window being active.
+    pub fn layers(&self, tint: f32, screen_height: f32) -> Vec<Element<'_>> {
         let mut layers = Vec::new();
         let dragging = self.drag.as_ref().filter(|drag| drag.moved);
         if let Some(drag) = dragging {
@@ -581,7 +584,7 @@ impl Widgets {
         order.sort_by_key(|widget| dragging.is_some_and(|drag| drag.id == widget.id));
         for widget in order {
             let at = self.drawn_at(widget);
-            layers.push(pin(self.widget_view(widget, tinted)).x(at.x).y(at.y).into());
+            layers.push(pin(self.crossfaded(widget, tint)).x(at.x).y(at.y).into());
             if self.editing {
                 layers.push(
                     pin(minus_badge())
@@ -592,6 +595,27 @@ impl Widgets {
             }
         }
         layers
+    }
+
+    /// A widget part of the way between its two looks. Color goes over the glass one at full strength
+    /// where it's opaque, so that no wallpaper shows through in the middle.
+    fn crossfaded(&self, widget: &Placed, tint: f32) -> Element<'_> {
+        if tint <= 0.0 {
+            return self.widget_view(widget, false);
+        }
+        if tint >= 1.0 {
+            return self.widget_view(widget, true);
+        }
+        let under = if widget.kind.is_always_glass() {
+            tint
+        } else {
+            1.0
+        };
+        stack![
+            group(self.widget_view(widget, true)).opacity(under),
+            group(self.widget_view(widget, false)).opacity(1.0 - tint),
+        ]
+        .into()
     }
 
     fn widget_view(&self, widget: &Placed, tinted: bool) -> Element<'_> {
@@ -659,6 +683,44 @@ fn slot_outline<'a>(column: i32, row: i32, size: WidgetSize) -> Element<'a> {
     .x(at.x - SLOT_OUTSET)
     .y(at.y - SLOT_OUTSET)
     .into()
+}
+
+/// How far along widgets are in turning to glass, as a crossfade that can change its mind.
+#[derive(Debug)]
+pub struct Tint {
+    from: f32,
+    to: bool,
+    started: Instant,
+}
+
+impl Default for Tint {
+    fn default() -> Self {
+        Self {
+            from: 0.0,
+            to: false,
+            started: Instant::now() - TINT_TIME,
+        }
+    }
+}
+
+impl Tint {
+    pub fn aim(&mut self, tinted: bool) {
+        if tinted != self.to {
+            self.from = self.value();
+            self.to = tinted;
+            self.started = Instant::now();
+        }
+    }
+
+    pub fn value(&self) -> f32 {
+        let t = (self.started.elapsed().as_secs_f32() / TINT_TIME.as_secs_f32()).min(1.0);
+        let to = if self.to { 1.0 } else { 0.0 };
+        self.from + (to - self.from) * t * t * (3.0 - 2.0 * t)
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.started.elapsed() < TINT_TIME
+    }
 }
 
 /// A widget's frame, with its background going from one color to another downward, or none at all
@@ -1509,6 +1571,21 @@ fn saved_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_tint_goes_there_and_back_from_wherever_it_got_to() {
+        let mut tint = super::Tint::default();
+        assert_eq!(tint.value(), 0.0);
+        tint.aim(true);
+        assert!(tint.is_animating());
+        tint.started -= super::TINT_TIME;
+        assert_eq!(tint.value(), 1.0);
+        assert!(!tint.is_animating());
+        tint.aim(false);
+        assert!(tint.value() > 0.9);
+        tint.started -= super::TINT_TIME;
+        assert_eq!(tint.value(), 0.0);
+    }
+
     use super::*;
 
     #[test]

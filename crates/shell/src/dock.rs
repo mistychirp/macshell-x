@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
 use iced_widget::core::{Background, Border, Color, ContentFit, Length, Point, Rectangle, Vector};
@@ -222,6 +223,9 @@ fn headroom(max_icon: f32) -> f32 {
     ((max_icon - ICON_SIZE).max(0.0) + LABEL_GAP + LABEL_HEIGHT + 4.0).max(DRAG_HEADROOM)
 }
 
+/// How long the dock takes to make room for a new tile or close up behind one, from Tahoe's.
+const ROOM_TIME: Duration = Duration::from_millis(330);
+
 /// How tall the dock's surface is. `max_icon` is the size of a fully magnified icon.
 pub fn surface_height(max_icon: f32) -> f32 {
     (headroom(max_icon) + PILL_HEIGHT + MARGIN).ceil()
@@ -262,7 +266,102 @@ fn icon_size(index: usize, apps: usize, pointer: &Pointer, max_icon: f32) -> f32
     ICON_SIZE + (max_icon - ICON_SIZE) * falloff * pointer.amount
 }
 
+/// How the dock's slots are opening and closing right now, as tiles come and go.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Room {
+    /// How much of its room each slot has so far. Missing ones have it all.
+    pub grown: HashMap<usize, f32>,
+    /// Gaps closing where tiles were: which slot each one's before, and how much of a slot's left.
+    pub closing: Vec<(usize, f32)>,
+}
+
+/// What each slot is, to tell which tiles came and went.
+pub fn slot_keys(items: &[Item], minimized: &[Minimized]) -> Vec<String> {
+    let mut keys: Vec<String> = items
+        .iter()
+        .map(|item| format!("app {}", item.app.id))
+        .collect();
+    keys.push(String::from("downloads"));
+    keys.extend(
+        minimized
+            .iter()
+            .map(|window| format!("window {}", window.id)),
+    );
+    keys.push(String::from("trash"));
+    keys
+}
+
+/// Keeps track of slots opening and closing, to make room for new tiles, like Tahoe's.
+#[derive(Debug, Default)]
+pub struct RoomTracker {
+    slots: Vec<String>,
+    growing: HashMap<String, Instant>,
+    /// Where tiles were: the slot that came next, which is still there, and since when.
+    closing: Vec<(String, Instant)>,
+}
+
+fn room_eased(started: Instant, now: Instant) -> f32 {
+    let t =
+        (now.saturating_duration_since(started).as_secs_f32() / ROOM_TIME.as_secs_f32()).min(1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+impl RoomTracker {
+    /// Takes in what the slots are now. If not `animate`, they're just there, or gone.
+    pub fn update(&mut self, keys: Vec<String>, animate: bool, now: Instant) {
+        if keys == self.slots {
+            return;
+        }
+        if animate {
+            for key in &keys {
+                if !self.slots.contains(key) {
+                    self.growing.insert(key.clone(), now);
+                }
+            }
+            for (index, key) in self.slots.iter().enumerate() {
+                if !keys.contains(key)
+                    && let Some(next) = self.slots[index + 1..]
+                        .iter()
+                        .find(|next| keys.contains(next))
+                {
+                    self.closing.push((next.clone(), now));
+                }
+            }
+        } else {
+            self.growing.clear();
+            self.closing.clear();
+        }
+        self.slots = keys;
+    }
+
+    pub fn is_animating(&self) -> bool {
+        !self.growing.is_empty() || !self.closing.is_empty()
+    }
+
+    /// The room as it is now, forgetting what's over.
+    pub fn room(&mut self, now: Instant) -> Room {
+        self.growing
+            .retain(|_, started| now.saturating_duration_since(*started) < ROOM_TIME);
+        self.closing
+            .retain(|(_, started)| now.saturating_duration_since(*started) < ROOM_TIME);
+        let slot_of = |key: &str| self.slots.iter().position(|slot| slot == key);
+        Room {
+            grown: self
+                .growing
+                .iter()
+                .filter_map(|(key, started)| Some((slot_of(key)?, room_eased(*started, now))))
+                .collect(),
+            closing: self
+                .closing
+                .iter()
+                .filter_map(|(key, started)| Some((slot_of(key)?, 1.0 - room_eased(*started, now))))
+                .collect(),
+        }
+    }
+}
+
 /// `bounce` holds each item's current bounce height (missing items don't bounce).
+#[allow(clippy::too_many_arguments)]
 pub fn layout(
     surface_width: f32,
     items: &[Item],
@@ -271,6 +370,7 @@ pub fn layout(
     max_icon: f32,
     bounce: Vec<f32>,
     drag: Option<&Drag>,
+    room: &Room,
 ) -> Layout {
     if let Some(drag) = drag
         && drag.index < items.len()
@@ -279,11 +379,22 @@ pub fn layout(
     }
 
     let apps = items.len();
+    let grown = |index: usize| room.grown.get(&index).copied().unwrap_or(1.0);
     let sizes: Vec<f32> = (0..apps + Place::ALL.len() + minimized.len())
-        .map(|index| icon_size(index, apps, pointer, max_icon))
+        .map(|index| icon_size(index, apps, pointer, max_icon) * grown(index))
         .collect();
-    let icons_width =
-        sizes.iter().sum::<f32>() + (sizes.len() - 1) as f32 * SPACING + SEPARATOR_GAP;
+    let gap_before = |index: usize| -> f32 {
+        room.closing
+            .iter()
+            .filter(|(slot, _)| *slot == index)
+            .map(|(_, left)| left * (ICON_SIZE + SPACING))
+            .sum()
+    };
+    let spacing: f32 = (0..sizes.len())
+        .map(|index| SPACING * grown(index) + gap_before(index))
+        .sum();
+    // The last slot, which is always there, has nothing after it.
+    let icons_width = sizes.iter().sum::<f32>() + spacing - SPACING + SEPARATOR_GAP;
 
     let width = (2.0 * PADDING_X + icons_width).round();
     let pill = Rectangle {
@@ -300,6 +411,7 @@ pub fn layout(
         .iter()
         .enumerate()
         .map(|(index, &size)| {
+            x += gap_before(index);
             if index == apps {
                 separator = x - SPACING / 2.0 + SEPARATOR_GAP / 2.0;
                 x += SEPARATOR_GAP;
@@ -310,7 +422,7 @@ pub fn layout(
                 width: size,
                 height: size,
             };
-            x += size + SPACING;
+            x += size + SPACING * grown(index);
             rect
         })
         .collect();
@@ -1024,5 +1136,45 @@ fn icon_image<'a>(handle: Option<&image::Handle>, name: &str, size: f32) -> Elem
                 ..Default::default()
             })
             .into(),
+    }
+}
+
+#[cfg(test)]
+mod room_tests {
+    use super::*;
+
+    fn keys(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_new_slot_grows_and_a_lost_one_leaves_a_gap_that_closes() {
+        let start = Instant::now();
+        let mut tracker = RoomTracker::default();
+        tracker.update(keys(&["a", "b", "trash"]), false, start);
+        assert!(!tracker.is_animating());
+
+        tracker.update(keys(&["a", "new", "b", "trash"]), true, start);
+        let room = tracker.room(start);
+        assert_eq!(room.grown.get(&1), Some(&0.0));
+        assert!(room.closing.is_empty());
+        let room = tracker.room(start + ROOM_TIME / 2);
+        assert!((room.grown[&1] - 0.5).abs() < 0.01);
+        assert!(tracker.room(start + ROOM_TIME).grown.is_empty());
+        assert!(!tracker.is_animating());
+
+        tracker.update(keys(&["new", "b", "trash"]), true, start);
+        // What was "a" is a gap before "new", all of a slot wide.
+        assert_eq!(tracker.room(start).closing, vec![(0, 1.0)]);
+        assert!(tracker.room(start + ROOM_TIME).closing.is_empty());
+    }
+
+    #[test]
+    fn moving_slots_around_makes_no_room() {
+        let start = Instant::now();
+        let mut tracker = RoomTracker::default();
+        tracker.update(keys(&["a", "b", "trash"]), false, start);
+        tracker.update(keys(&["b", "a", "trash"]), true, start);
+        assert!(!tracker.is_animating());
     }
 }
