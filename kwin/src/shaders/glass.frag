@@ -113,14 +113,15 @@ float sdShape(vec2 p, vec2 halfSize, float r)
     }
     float tailHeight = abs(tail.z);
     float body = sdRoundedBox(p + vec2(0.0, tailHeight * 0.5), vec2(halfSize.x, halfSize.y - tailHeight * 0.5), r);
-    // The tip is rounded by pulling the triangle in and growing it back. It carries on into the
-    // body at the same angle, so that the join is a clean one to smooth.
-    const float tipRadius = 1.5;
-    vec2 tip = vec2(p.x + halfSize.x - tail.x, halfSize.y - tipRadius * 1.6 - p.y);
-    vec2 reach = vec2(tail.y * 0.5, tailHeight) * 1.5;
+    // The tip is rounded by pulling the triangle in and growing it back, which keeps it as tall. It
+    // carries on into the body at the same angle, so that the join is a clean one to smooth.
+    const float tipRadius = 3.5;
+    vec2 tip = vec2(p.x + halfSize.x - tail.x, halfSize.y - tipRadius - p.y);
+    // Growing it back widens it as well, so it starts out that much narrower.
+    vec2 reach = vec2(max(tail.y * 0.5 - tipRadius, 1.0), tailHeight) * 1.5;
     float triangle = sdTriangle(tip, reach) - tipRadius;
     // A smooth union, which flares the tail's base into the body.
-    const float flare = 5.0;
+    const float flare = 4.0;
     float h = clamp(0.5 + 0.5 * (triangle - body) / flare, 0.0, 1.0);
     return mix(triangle, body, h) - flare * h * (1.0 - h);
 }

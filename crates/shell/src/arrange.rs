@@ -16,12 +16,13 @@ const SERVICE: &str = "org.macshell.Shell";
 const PATH: &str = "/org/macshell/Windows";
 
 const WIDTH: f32 = 239.0;
-const HEIGHT: f32 = 191.0;
-const TAIL_HEIGHT: f32 = 8.0;
+const HEIGHT: f32 = 193.0;
+const TAIL_HEIGHT: f32 = 10.0;
 const TAIL_WIDTH: f32 = 22.0;
-/// From the panel's left edge to the light its tail points at.
-const TAIL_CENTER: f32 = 26.0;
-const RADIUS: f32 = 22.0;
+/// From the panel's left edge to the light its tail points at. Its base has to clear the corner, or
+/// the two make a bump in the outline.
+const TAIL_CENTER: f32 = 36.0;
+const RADIUS: f32 = 18.0;
 const PADDING_X: f32 = 15.0;
 const TILE_WIDTH: f32 = 25.0;
 const TILE_HEIGHT: f32 = 19.0;
@@ -38,7 +39,7 @@ const FILL_TILES: f32 = 130.0;
 const SECOND_LINE: f32 = 157.0;
 const FULL_ROW: f32 = 175.0;
 const ROW_HEIGHT: f32 = 24.0;
-const ROW_INSET: f32 = 4.0;
+const ROW_INSET: f32 = 6.0;
 /// Where a row's picture starts, and how big its words are, measured from Tahoe's.
 const ROW_PADDING: f32 = 12.5;
 const ROW_TEXT: f32 = 14.0;
