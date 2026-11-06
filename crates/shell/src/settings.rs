@@ -489,10 +489,6 @@ impl SettingsApp {
             Message::Reached(Some(surface)) => {
                 if let Some(material) = &self.material {
                     let target = material.attach(surface);
-                    material.set_appear(
-                        &target,
-                        material::Appear::Gentle((WIDTH / 2.0) as i32, (HEIGHT / 2.0) as i32),
-                    );
                     material.set_window_shadow(&target, RADIUS, true);
                     material.set_shapes(&target, &material_shapes());
                     self.surface = Some(target);

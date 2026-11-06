@@ -37,7 +37,7 @@
     their glass is, to pick a text color that stays legible over it.
   </description>
 
-  <interface name="macshell_glass_manager_v1" version="9">
+  <interface name="macshell_glass_manager_v1" version="10">
     <description summary="glass factory">
       Creates glass objects for surfaces.
     </description>
@@ -63,7 +63,7 @@
     </request>
   </interface>
 
-  <interface name="macshell_glass_v1" version="9">
+  <interface name="macshell_glass_v1" version="10">
     <description summary="glass shapes behind a surface">
       Holds a list of glass shapes rendered behind the surface. The list is
       double-buffered state, applied on the next wl_surface.commit, and starts
@@ -148,9 +148,10 @@
 
     <enum name="appear" since="8">
       <entry name="none" value="0"/>
-      <entry name="spring" value="1" summary="springs out from the point, overshooting a little"/>
-      <entry name="gentle" value="2" summary="grows slightly out of the point, with no overshoot"/>
+      <entry name="fade" value="1" summary="fades in and out"/>
+      <entry name="pop" value="2" summary="there at once, and fades out quickly"/>
       <entry name="slide" value="3" summary="slides in from the right, and back out there"/>
+      <entry name="grow" value="4" since="10" summary="grows out of the point as it fades in, and goes at once"/>
     </enum>
 
     <request name="set_appear" since="8">
@@ -161,6 +162,41 @@
       <arg name="kind" type="uint" enum="appear"/>
       <arg name="x" type="int"/>
       <arg name="y" type="int"/>
+    </request>
+
+    <request name="add_box" since="10">
+      <description summary="add a rounded rectangle that can move around inside a rectangle">
+        A rounded rectangle anywhere inside the given rectangle, in which the background is kept. To
+        animate it, keep that rectangle the same, so that nothing has to be set up again every frame.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="style" type="uint" enum="style"/>
+      <arg name="box_x" type="fixed" summary="the middle of the box, from the rectangle's left"/>
+      <arg name="box_y" type="fixed" summary="the middle of the box, from the rectangle's top"/>
+      <arg name="box_width" type="fixed"/>
+      <arg name="box_height" type="fixed"/>
+      <arg name="box_radius" type="fixed"/>
+    </request>
+
+    <request name="add_droplet" since="10">
+      <description summary="melt a circle into the shape added last">
+        A circle that merges smoothly with the shape added last and pulls away from it like a drop of
+        liquid, in the coordinates of its rectangle. There can be up to four.
+      </description>
+      <arg name="x" type="fixed"/>
+      <arg name="y" type="fixed"/>
+      <arg name="radius" type="fixed"/>
+      <arg name="blend" type="fixed" summary="how far apart they still reach for each other"/>
+    </request>
+
+    <request name="set_last_opacity" since="10">
+      <description summary="fade the shape added last">
+        How opaque the shape added last is, from 0 to 1.
+      </description>
+      <arg name="opacity" type="fixed"/>
     </request>
 
     <request name="add_rotated_rect" since="9">

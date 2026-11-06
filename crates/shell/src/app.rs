@@ -120,6 +120,8 @@ pub enum Message {
     ControlRefresh,
     /// A module's detail was opened, or left.
     ControlDetail(Option<control::Detail>),
+    /// An animation frame for a module turning into its detail, or back.
+    ControlFrame,
     /// Something that takes presses was pressed where they do nothing.
     Nothing,
     /// A detail panel's settings row was pressed; carries the settings page.
@@ -317,6 +319,8 @@ struct Popup {
     material: Option<MaterialSurface>,
     /// Shapes last sent, for content that changes while it's open.
     shapes: Vec<material::Shape>,
+    /// How opaque they are, where that's not fully.
+    shape_opacities: Vec<f32>,
     /// Where its left edge is on the screen.
     x: f32,
     /// Where a menu's tail's tip is from its left edge, if it has one.
@@ -995,9 +999,26 @@ impl Shell {
                 }
             }
             Message::ControlRefresh => {
-                return Task::perform(control::status(self.control.detail), Message::ControlStatus);
+                return Task::perform(control::status(), Message::ControlStatus);
+            }
+            Message::ControlFrame => {
+                if let Some(morph) = self.control.morph
+                    && morph.is_done()
+                {
+                    self.control.morph = None;
+                    if !morph.is_opening() {
+                        self.control.detail = None;
+                    }
+                }
+            }
+            Message::ControlDetail(None) => {
+                if self.control.detail.is_some() {
+                    self.control.morph = Some(control::Morph::start(&self.control, false));
+                }
+                return Task::done(Message::ControlRefresh);
             }
             Message::ControlDetail(detail) => {
+                self.control.morph = Some(control::Morph::start(&self.control, true));
                 self.control.detail = detail;
                 let refresh = Task::done(Message::ControlRefresh);
                 if detail == Some(control::Detail::Wifi) {
@@ -1609,6 +1630,7 @@ impl Shell {
             }
             Message::SpotlightMode(mode) => {
                 if let Some(open) = &mut self.spotlight {
+                    open.content_changed();
                     open.mode = mode;
                     open.query.clear();
                     open.category = None;
@@ -2255,6 +2277,7 @@ impl Shell {
             },
             menubar::Title::ControlCenter => {
                 self.control.detail = None;
+                self.control.morph = None;
                 self.control.volume = audio::volume();
                 let reread = Task::perform(brightness::level(), Message::BrightnessRead);
                 let anchor = self.bar().screen_edge_anchor();
@@ -2486,6 +2509,7 @@ impl Shell {
             size: settings.size,
             material: None,
             shapes: Vec::new(),
+            shape_opacities: Vec::new(),
             x,
             tail,
         });
@@ -2510,13 +2534,6 @@ impl Shell {
             return;
         };
         let target = material.attach(surface);
-        // Control Center springs out of its icon in the bar.
-        let control_icon = self
-            .bar()
-            .titles()
-            .into_iter()
-            .find(|(title, _)| *title == menubar::Title::ControlCenter)
-            .map_or(0.0, |(_, rect)| rect.x + rect.width / 2.0);
         match self.surfaces.get(&id) {
             Some(Surface::MenuBar) => {
                 self.bar_tracks_brightness = material.track_brightness(&target);
@@ -2550,18 +2567,12 @@ impl Shell {
                             popup.size.1 as f32,
                         ),
                     };
-                    let (width, height) = (popup.size.0 as i32, popup.size.1 as i32);
                     let appear = match popup.content {
-                        PopupContent::ControlCenter => Some(material::Appear::Spring(
-                            control_icon as i32 - (self.menubar_width as i32 - width),
-                            0,
-                        )),
+                        PopupContent::ControlCenter => Some(material::Appear::Fade),
                         PopupContent::NotificationCenter => Some(material::Appear::Slide),
-                        // A dock menu grows out of its tail, and the bar's menus just fade.
-                        PopupContent::Menu(_) => popup
-                            .tail
-                            .map(|tail| material::Appear::Gentle(tail as i32, height)),
-                        PopupContent::ViewOptions => Some(material::Appear::Gentle(0, 0)),
+                        PopupContent::Menu(_) | PopupContent::ViewOptions => {
+                            Some(material::Appear::Pop)
+                        }
                     };
                     if let Some(appear) = appear {
                         material.set_appear(&target, appear);
@@ -2574,8 +2585,7 @@ impl Shell {
             },
             Some(Surface::Hud) => match &mut self.hud {
                 Some(open) if open.id == id => {
-                    let (x, y) = hud::origin();
-                    material.set_appear(&target, material::Appear::Gentle(x, y));
+                    material.set_appear(&target, material::Appear::Fade);
                     material.set_shapes(&target, &hud::material_shapes());
                     open.material = Some(target);
                 }
@@ -2584,7 +2594,8 @@ impl Shell {
             Some(Surface::Fan) => match &mut self.fan {
                 Some(open) if open.id == id => {
                     open.shapes = open.material_shapes();
-                    material.set_shapes(&target, &open.shapes);
+                    open.shape_opacities = open.material_opacities();
+                    material.set_faded_shapes(&target, &open.shapes, &open.shape_opacities);
                     open.material = Some(target);
                 }
                 _ => target.destroy(),
@@ -2593,12 +2604,11 @@ impl Shell {
                 let (width, height) = (self.menubar_width, self.screen_height);
                 match &mut self.spotlight {
                     Some(open) if open.id == id => {
-                        material.set_appear(
-                            &target,
-                            material::Appear::Gentle((width / 2.0) as i32, (height * 0.2) as i32),
-                        );
+                        material.set_appear(&target, material::Appear::Fade);
+                        open.glass_arrived();
                         open.shapes = open.material_shapes(width, height);
-                        material.set_shapes(&target, &open.shapes);
+                        open.opacities = open.material_opacities();
+                        material.set_faded_shapes(&target, &open.shapes, &open.opacities);
                         open.material = Some(target);
                     }
                     _ => target.destroy(),
@@ -2607,7 +2617,7 @@ impl Shell {
             Some(Surface::Alert) => match &mut self.alert {
                 Some(open) if open.id == id => {
                     let (x, y) = alert::middle(&open.alert);
-                    material.set_appear(&target, material::Appear::Gentle(x, y));
+                    material.set_appear(&target, material::Appear::Grow(x, y));
                     material.set_window_shadow(&target, alert::RADIUS, open.active);
                     material.set_shapes(&target, &alert::material_shapes(&open.alert, open.active));
                     open.material = Some(target);
@@ -2622,16 +2632,14 @@ impl Shell {
             // Closed before it could be reached, or not a surface with material.
             Some(Surface::ArrangeMenu) => match &mut self.arrange_menu {
                 Some(open) if open.surface == id => {
-                    let (x, y) = arrange::tail_tip();
-                    material.set_appear(&target, material::Appear::Gentle(x, y));
+                    material.set_appear(&target, material::Appear::Pop);
                     material.set_shapes(&target, &arrange::material_shapes(open.submenu));
                     open.material = Some(target);
                 }
                 _ => target.destroy(),
             },
             Some(Surface::WidgetGallery) => {
-                let (x, y) = widgets::gallery_origin();
-                material.set_appear(&target, material::Appear::Gentle(x, y));
+                material.set_appear(&target, material::Appear::Fade);
                 material.set_shapes(&target, &widgets::gallery_shapes());
                 self.gallery_material = Some(target);
             }
@@ -2795,11 +2803,16 @@ impl Shell {
             PopupContent::ControlCenter => control::material_shapes(&self.control),
             _ => return,
         };
-        if shapes != popup.shapes
+        let opacities = match popup.content {
+            PopupContent::ControlCenter => control::material_opacities(&self.control),
+            _ => Vec::new(),
+        };
+        if (shapes != popup.shapes || opacities != popup.shape_opacities)
             && let (Some(material), Some(target)) = (&self.material, &popup.material)
         {
-            material.set_shapes(target, &shapes);
+            material.set_faded_shapes(target, &shapes, &opacities);
             popup.shapes = shapes;
+            popup.shape_opacities = opacities;
         }
     }
 
@@ -2955,7 +2968,7 @@ impl Shell {
     fn toggle_fan(&mut self) -> Task<Message> {
         if let Some(open) = &mut self.fan {
             open.close();
-            return Task::none();
+            return self.relayout_dock();
         }
         // Where the tile will be once the dock's magnification has settled.
         let resting = dock::layout(
@@ -3002,6 +3015,8 @@ impl Shell {
         self.fan = Some(fan::Fan::new(id, rows, more, tile_x, height, glass));
         tasks.push(open);
         tasks.push(self.close_popup());
+        // Which hides the name over the tile.
+        tasks.push(self.relayout_dock());
         Task::batch(tasks)
     }
 
@@ -3069,11 +3084,13 @@ impl Shell {
     fn update_fan_shapes(&mut self) {
         if let (Some(material), Some(open)) = (&self.material, &mut self.fan) {
             let shapes = open.material_shapes();
-            if shapes != open.shapes
+            let opacities = open.material_opacities();
+            if (shapes != open.shapes || opacities != open.shape_opacities)
                 && let Some(target) = &open.material
             {
-                material.set_shapes(target, &shapes);
+                material.set_faded_shapes(target, &shapes, &opacities);
                 open.shapes = shapes;
+                open.shape_opacities = opacities;
             }
         }
     }
@@ -3082,12 +3099,15 @@ impl Shell {
     fn update_spotlight_shapes(&mut self) {
         let (width, height) = (self.menubar_width, self.screen_height);
         if let (Some(material), Some(open)) = (&self.material, &mut self.spotlight) {
+            open.sync_expansion();
             let shapes = open.material_shapes(width, height);
-            if shapes != open.shapes
+            let opacities = open.material_opacities();
+            if (shapes != open.shapes || opacities != open.opacities)
                 && let Some(target) = &open.material
             {
-                material.set_shapes(target, &shapes);
+                material.set_faded_shapes(target, &shapes, &opacities);
                 open.shapes = shapes;
+                open.opacities = opacities;
             }
         }
     }
@@ -4021,12 +4041,23 @@ impl Shell {
         } else {
             Subscription::none()
         };
+        let control_frames = if self.control.morph.is_some() {
+            time::every(Duration::from_millis(16)).map(|_| Message::ControlFrame)
+        } else {
+            Subscription::none()
+        };
         let hud_frames = if self.hud.is_some() {
             time::every(Duration::from_millis(16)).map(|_| Message::HudFrame)
         } else {
             Subscription::none()
         };
-        let spotlight_tick = if self.spotlight.is_some() {
+        let spotlight_tick = if self
+            .spotlight
+            .as_ref()
+            .is_some_and(|open| open.is_animating())
+        {
+            time::every(Duration::from_millis(16)).map(|_| Message::SpotlightTick)
+        } else if self.spotlight.is_some() {
             time::every(Duration::from_millis(250)).map(|_| Message::SpotlightTick)
         } else {
             Subscription::none()
@@ -4046,6 +4077,7 @@ impl Shell {
             dnd::events().map(Message::Dnd),
             arrange::events().map(Message::Arrange),
             clipboard::events().map(Message::Copied),
+            control_frames,
             fan_frames,
             hud_frames,
             spotlight_load,

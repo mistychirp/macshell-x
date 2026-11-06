@@ -21,6 +21,11 @@ uniform float cornerRadius;
 // The shape's own size, and how far it's turned clockwise about the middle of geoSize, in radians.
 uniform vec2 boxSize;
 uniform float rotation;
+// Where its middle is, from the middle of geoSize.
+uniform vec2 boxOffset;
+// Circles melted into the shape, like drops of liquid: where each is from the middle of the shape, its
+// radius, which is 0 if there isn't one, and how far it reaches for the shape.
+uniform vec4 droplets[4];
 // Device pixels per logical pixel. The edge lines are sized in device pixels, to stay crisp.
 uniform float deviceScale;
 
@@ -130,6 +135,22 @@ float sdShape(vec2 p, vec2 halfSize, float r)
     return mix(triangle, body, h) - flare * h * (1.0 - h);
 }
 
+// Signed distance to the shape with its droplets melted in: a smooth union, which makes a neck between
+// them while they're close, and pinches it off as they part.
+float sdWhole(vec2 p, vec2 halfSize, float r)
+{
+    float d = sdShape(p, halfSize, r);
+    for (int i = 0; i < 4; ++i) {
+        if (droplets[i].z > 0.0) {
+            float circle = length(p - droplets[i].xy) - droplets[i].z;
+            float reach = max(droplets[i].w, 0.001);
+            float h = clamp(0.5 + 0.5 * (circle - d) / reach, 0.0, 1.0);
+            d = mix(circle, d, h) - reach * h * (1.0 - h);
+        }
+    }
+    return d;
+}
+
 // Samples the background at shape coordinates (0 to 1, y pointing down).
 vec4 sampleGeo(vec2 geo)
 {
@@ -193,9 +214,10 @@ void main(void)
     // In the shape's own coordinates, where it's level.
     float turnCos = cos(rotation);
     float turnSin = sin(rotation);
-    vec2 level = vec2(p.x * turnCos + p.y * turnSin, -p.x * turnSin + p.y * turnCos);
+    vec2 fromBox = p - boxOffset;
+    vec2 level = vec2(fromBox.x * turnCos + fromBox.y * turnSin, -fromBox.x * turnSin + fromBox.y * turnCos);
     vec2 boxHalf = boxSize * 0.5;
-    float d = sdShape(level, boxHalf, cornerRadius);
+    float d = sdWhole(level, boxHalf, cornerRadius);
 
     // Antialiased coverage over one device pixel.
     float coverage = clamp(0.5 - d * deviceScale, 0.0, 1.0);
@@ -206,8 +228,8 @@ void main(void)
     // Outward surface normal from the SDF gradient.
     vec2 e = vec2(0.5, 0.0);
     vec2 n = vec2(
-        sdShape(level + e.xy, boxHalf, cornerRadius) - sdShape(level - e.xy, boxHalf, cornerRadius),
-        sdShape(level + e.yx, boxHalf, cornerRadius) - sdShape(level - e.yx, boxHalf, cornerRadius));
+        sdWhole(level + e.xy, boxHalf, cornerRadius) - sdWhole(level - e.xy, boxHalf, cornerRadius),
+        sdWhole(level + e.yx, boxHalf, cornerRadius) - sdWhole(level - e.yx, boxHalf, cornerRadius));
     // Back to the screen's coordinates, where the background and the light are.
     n = vec2(n.x * turnCos - n.y * turnSin, n.x * turnSin + n.y * turnCos);
     n = length(n) > 0.0 ? normalize(n) : vec2(0.0);

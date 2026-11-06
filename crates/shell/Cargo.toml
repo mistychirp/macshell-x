@@ -16,6 +16,8 @@ iced_runtime = "0.14"
 # `wgpu-bare` is what actually selects the GPU renderer; `wgpu` alone leaves tiny-skia in charge.
 iced_renderer = { version = "0.14", features = ["wgpu", "wgpu-bare", "tiny-skia", "wayland", "web-colors"] }
 iced_widget = { version = "0.14", features = ["image", "svg"] }
+# Our patched copy, for its group opacity. It's what iced_renderer uses anyway.
+iced_wgpu = "0.14"
 # Decodes icons to recolor them, and enables the codecs for iced's images, which `iced` itself
 # would do.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

@@ -8,6 +8,7 @@
 
 #include "qwayland-server-macshell-glass-v1.h"
 
+#include <QSizeF>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QList>
@@ -63,10 +64,18 @@ struct Shape {
     /// For a shape with a tail: where its tip is from the left, how wide it is and how tall. It's
     /// part of `rect`, whose bottom it takes up.
     QVector3D tail;
-    /// For a shape at an angle: its own size, and how far it's turned clockwise, in radians, about the
-    /// middle of `rect`, which holds it. An empty size means `rect` is the shape.
-    QSize box;
+    /// For a shape that isn't all of `rect`: its own size, where its middle is from the middle of
+    /// `rect`, and how far it's turned clockwise about that, in radians. An empty size means `rect`
+    /// is the shape.
+    QSizeF box;
+    QPointF boxOffset;
     float rotation = 0;
+    /// Its corner radius, when it needs to be finer than `radius`. Negative means it doesn't.
+    float boxRadius = -1;
+    float opacity = 1;
+    /// Circles melted into it: where each is from the middle of `rect`, its radius, and how far it
+    /// reaches for the shape.
+    QList<QVector4D> droplets;
 };
 
 class GlassSurface;
@@ -127,6 +136,9 @@ protected:
     void macshell_glass_v1_add_rounded_rect_with_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height) override;
     void macshell_glass_v1_set_appear(Resource *resource, uint32_t kind, int32_t x, int32_t y) override;
     void macshell_glass_v1_add_rounded_rect_with_top_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height) override;
+    void macshell_glass_v1_add_box(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t style, wl_fixed_t box_x, wl_fixed_t box_y, wl_fixed_t box_width, wl_fixed_t box_height, wl_fixed_t box_radius) override;
+    void macshell_glass_v1_set_last_opacity(Resource *resource, wl_fixed_t opacity) override;
+    void macshell_glass_v1_add_droplet(Resource *resource, wl_fixed_t x, wl_fixed_t y, wl_fixed_t radius, wl_fixed_t blend) override;
     void macshell_glass_v1_add_rotated_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, uint32_t box_width, uint32_t box_height, int32_t millidegrees) override;
     void macshell_glass_v1_track_brightness(Resource *resource) override;
 

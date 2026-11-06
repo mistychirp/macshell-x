@@ -3,8 +3,10 @@
 //! full-width sliders. [`modules`] places them; the view and the glass shapes both follow it.
 
 use iced_widget::core::text::Wrapping;
+use std::time::Instant;
+
 use iced_widget::core::{
-    Alignment, Background, Border, Color, Length, Padding, Rectangle, alignment,
+    Alignment, Background, Border, Color, Length, Padding, Rectangle, Size, alignment,
 };
 use iced_widget::scrollable::{Direction, Scrollbar};
 use iced_widget::{
@@ -14,6 +16,7 @@ use iced_widget::{
 use crate::app::{Element, Message};
 use crate::audio::{self, Output, Volume};
 use crate::bluetooth::{Bluetooth, Device};
+use crate::group::group;
 use crate::icons::{self, Glyph};
 use crate::kwin::KeyboardLayouts;
 use crate::media::{Control, Track};
@@ -25,6 +28,11 @@ const GAP: f32 = 12.0;
 /// Two cells and the gap between them.
 const WIDE: f32 = 2.0 * CELL + GAP;
 const WIDTH: f32 = 2.0 * WIDE + GAP;
+const MORPH_TIME: f32 = 0.33;
+/// How far past its place it goes: the usual constant for an overshoot this slight.
+const MORPH_OVERSHOOT: f32 = 0.55;
+const MORPH_FADE_DELAY: f32 = 0.05;
+const MORPH_FADE: f32 = 0.15;
 const SLIDER_HEIGHT: f32 = 64.0;
 const SLIDER_RADIUS: f32 = 30.0;
 const TILE_RADIUS: f32 = 30.0;
@@ -80,9 +88,68 @@ pub struct Panel {
     pub art: Option<image::Handle>,
     /// The module whose detail is showing, instead of the bubbles.
     pub detail: Option<Detail>,
+    /// A module's glass on its way to its detail or back.
+    pub morph: Option<Morph>,
     pub networks: Vec<Network>,
     pub devices: Vec<Device>,
     pub outputs: Vec<Output>,
+}
+
+/// A module's own glass turning into its detail, or back, measured from Tahoe's: it moves and grows
+/// with a very slight overshoot, what's in it crossfades, and the other modules fade where they are.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Morph {
+    /// How far along it was when this started, from 0 (the module) to 1 (the detail), which is where
+    /// it picks up from if it changes its mind.
+    from: f32,
+    opening: bool,
+    started: Instant,
+}
+
+impl Morph {
+    /// Starts toward the detail or the module, from wherever `panel` has got to.
+    pub fn start(panel: &Panel, opening: bool) -> Self {
+        let from = match panel.morph {
+            Some(morph) => morph.value(),
+            None if panel.detail.is_some() => 1.0,
+            None => 0.0,
+        };
+        Self {
+            from,
+            opening,
+            started: Instant::now(),
+        }
+    }
+
+    fn seconds(self) -> f32 {
+        self.started.elapsed().as_secs_f32()
+    }
+
+    pub fn is_done(self) -> bool {
+        self.seconds() >= MORPH_TIME
+    }
+
+    pub fn is_opening(self) -> bool {
+        self.opening
+    }
+
+    /// How far along it is, from 0 to 1, going a little past on the way.
+    fn value(self) -> f32 {
+        let t = (self.seconds() / MORPH_TIME).min(1.0) - 1.0;
+        let eased = 1.0 + (MORPH_OVERSHOOT + 1.0) * t.powi(3) + MORPH_OVERSHOOT * t.powi(2);
+        let to = if self.opening { 1.0 } else { 0.0 };
+        self.from + (to - self.from) * eased
+    }
+
+    /// How much of the other modules shows.
+    fn others(self) -> f32 {
+        let along = if self.opening {
+            1.0 - ((self.seconds() - MORPH_FADE_DELAY) / MORPH_FADE).clamp(0.0, 1.0)
+        } else {
+            ((self.seconds() - MORPH_FADE_DELAY) / MORPH_FADE).clamp(0.0, 1.0)
+        };
+        along.max(1.0 - self.from.max(f32::from(u8::from(self.opening))))
+    }
 }
 
 /// What a module opens to: a panel with what it's connected to, in place of the bubbles.
@@ -196,6 +263,51 @@ fn bubbles_height(panel: &Panel) -> f32 {
         .fold(0.0, f32::max)
 }
 
+/// Which module a detail opens out of.
+fn module_of(detail: Detail) -> Module {
+    match detail {
+        Detail::Wifi => Module::Wifi,
+        Detail::Bluetooth => Module::Bluetooth,
+        Detail::Keyboard => Module::Keyboard,
+        Detail::Sound => Module::Sound,
+    }
+}
+
+/// Where a detail goes, with its corner radius.
+fn detail_rect(panel: &Panel) -> (Rectangle, f32) {
+    (
+        Rectangle {
+            x: BLUR_LEFT,
+            y: 0.0,
+            width: WIDTH,
+            height: detail_height(panel),
+        },
+        menu::RADIUS,
+    )
+}
+
+/// Where the morphing glass is now, with its corner radius.
+fn morph_rect(panel: &Panel, detail: Detail, morph: Morph) -> (Rectangle, f32) {
+    let (module, module_radius) = modules(panel)
+        .into_iter()
+        .find(|(module, ..)| *module == module_of(detail))
+        .map_or((Rectangle::default(), 0.0), |(_, rect, radius)| {
+            (rect, radius)
+        });
+    let (end, end_radius) = detail_rect(panel);
+    let v = morph.value();
+    let along = |from: f32, to: f32| from + (to - from) * v;
+    (
+        Rectangle {
+            x: along(module.x, end.x),
+            y: along(module.y, end.y),
+            width: along(module.width, end.width).max(1.0),
+            height: along(module.height, end.height).max(1.0),
+        },
+        along(module_radius, end_radius).max(0.0),
+    )
+}
+
 pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
     let (width, height) = size(panel);
     let backdrop = material::Shape {
@@ -208,66 +320,151 @@ pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
             BLUR_BOTTOM as u32,
         ]),
     };
-    if panel.detail.is_some() {
-        return vec![
-            backdrop,
-            material::Shape {
-                rect: (
-                    BLUR_LEFT as i32,
-                    0,
-                    WIDTH as i32,
-                    detail_height(panel) as i32,
-                ),
-                radius: menu::RADIUS as i32,
-                style: material::Style::Frosted,
-            },
-        ];
-    }
+    let module_shape = |rect: &Rectangle, radius: f32| material::Shape {
+        rect: (
+            rect.x as i32,
+            rect.y as i32,
+            rect.width as i32,
+            rect.height as i32,
+        ),
+        radius: radius as i32,
+        style: material::Style::Control,
+    };
+    let Some(detail) = panel.detail else {
+        return std::iter::once(backdrop)
+            .chain(
+                modules(panel)
+                    .iter()
+                    .map(|(_, rect, radius)| module_shape(rect, *radius)),
+            )
+            .collect();
+    };
+    let Some(morph) = panel.morph else {
+        let (rect, radius) = detail_rect(panel);
+        return vec![backdrop, module_shape(&rect, radius)];
+    };
+    // The moving glass is in one big rectangle that stays put, so its textures last.
+    let (rect, radius) = morph_rect(panel, detail, morph);
+    let milli = |value: f32| (value * 1000.0).round() as i32;
+    let source = module_of(detail);
     std::iter::once(backdrop)
         .chain(
             modules(panel)
                 .iter()
-                .map(|(_, rect, radius)| material::Shape {
-                    rect: (
-                        rect.x as i32,
-                        rect.y as i32,
-                        rect.width as i32,
-                        rect.height as i32,
-                    ),
-                    radius: *radius as i32,
-                    style: material::Style::Control,
-                }),
+                .filter(|(module, ..)| *module != source)
+                .map(|(_, rect, radius)| module_shape(rect, *radius)),
         )
+        .chain(std::iter::once(material::Shape {
+            rect: (0, 0, width as i32, height as i32),
+            radius: 0,
+            style: material::Style::ControlBox([
+                milli(rect.x + rect.width / 2.0),
+                milli(rect.y + rect.height / 2.0),
+                milli(rect.width),
+                milli(rect.height),
+                milli(radius),
+            ]),
+        }))
         .collect()
 }
 
-pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
-    if let Some(detail) = panel.detail {
-        return container(pin(detail_view(detail, panel, material)).x(BLUR_LEFT))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into();
+/// How opaque each of [`material_shapes`] is: the other modules fade while one morphs.
+pub fn material_opacities(panel: &Panel) -> Vec<f32> {
+    let (Some(detail), Some(morph)) = (panel.detail, panel.morph) else {
+        return Vec::new();
+    };
+    let source = module_of(detail);
+    let others = modules(panel)
+        .iter()
+        .filter(|(module, ..)| *module != source)
+        .count();
+    let mut opacities = vec![1.0];
+    opacities.extend(std::iter::repeat_n(morph.others(), others));
+    opacities.push(1.0);
+    opacities
+}
+
+/// What's in a module.
+fn module_content(module: Module, panel: &Panel) -> Element<'_> {
+    match module {
+        Module::Wifi => wifi(panel),
+        Module::Bluetooth => bluetooth_toggle(panel),
+        Module::NowPlaying => now_playing(panel),
+        Module::Keyboard => keyboard(panel),
+        Module::Screenshot => round_button(Glyph::Camera, Message::Screenshot),
+        Module::Lock => round_button(Glyph::Lock, Message::LockScreen),
+        Module::Display => display(panel.brightness.unwrap_or_default()),
+        Module::Sound => sound(panel.volume),
     }
-    let layers: Vec<Element<'_>> = modules(panel)
-        .into_iter()
-        .map(|(module, rect, radius)| {
-            let content = match module {
-                Module::Wifi => wifi(panel),
-                Module::Bluetooth => bluetooth_toggle(panel),
-                Module::NowPlaying => now_playing(panel),
-                Module::Keyboard => keyboard(panel),
-                Module::Screenshot => round_button(Glyph::Camera, Message::Screenshot),
-                Module::Lock => round_button(Glyph::Lock, Message::LockScreen),
-                Module::Display => display(panel.brightness.unwrap_or_default()),
-                Module::Sound => sound(panel.volume),
-            };
-            let bubble = container(content)
-                .width(rect.width)
-                .height(rect.height)
-                .style(move |_| bubble_style(material, radius));
-            pin(bubble).x(rect.x).y(rect.y).into()
-        })
-        .collect();
+}
+
+pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
+    let bubble = |module: Module, rect: Rectangle, radius: f32| {
+        container(module_content(module, panel))
+            .width(rect.width)
+            .height(rect.height)
+            .style(move |_| bubble_style(material, radius))
+    };
+    let layers: Vec<Element<'_>> = match (panel.detail, panel.morph) {
+        (Some(detail), None) => {
+            // A press beside it goes back to the modules; the detail keeps its own presses.
+            return mouse_area(
+                container(pin(detail_view(detail, panel, material)).x(BLUR_LEFT))
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .on_press(Message::ControlDetail(None))
+            .into();
+        }
+        (Some(detail), Some(morph)) => {
+            let source = module_of(detail);
+            let others = morph.others();
+            let (rect, _) = morph_rect(panel, detail, morph);
+            // What's in the module goes first, and the detail comes in over it.
+            let v = morph.value();
+            let module_shows = (1.0 - v / 0.45).clamp(0.0, 1.0);
+            let detail_shows = ((v - 0.3) / 0.55).clamp(0.0, 1.0);
+            let module = modules(panel)
+                .into_iter()
+                .find(|(module, ..)| *module == source);
+            let mut layers: Vec<Element<'_>> = modules(panel)
+                .into_iter()
+                .filter(|(module, ..)| *module != source)
+                .map(|(module, rect, radius)| {
+                    pin(group(bubble(module, rect, radius)).opacity(others))
+                        .x(rect.x)
+                        .y(rect.y)
+                        .into()
+                })
+                .collect();
+            // The detail first, since a stack takes its size from its first layer.
+            let mut inside: Vec<Element<'_>> = vec![
+                group(detail_view(detail, panel, material))
+                    .opacity(detail_shows)
+                    .into(),
+            ];
+            if let Some((module, module_rect, radius)) = module {
+                inside.push(
+                    group(bubble(module, module_rect, radius))
+                        .opacity(module_shows)
+                        .into(),
+                );
+            }
+            layers.push(
+                pin(group(stack(inside)).clip(Size::new(rect.width, rect.height)))
+                    .x(rect.x)
+                    .y(rect.y)
+                    .into(),
+            );
+            layers
+        }
+        (None, _) => modules(panel)
+            .into_iter()
+            .map(|(module, rect, radius)| {
+                pin(bubble(module, rect, radius)).x(rect.x).y(rect.y).into()
+            })
+            .collect(),
+    };
 
     container(stack(layers))
         .width(Length::Fill)
@@ -961,27 +1158,82 @@ pub struct Status {
 }
 
 /// Reads what's shown, including the lists of the detail that's open.
-pub async fn status(detail: Option<Detail>) -> Status {
+pub async fn status() -> Status {
     let wifi = network::wifi().await;
     let wifi_on = wifi.as_ref().is_some_and(|wifi| wifi.enabled);
+    // All of it, even with no detail open: a module opens into a panel that's already its full size.
     Status {
         wifi,
         bluetooth: bluetooth::bluetooth().await,
         track: media::now_playing().await,
-        networks: if detail == Some(Detail::Wifi) && wifi_on {
+        networks: if wifi_on {
             network::networks().await
         } else {
             Vec::new()
         },
-        devices: if detail == Some(Detail::Bluetooth) {
-            bluetooth::devices().await
-        } else {
-            Vec::new()
-        },
-        outputs: if detail == Some(Detail::Sound) {
-            audio::outputs()
-        } else {
-            Vec::new()
-        },
+        devices: bluetooth::devices().await,
+        outputs: audio::outputs(),
+    }
+}
+
+#[cfg(test)]
+mod morph_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn morph(from: f32, opening: bool, seconds: f32) -> Morph {
+        Morph {
+            from,
+            opening,
+            started: Instant::now() - Duration::from_secs_f32(seconds),
+        }
+    }
+
+    #[test]
+    fn it_goes_from_end_to_end_and_a_little_past() {
+        assert!(morph(0.0, true, 0.0).value().abs() < 0.05);
+        assert_eq!(morph(0.0, true, MORPH_TIME * 2.0).value(), 1.0);
+        assert_eq!(morph(1.0, false, MORPH_TIME * 2.0).value(), 0.0);
+        let peak = (0..33)
+            .map(|step| morph(0.0, true, step as f32 / 100.0).value())
+            .fold(0.0, f32::max);
+        assert!(peak > 1.0 && peak < 1.08, "went to {peak}");
+    }
+
+    #[test]
+    fn changing_its_mind_picks_up_from_where_it_was() {
+        let halfway = morph(0.0, true, MORPH_TIME * 0.3).value();
+        assert!((morph(halfway, false, 0.0).value() - halfway).abs() < 0.05);
+    }
+
+    #[test]
+    fn the_other_modules_fade_out_and_come_back() {
+        assert_eq!(morph(0.0, true, 0.0).others(), 1.0);
+        assert_eq!(morph(0.0, true, 0.4).others(), 0.0);
+        assert_eq!(morph(1.0, false, 0.0).others(), 0.0);
+        assert_eq!(morph(1.0, false, 0.4).others(), 1.0);
+    }
+
+    #[test]
+    fn every_shape_has_an_opacity_while_it_morphs() {
+        let mut panel = Panel {
+            detail: Some(Detail::Wifi),
+            ..Default::default()
+        };
+        panel.morph = Some(morph(0.0, true, 0.1));
+        assert_eq!(
+            material_shapes(&panel).len(),
+            material_opacities(&panel).len()
+        );
+        panel.morph = None;
+        assert!(material_opacities(&panel).is_empty());
+    }
+
+    #[test]
+    fn a_morph_starts_from_where_things_are() {
+        let mut panel = Panel::default();
+        assert_eq!(Morph::start(&panel, true).from, 0.0);
+        panel.detail = Some(Detail::Sound);
+        assert_eq!(Morph::start(&panel, false).from, 1.0);
     }
 }

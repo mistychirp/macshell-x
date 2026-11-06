@@ -284,11 +284,6 @@ pub fn settings(x: i32, y: i32) -> NewLayerShellSettings {
     }
 }
 
-/// Where the tail's tip is on the surface, which the menu grows out of.
-pub fn tail_tip() -> (i32, i32) {
-    (TAIL_CENTER as i32, 0)
-}
-
 fn sub_rect() -> (i32, i32, i32, i32) {
     (
         (WIDTH - SUB_OVERLAP) as i32,

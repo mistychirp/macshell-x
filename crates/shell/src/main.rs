@@ -19,6 +19,7 @@ mod dock;
 mod fan;
 mod fonts;
 mod glass_protocol;
+mod group;
 mod hud;
 mod icons;
 mod kwin;

@@ -67,6 +67,16 @@ pub enum Style {
     /// background. It fades in over this many logical pixels from the left, top, right and bottom.
     /// Dropped where that isn't supported.
     Backdrop([u32; 4]),
+    /// Control glass in a rounded rectangle that can move around inside `rect`, which stays the same
+    /// so that nothing's set up again every frame: where its middle is from the left and top of
+    /// `rect`, its width and height, and its corner radius, all in thousandths of a logical pixel.
+    /// Dropped where that isn't supported.
+    ControlBox([i32; 5]),
+    /// Card glass the same way, with circles melted into it like drops of liquid: where the box's
+    /// middle is, its width, height and corner radius, and for each circle where it is, its radius
+    /// (0 for none) and how far it reaches for the box, all in thousandths of a logical pixel. Dropped
+    /// where that isn't supported.
+    CardBlob([i32; 5], [[i32; 4]; 4]),
     /// Like [`Style::Card`], at an angle: a shape this wide and tall, turned clockwise by this many
     /// thousandths of a degree about the middle of `rect`, which has to hold it. Dropped where that
     /// isn't supported.
@@ -79,10 +89,12 @@ pub enum Style {
 /// How a surface comes and goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Appear {
-    /// Springs out of a point, overshooting a little, like Control Center.
-    Spring(i32, i32),
-    /// Grows slightly out of a point, with no overshoot.
-    Gentle(i32, i32),
+    /// Fades in and out, like Control Center.
+    Fade,
+    /// There at once, and fades out quickly, like a menu.
+    Pop,
+    /// Grows out of a point as it fades in, and goes at once, like an alert.
+    Grow(i32, i32),
     /// Slides in from the right, like Notification Center.
     Slide,
 }
@@ -176,7 +188,7 @@ impl Material {
             iced_layershell::toplevel::set_seat(seat);
         }
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=9, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=10, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -245,8 +257,12 @@ impl Material {
             && glass.version() >= 8
         {
             let (kind, x, y) = match appear {
-                Appear::Spring(x, y) => (macshell_glass_v1::Appear::Spring, x, y),
-                Appear::Gentle(x, y) => (macshell_glass_v1::Appear::Gentle, x, y),
+                Appear::Fade => (macshell_glass_v1::Appear::Fade, 0, 0),
+                Appear::Pop => (macshell_glass_v1::Appear::Pop, 0, 0),
+                Appear::Grow(x, y) if glass.version() >= 10 => {
+                    (macshell_glass_v1::Appear::Grow, x, y)
+                }
+                Appear::Grow(..) => (macshell_glass_v1::Appear::Fade, 0, 0),
                 Appear::Slide => (macshell_glass_v1::Appear::Slide, 0, 0),
             };
             glass.set_appear(kind, x, y);
@@ -276,11 +292,79 @@ impl Material {
 
     /// Replaces the material shapes and commits them right away.
     pub fn set_shapes(&self, target: &MaterialSurface, shapes: &[Shape]) {
+        self.set_faded_shapes(target, shapes, &[]);
+    }
+
+    /// Like [`Material::set_shapes`], each shape as opaque as the same place in `opacities`, from 0
+    /// to 1, or fully if it's past the end of them.
+    pub fn set_faded_shapes(&self, target: &MaterialSurface, shapes: &[Shape], opacities: &[f32]) {
         match &target.effect {
             Effect::Glass(glass) => {
                 glass.clear();
-                for shape in shapes {
+                for (index, shape) in shapes.iter().enumerate() {
                     let (x, y, width, height) = shape.rect;
+                    let opacity = opacities.get(index).copied().unwrap_or(1.0);
+                    if opacity <= 0.0 {
+                        continue;
+                    }
+                    if let Style::CardBlob(
+                        [box_x, box_y, box_width, box_height, box_radius],
+                        drops,
+                    ) = shape.style
+                    {
+                        if glass.version() >= 10 {
+                            let fixed = |milli: i32| f64::from(milli) / 1000.0;
+                            glass.add_box(
+                                x,
+                                y,
+                                width,
+                                height,
+                                macshell_glass_v1::Style::Card,
+                                fixed(box_x),
+                                fixed(box_y),
+                                fixed(box_width),
+                                fixed(box_height),
+                                fixed(box_radius),
+                            );
+                            for [drop_x, drop_y, radius, blend] in drops {
+                                if radius > 0 {
+                                    glass.add_droplet(
+                                        fixed(drop_x),
+                                        fixed(drop_y),
+                                        fixed(radius),
+                                        fixed(blend),
+                                    );
+                                }
+                            }
+                            if opacity < 1.0 {
+                                glass.set_last_opacity(f64::from(opacity));
+                            }
+                        }
+                        continue;
+                    }
+                    if let Style::ControlBox([box_x, box_y, box_width, box_height, box_radius]) =
+                        shape.style
+                    {
+                        if glass.version() >= 10 {
+                            let fixed = |milli: i32| f64::from(milli) / 1000.0;
+                            glass.add_box(
+                                x,
+                                y,
+                                width,
+                                height,
+                                macshell_glass_v1::Style::Control,
+                                fixed(box_x),
+                                fixed(box_y),
+                                fixed(box_width),
+                                fixed(box_height),
+                                fixed(box_radius),
+                            );
+                            if opacity < 1.0 {
+                                glass.set_last_opacity(f64::from(opacity));
+                            }
+                        }
+                        continue;
+                    }
                     if let Style::Backdrop([left, top, right, bottom]) = shape.style {
                         if glass.version() >= 4 {
                             glass.add_backdrop(x, y, width, height, left, top, right, bottom);
@@ -360,9 +444,16 @@ impl Material {
                         Style::Transparent if glass.version() >= 2 => {
                             macshell_glass_v1::Style::Transparent
                         }
-                        Style::Transparent | Style::Backdrop(_) | Style::RotatedCard(_) => continue,
+                        Style::Transparent
+                        | Style::Backdrop(_)
+                        | Style::RotatedCard(_)
+                        | Style::ControlBox(_)
+                        | Style::CardBlob(..) => continue,
                     };
                     glass.add_rounded_rect(x, y, width, height, shape.radius.max(0) as u32, style);
+                    if opacity < 1.0 && glass.version() >= 10 {
+                        glass.set_last_opacity(f64::from(opacity));
+                    }
                 }
             }
             // Blur has no notion of clear glass, so every shape is blurred.

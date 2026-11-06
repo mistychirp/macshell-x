@@ -146,11 +146,6 @@ pub fn material_shapes() -> Vec<material::Shape> {
     }]
 }
 
-/// What it grows out of: the top of its right end, toward the bar's status items.
-pub fn origin() -> (i32, i32) {
-    ((WIDTH * 0.75) as i32, 0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,6 +14,10 @@ goes through a background worker and draws as nothing until it's done and someth
 photo widget swaps between two 1200-pixel pictures whenever the desktop's focus changes, and the
 cache drops the one that isn't showing, so it went blank for up to a second.
 
+Patch: group opacity (`src/group.rs`, and the `fill_*` and `draw_*` methods in `src/lib.rs`). Iced can't
+fade a group of widgets, which most animations need. Everything's scaled by the current opacity as
+it's drawn; the shell's `group` widget sets it.
+
 The first commit that adds this directory contains the pristine 0.14.0 sources, so
 `git diff <that commit> -- vendor/iced_wgpu` shows the patch.
 

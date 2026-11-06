@@ -29,6 +29,12 @@ let
     # without our plugin there they'd have no animation, so these are put back when this one ends.
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key squashEnabled --type bool false
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key magiclampEnabled --type bool false
+    # Windows open at once and close with a quick fade, measured from Tahoe, rather than zooming. The
+    # effect runs for four times what FadeOutTime says, on a curve that's nearly done after a third.
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key scaleEnabled --type bool false
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key fadeEnabled --type bool true
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeInTime 1
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeOutTime 30
     ${pkgs.dbus}/bin/dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure
     # Unlocks KWallet with the login password, which PAM kept for this.
     systemctl --user start --no-block plasma-kwallet-pam.service
@@ -43,6 +49,10 @@ let
       if ${macshell}/bin/macshell; then
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key squashEnabled --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key magiclampEnabled --delete
+        ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key scaleEnabled --delete
+        ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key fadeEnabled --delete
+        ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeInTime --delete
+        ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeOutTime --delete
         systemctl --user stop macshell-session.target
         exit 0
       fi

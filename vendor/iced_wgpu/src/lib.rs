@@ -22,6 +22,7 @@
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(missing_docs)]
+pub mod group;
 pub mod layer;
 pub mod primitive;
 pub mod settings;
@@ -692,8 +693,13 @@ impl core::Renderer for Renderer {
         quad: core::renderer::Quad,
         background: impl Into<Background>,
     ) {
+        let opacity = group::current();
+        let mut quad = quad;
+        quad.border.color = quad.border.color.scale_alpha(opacity);
+        quad.shadow.color = quad.shadow.color.scale_alpha(opacity);
+        let background = background.into().scale_alpha(opacity);
         let (layer, transformation) = self.layers.current_mut();
-        layer.draw_quad(quad, background.into(), transformation);
+        layer.draw_quad(quad, background, transformation);
     }
 
     fn reset(&mut self, new_bounds: Rectangle) {
@@ -743,6 +749,7 @@ impl core::text::Renderer for Renderer {
         color: Color,
         clip_bounds: Rectangle,
     ) {
+        let color = color.scale_alpha(group::current());
         let (layer, transformation) = self.layers.current_mut();
 
         layer.draw_paragraph(
@@ -761,6 +768,7 @@ impl core::text::Renderer for Renderer {
         color: Color,
         clip_bounds: Rectangle,
     ) {
+        let color = color.scale_alpha(group::current());
         let (layer, transformation) = self.layers.current_mut();
         layer.draw_editor(editor, position, color, clip_bounds, transformation);
     }
@@ -772,6 +780,7 @@ impl core::text::Renderer for Renderer {
         color: Color,
         clip_bounds: Rectangle,
     ) {
+        let color = color.scale_alpha(group::current());
         let (layer, transformation) = self.layers.current_mut();
         layer.draw_text(text, position, color, clip_bounds, transformation);
     }
@@ -779,6 +788,8 @@ impl core::text::Renderer for Renderer {
 
 impl graphics::text::Renderer for Renderer {
     fn fill_raw(&mut self, raw: graphics::text::Raw) {
+        let mut raw = raw;
+        raw.color = raw.color.scale_alpha(group::current());
         let (layer, transformation) = self.layers.current_mut();
         layer.draw_text_raw(raw, transformation);
     }
@@ -809,6 +820,8 @@ impl core::image::Renderer for Renderer {
         bounds: Rectangle,
         clip_bounds: Rectangle,
     ) {
+        let mut image = image;
+        image.opacity *= group::current();
         let (layer, transformation) = self.layers.current_mut();
         layer.draw_raster(image, bounds, clip_bounds, transformation);
     }
@@ -826,6 +839,8 @@ impl core::svg::Renderer for Renderer {
         bounds: Rectangle,
         clip_bounds: Rectangle,
     ) {
+        let mut svg = svg;
+        svg.opacity *= group::current();
         let (layer, transformation) = self.layers.current_mut();
         layer.draw_svg(svg, bounds, clip_bounds, transformation);
     }

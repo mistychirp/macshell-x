@@ -18,7 +18,7 @@
 namespace Macshell
 {
 
-static constexpr int s_version = 9;
+static constexpr int s_version = 10;
 
 /// Reading pixels back stalls the GPU, so brightness is measured at most this often.
 static constexpr int s_probeIntervalMs = 500;
@@ -203,10 +203,43 @@ void GlassSurface::macshell_glass_v1_add_rotated_rect(Resource *resource, int32_
     macshell_glass_v1_add_rounded_rect(resource, x, y, width, height, radius, style);
     if (m_pending.size() > before) {
         Shape &shape = m_pending.last();
-        shape.box = QSize(box_width, box_height);
+        shape.box = QSizeF(box_width, box_height);
         shape.rotation = float(millidegrees) / 1000.0f * std::numbers::pi_v<float> / 180.0f;
         // The rectangle given is only what holds it.
         shape.radius = std::min<int>(radius, std::min(box_width, box_height) / 2);
+    }
+}
+
+void GlassSurface::macshell_glass_v1_add_box(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t style, wl_fixed_t box_x, wl_fixed_t box_y, wl_fixed_t box_width, wl_fixed_t box_height, wl_fixed_t box_radius)
+{
+    const qsizetype before = m_pending.size();
+    macshell_glass_v1_add_rounded_rect(resource, x, y, width, height, 0, style);
+    if (m_pending.size() > before) {
+        Shape &shape = m_pending.last();
+        shape.box = QSizeF(wl_fixed_to_double(box_width), wl_fixed_to_double(box_height));
+        shape.boxOffset = QPointF(wl_fixed_to_double(box_x) - width / 2.0, wl_fixed_to_double(box_y) - height / 2.0);
+        shape.boxRadius = std::min(wl_fixed_to_double(box_radius), std::min(shape.box.width(), shape.box.height()) / 2);
+    }
+}
+
+void GlassSurface::macshell_glass_v1_add_droplet(Resource *resource, wl_fixed_t x, wl_fixed_t y, wl_fixed_t radius, wl_fixed_t blend)
+{
+    Q_UNUSED(resource)
+    if (m_pending.isEmpty() || m_pending.last().droplets.size() >= 4) {
+        return;
+    }
+    Shape &shape = m_pending.last();
+    shape.droplets.append(QVector4D(wl_fixed_to_double(x) - shape.rect.width() / 2.0,
+                                    wl_fixed_to_double(y) - shape.rect.height() / 2.0,
+                                    wl_fixed_to_double(radius),
+                                    wl_fixed_to_double(blend)));
+}
+
+void GlassSurface::macshell_glass_v1_set_last_opacity(Resource *resource, wl_fixed_t opacity)
+{
+    Q_UNUSED(resource)
+    if (!m_pending.isEmpty()) {
+        m_pending.last().opacity = std::clamp(wl_fixed_to_double(opacity), 0.0, 1.0);
     }
 }
 

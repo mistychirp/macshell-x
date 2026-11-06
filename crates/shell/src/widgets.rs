@@ -1243,11 +1243,6 @@ pub fn gallery_settings() -> NewLayerShellSettings {
     }
 }
 
-/// What the gallery grows out of: the middle of its bottom edge.
-pub fn gallery_origin() -> (i32, i32) {
-    ((GALLERY_WIDTH / 2.0) as i32, GALLERY_HEIGHT as i32)
-}
-
 pub fn gallery_shapes() -> Vec<material::Shape> {
     vec![material::Shape {
         rect: (0, 0, GALLERY_WIDTH as i32, GALLERY_HEIGHT as i32),

@@ -438,46 +438,50 @@ static float spring(float seconds, float response, float damping)
 
 static AppearState appearState(const WindowGlass &glass)
 {
+    // Measured from a recording of Tahoe: panels fade with next to no scaling, menus are there at
+    // once, and alerts grow out of a point and vanish at once.
     AppearState state;
     if (glass.appear.kind == 0) {
         return state;
     }
-    constexpr int spring_ = 1;
+    constexpr int fade = 1;
+    constexpr int pop = 2;
     constexpr int slide = 3;
+    constexpr int grow = 4;
     if (glass.disappearing.isValid()) {
         const float seconds = glass.disappearing.elapsed() / 1000.0f;
-        const float duration = glass.appear.kind == slide ? 0.22f : 0.14f;
-        const float t = std::min(seconds / duration, 1.0f);
+        const float duration = glass.appear.kind == slide ? 0.2f : glass.appear.kind == fade ? 0.13f : glass.appear.kind == pop ? 0.1f : 0.0f;
+        const float t = duration > 0 ? std::min(seconds / duration, 1.0f) : 1.0f;
         const float out = t * t;
         state.opacity = glass.appear.kind == slide ? 1 - out * out : 1 - t;
-        state.scale = glass.appear.kind == slide ? 1 : 1 - 0.06f * out;
         state.slide = glass.appear.kind == slide ? out : 0;
         state.done = t >= 1;
         return state;
     }
     const float seconds = glass.appearing.elapsed() / 1000.0f;
     switch (glass.appear.kind) {
-    case spring_: {
-        // Springs out of the point, overshooting a little.
-        const float value = spring(seconds, 0.36f, 0.78f);
-        state.scale = 0.82f + 0.18f * value;
-        state.opacity = std::min(seconds / 0.1f, 1.0f);
-        state.done = seconds > 0.75f;
+    case fade:
+        state.opacity = std::min(seconds / 0.13f, 1.0f);
+        state.done = seconds >= 0.13f;
         break;
-    }
     case slide: {
-        const float value = spring(seconds, 0.32f, 1.0f);
-        state.slide = 1 - value;
-        state.done = seconds > 0.55f;
-        break;
-    }
-    default: {
         const float value = spring(seconds, 0.2f, 1.0f);
-        state.scale = 0.95f + 0.05f * value;
-        state.opacity = std::min(seconds / 0.09f, 1.0f);
-        state.done = seconds > 0.34f;
+        state.slide = 1 - value;
+        state.done = seconds > 0.4f;
         break;
     }
+    case grow: {
+        const float t = std::min(seconds / 0.13f, 1.0f);
+        const float value = 1 - (1 - t) * (1 - t) * (1 - t);
+        state.scale = 0.75f + 0.25f * value;
+        state.opacity = t;
+        state.done = t >= 1;
+        break;
+    }
+    case pop:
+    default:
+        state.done = true;
+        break;
     }
     return state;
 }
@@ -858,8 +862,15 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
         m_glassShader->setUniform("geoSize", QVector2D(logical.width(), logical.height()));
         m_glassShader->setUniform("boxSize", shape.box.isEmpty() ? QVector2D(logical.width(), logical.height()) : QVector2D(shape.box.width() * data.xScale(), shape.box.height() * data.yScale()));
+        m_glassShader->setUniform("boxOffset", QVector2D(shape.boxOffset.x() * data.xScale(), shape.boxOffset.y() * data.yScale()));
         m_glassShader->setUniform("rotation", shape.rotation);
-        m_glassShader->setUniform("cornerRadius", float(shape.radius * scale));
+        for (int droplet = 0; droplet < 4; ++droplet) {
+            const QVector4D value = droplet < shape.droplets.size() ? shape.droplets[droplet] : QVector4D();
+            // From the middle of the shape, rather than of what it's drawn in.
+            m_glassShader->setUniform(QStringLiteral("droplets[%1]").arg(droplet).toLatin1().constData(),
+                                      QVector4D(value.x() - float(shape.boxOffset.x()), value.y() - float(shape.boxOffset.y()), value.z(), value.w()));
+        }
+        m_glassShader->setUniform("cornerRadius", (shape.boxRadius >= 0 ? shape.boxRadius : float(shape.radius)) * scale);
         m_glassShader->setUniform("deviceScale", float(viewport.scale()));
         m_glassShader->setUniform("wide", 1);
         m_glassShader->setUniform("sharp", 2);
@@ -891,7 +902,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("edgeGain", bubble ? m_settings.bubbleEdgeGain : frosted ? 1.0f : m_settings.liquidEdgeGain);
         m_glassShader->setUniform("edgeWhite", frosted ? m_settings.frostEdgeWhite : 0.0f);
         m_glassShader->setUniform("outerAlpha", frosted ? m_settings.frostOuterEdge : 0.0f);
-        m_glassShader->setUniform("opacity", opacity);
+        m_glassShader->setUniform("opacity", opacity * shape.opacity);
 
         glActiveTexture(GL_TEXTURE2);
         render.textures[0]->bind();
