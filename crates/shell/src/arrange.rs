@@ -279,7 +279,7 @@ pub fn settings(x: i32, y: i32) -> NewLayerShellSettings {
         // Its tail's tip is at the light.
         margin: Some((y, 0, 0, (x - TAIL_CENTER as i32).max(0))),
         keyboard_interactivity: KeyboardInteractivity::None,
-        namespace: Some(String::from("macshell-arrange")),
+        namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }

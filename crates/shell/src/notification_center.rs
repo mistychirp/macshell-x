@@ -14,10 +14,11 @@ use iced_widget::{Space, container, image, mouse_area, pin, row, stack, text};
 
 use crate::group::group;
 
+use crate::anim::{self, Motion, Spring};
 use crate::app::{Element, Message};
 use crate::notifications::{
-    CARD_WIDTH, CHIP_INK, CLOSE_SIZE, HoverFade, Notification, OVERHANG, RADIUS, Spring, card,
-    chip_shape, close_button, close_shape, closing_face, closing_scale, panel_style,
+    CARD_WIDTH, CHIP_INK, CLOSE_SIZE, HoverFade, Notification, OVERHANG, RADIUS, card, chip_shape,
+    close_button, close_shape, closing_face, closing_scale, panel_style,
 };
 use crate::{dock, fonts, material, menu, menubar};
 
@@ -56,17 +57,19 @@ const CLOSING_RISE: f32 = 40.0;
 /// How long a row that's new here takes to show, when a group opens.
 const ARRIVAL_TIME: Duration = Duration::from_millis(180);
 
+/// How rows move as others come and go, measured from Tahoe's.
+const ROW_SPRING: Spring = Spring::new(0.285, 0.92);
+
 /// How rows get to where they should be, as others come and go, and the cards on their way out.
 #[derive(Default)]
-pub struct Motion {
+pub struct Motions {
     rows: HashMap<String, RowMotion>,
     closing: Vec<Closing>,
-    last: Option<Instant>,
+    going: bool,
 }
 
 struct RowMotion {
-    y: Spring,
-    target: f32,
+    y: Motion,
     /// When it arrived, unless it was there from the start.
     arrived: Option<Instant>,
 }
@@ -80,7 +83,7 @@ struct Closing {
 
 impl Closing {
     fn t(&self) -> f32 {
-        (self.started.elapsed().as_secs_f32() / CLOSING_TIME.as_secs_f32()).min(1.0)
+        (anim::seconds_since(self.started) / CLOSING_TIME.as_secs_f32()).min(1.0)
     }
 
     fn y(&self, t: f32) -> f32 {
@@ -88,49 +91,42 @@ impl Closing {
     }
 }
 
-impl Motion {
-    /// Moves everything along toward what's there now.
+impl Motions {
+    /// Sends everything toward what's there now.
     pub fn sync(
         &mut self,
         notifications: &[Notification],
         open: &HashSet<String>,
         first: usize,
         height: f32,
-        now: Instant,
     ) {
-        let seconds = self
-            .last
-            .map_or(0.0, |last| {
-                now.saturating_duration_since(last).as_secs_f32()
-            })
-            .min(0.05);
-        let from_start = self.last.is_none();
-        self.last = Some(now);
+        let from_start = !std::mem::replace(&mut self.going, true);
         let targets: Vec<(String, f32)> = placed(notifications, open, first, height)
             .into_iter()
             .map(|(row, y)| (row.key(), y))
             .collect();
         let mut above: Option<f32> = None;
         for (key, target) in &targets {
-            let row = self.rows.entry(key.clone()).or_insert_with(|| RowMotion {
+            let row = self.rows.entry(key.clone()).or_insert_with(|| {
                 // A new one comes out from under the one above it.
-                y: Spring::at(if from_start {
+                let start = if from_start {
                     *target
                 } else {
                     above.unwrap_or(*target)
-                }),
-                target: *target,
-                arrived: (!from_start).then_some(now),
+                };
+                RowMotion {
+                    y: Motion::at(start, ROW_SPRING, 0.25),
+                    arrived: (!from_start).then(anim::now),
+                }
             });
-            row.target = *target;
-            row.y.step(*target, seconds);
+            row.y.go_to(*target);
             if row
                 .arrived
-                .is_some_and(|arrived| now.saturating_duration_since(arrived) >= ARRIVAL_TIME)
+                .is_some_and(|arrived| anim::seconds_since(arrived) >= ARRIVAL_TIME.as_secs_f32())
             {
                 row.arrived = None;
             }
-            above = Some(row.y.value);
+            above = Some(row.y.value());
         }
         self.rows
             .retain(|key, _| targets.iter().any(|(target, _)| target == key));
@@ -143,8 +139,8 @@ impl Motion {
             self.closing.push(Closing {
                 notification: notification.clone(),
                 time: notification.time_label(),
-                y: row.y.value,
-                started: Instant::now(),
+                y: row.y.value(),
+                started: anim::now(),
             });
         }
     }
@@ -154,11 +150,11 @@ impl Motion {
             || self
                 .rows
                 .values()
-                .any(|row| row.arrived.is_some() || !row.y.is_at(row.target))
+                .any(|row| row.arrived.is_some() || row.y.is_moving())
     }
 
     fn y(&self, key: &str, target: f32) -> f32 {
-        self.rows.get(key).map_or(target, |row| row.y.value)
+        self.rows.get(key).map_or(target, |row| row.y.value())
     }
 
     fn shows(&self, key: &str) -> f32 {
@@ -166,7 +162,7 @@ impl Motion {
             .get(key)
             .and_then(|row| row.arrived)
             .map_or(1.0, |arrived| {
-                (arrived.elapsed().as_secs_f32() / ARRIVAL_TIME.as_secs_f32()).min(1.0)
+                (anim::seconds_since(arrived) / ARRIVAL_TIME.as_secs_f32()).min(1.0)
             })
     }
 }
@@ -293,7 +289,7 @@ pub fn material_shapes(
     first: usize,
     hovered: Option<u32>,
     height: f32,
-    motion: &Motion,
+    motion: &Motions,
     fade: &HoverFade,
 ) -> (Vec<material::Shape>, Vec<f32>) {
     let shape = |x: f32, y: f32, width: f32, height: f32, radius: f32| material::Shape {
@@ -399,7 +395,7 @@ pub fn view<'a>(
     first: usize,
     hovered: Option<u32>,
     height: f32,
-    motion: &'a Motion,
+    motion: &'a Motions,
     fade: &HoverFade,
     material: Option<material::Kind>,
 ) -> Element<'a> {
@@ -674,8 +670,8 @@ mod motion_tests {
 
     #[test]
     fn nothing_moves_when_nothing_is_there() {
-        let mut motion = Motion::default();
-        motion.sync(&[], &HashSet::new(), 0, 500.0, Instant::now());
+        let mut motion = Motions::default();
+        motion.sync(&[], &HashSet::new(), 0, 500.0);
         assert!(!motion.is_animating());
     }
 }

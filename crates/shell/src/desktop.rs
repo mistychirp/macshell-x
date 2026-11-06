@@ -43,7 +43,7 @@ pub fn settings() -> NewLayerShellSettings {
         exclusive_zone: Some(-1),
         // Clicking the desktop takes the keyboard from the active window, like on macOS.
         keyboard_interactivity: KeyboardInteractivity::OnDemand,
-        namespace: Some(String::from("macshell-desktop")),
+        namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }

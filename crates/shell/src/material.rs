@@ -89,6 +89,8 @@ pub enum Style {
 /// How a surface comes and goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Appear {
+    /// Fades in almost at once, and fades out like [`Appear::Fade`].
+    Quick,
     /// Fades in and out, like Control Center.
     Fade,
     /// There at once, and fades out quickly, like a menu.
@@ -188,7 +190,7 @@ impl Material {
             iced_layershell::toplevel::set_seat(seat);
         }
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=10, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=11, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -258,6 +260,8 @@ impl Material {
         {
             let (kind, x, y) = match appear {
                 Appear::Fade => (macshell_glass_v1::Appear::Fade, 0, 0),
+                Appear::Quick if glass.version() >= 11 => (macshell_glass_v1::Appear::Quick, 0, 0),
+                Appear::Quick => (macshell_glass_v1::Appear::Fade, 0, 0),
                 Appear::Pop => (macshell_glass_v1::Appear::Pop, 0, 0),
                 Appear::Grow(x, y) if glass.version() >= 10 => {
                     (macshell_glass_v1::Appear::Grow, x, y)
@@ -298,6 +302,23 @@ impl Material {
     /// Like [`Material::set_shapes`], each shape as opaque as the same place in `opacities`, from 0
     /// to 1, or fully if it's past the end of them.
     pub fn set_faded_shapes(&self, target: &MaterialSurface, shapes: &[Shape], opacities: &[f32]) {
+        self.queue_faded_shapes(target, shapes, opacities);
+        // The state is double-buffered. Committing without a new buffer only applies it, and
+        // between iced's frames there's no other pending state we could flush by accident.
+        target.surface.commit();
+        if let Err(err) = self.connection.flush() {
+            log::error!("can't flush Wayland connection: {err}");
+        }
+    }
+
+    /// Like [`Material::set_faded_shapes`], except that it goes out with the surface's next frame,
+    /// so that the glass and what's on it move together. That takes a frame coming.
+    pub fn queue_faded_shapes(
+        &self,
+        target: &MaterialSurface,
+        shapes: &[Shape],
+        opacities: &[f32],
+    ) {
         match &target.effect {
             Effect::Glass(glass) => {
                 glass.clear();
@@ -476,13 +497,6 @@ impl Material {
                 effect.set_blur_region(Some(&region));
                 region.destroy();
             }
-        }
-
-        // The state is double-buffered. Committing without a new buffer only applies it, and
-        // between iced's frames there's no other pending state we could flush by accident.
-        target.surface.commit();
-        if let Err(err) = self.connection.flush() {
-            log::error!("can't flush Wayland connection: {err}");
         }
     }
 }

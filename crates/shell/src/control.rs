@@ -3,7 +3,6 @@
 //! full-width sliders. [`modules`] places them; the view and the glass shapes both follow it.
 
 use iced_widget::core::text::Wrapping;
-use std::time::Instant;
 
 use iced_widget::core::{
     Alignment, Background, Border, Color, Length, Padding, Rectangle, Size, alignment,
@@ -13,6 +12,7 @@ use iced_widget::{
     Space, button, column, container, image, mouse_area, pin, row, scrollable, slider, stack, text,
 };
 
+use crate::anim::{Motion, Spring};
 use crate::app::{Element, Message};
 use crate::audio::{self, Output, Volume};
 use crate::bluetooth::{Bluetooth, Device};
@@ -28,11 +28,18 @@ const GAP: f32 = 12.0;
 /// Two cells and the gap between them.
 const WIDE: f32 = 2.0 * CELL + GAP;
 const WIDTH: f32 = 2.0 * WIDE + GAP;
-const MORPH_TIME: f32 = 0.33;
-/// How far past its place it goes: the usual constant for an overshoot this slight.
-const MORPH_OVERSHOOT: f32 = 0.55;
-const MORPH_FADE_DELAY: f32 = 0.05;
-const MORPH_FADE: f32 = 0.15;
+/// How a module's glass turns into its detail and back, measured from Tahoe's: 18%, 65%, 85% and 97% of
+/// the way there at 33, 83, 133 and 183ms, and a few pixels past.
+const MORPH_SPRING: Spring = Spring::new(0.25, 0.8);
+/// How the other modules fade, on the way there and back.
+const OTHERS_SPRING: Spring = Spring::new(0.22, 1.0);
+/// What a module does under the pointer, measured from Tahoe's: about 3% brighter, a brighter rim, and
+/// a chevron coming up if pressing it opens something.
+const HOVER_SPRING: Spring = Spring::new(0.18, 1.0);
+const HOVER_FILL: f32 = 0.045;
+const HOVER_RIM: f32 = 0.16;
+const HOVER_CHEVRON: f32 = 11.0;
+const HOVER_CHEVRON_INSET: f32 = 20.0;
 const SLIDER_HEIGHT: f32 = 64.0;
 const SLIDER_RADIUS: f32 = 30.0;
 const TILE_RADIUS: f32 = 30.0;
@@ -90,43 +97,50 @@ pub struct Panel {
     pub detail: Option<Detail>,
     /// A module's glass on its way to its detail or back.
     pub morph: Option<Morph>,
+    /// What the pointer's over, and how much each module is lit up by it, on its way in or out.
+    hovered: Option<Module>,
+    hover: Vec<(Module, Motion)>,
     pub networks: Vec<Network>,
     pub devices: Vec<Device>,
     pub outputs: Vec<Output>,
 }
 
 /// A module's own glass turning into its detail, or back, measured from Tahoe's: it moves and grows
-/// with a very slight overshoot, what's in it crossfades, and the other modules fade where they are.
+/// with a slight overshoot, what's in it crossfades, and the other modules fade where they are. It
+/// can change its mind on the way.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Morph {
-    /// How far along it was when this started, from 0 (the module) to 1 (the detail), which is where
-    /// it picks up from if it changes its mind.
-    from: f32,
+    /// How far along it is, from 0 (the module) to 1 (the detail).
+    value: Motion,
+    /// How much of the other modules shows.
+    others: Motion,
     opening: bool,
-    started: Instant,
 }
 
 impl Morph {
     /// Starts toward the detail or the module, from wherever `panel` has got to.
     pub fn start(panel: &Panel, opening: bool) -> Self {
-        let from = match panel.morph {
-            Some(morph) => morph.value(),
-            None if panel.detail.is_some() => 1.0,
-            None => 0.0,
+        let (mut value, mut others) = match panel.morph {
+            Some(morph) => (morph.value, morph.others),
+            None => {
+                let at_detail = panel.detail.is_some();
+                (
+                    Motion::at(f32::from(u8::from(at_detail)), MORPH_SPRING, 0.002),
+                    Motion::at(f32::from(u8::from(!at_detail)), OTHERS_SPRING, 0.002),
+                )
+            }
         };
+        value.go_to(f32::from(u8::from(opening)));
+        others.go_to(f32::from(u8::from(!opening)));
         Self {
-            from,
+            value,
+            others,
             opening,
-            started: Instant::now(),
         }
     }
 
-    fn seconds(self) -> f32 {
-        self.started.elapsed().as_secs_f32()
-    }
-
     pub fn is_done(self) -> bool {
-        self.seconds() >= MORPH_TIME
+        !self.value.is_moving() && !self.others.is_moving()
     }
 
     pub fn is_opening(self) -> bool {
@@ -135,20 +149,57 @@ impl Morph {
 
     /// How far along it is, from 0 to 1, going a little past on the way.
     fn value(self) -> f32 {
-        let t = (self.seconds() / MORPH_TIME).min(1.0) - 1.0;
-        let eased = 1.0 + (MORPH_OVERSHOOT + 1.0) * t.powi(3) + MORPH_OVERSHOOT * t.powi(2);
-        let to = if self.opening { 1.0 } else { 0.0 };
-        self.from + (to - self.from) * eased
+        self.value.value()
     }
 
     /// How much of the other modules shows.
     fn others(self) -> f32 {
-        let along = if self.opening {
-            1.0 - ((self.seconds() - MORPH_FADE_DELAY) / MORPH_FADE).clamp(0.0, 1.0)
+        self.others.value().clamp(0.0, 1.0)
+    }
+}
+
+impl Panel {
+    /// The pointer came onto a module, or left it.
+    pub fn set_hovered(&mut self, module: Module, over: bool) {
+        let hovered = if over {
+            Some(module)
+        } else if self.hovered == Some(module) {
+            None
         } else {
-            ((self.seconds() - MORPH_FADE_DELAY) / MORPH_FADE).clamp(0.0, 1.0)
+            return;
         };
-        along.max(1.0 - self.from.max(f32::from(u8::from(self.opening))))
+        if hovered == self.hovered {
+            return;
+        }
+        self.hovered = hovered;
+        for (lit, motion) in &mut self.hover {
+            motion.go_to(if hovered == Some(*lit) { 1.0 } else { 0.0 });
+        }
+        if let Some(module) = hovered
+            && !self.hover.iter().any(|(lit, _)| *lit == module)
+        {
+            let mut motion = Motion::at(0.0, HOVER_SPRING, 0.01);
+            motion.go_to(1.0);
+            self.hover.push((module, motion));
+        }
+    }
+
+    /// Forgets what the pointer was over, which it isn't when this opens again.
+    pub fn clear_hover(&mut self) {
+        self.hovered = None;
+        self.hover.clear();
+    }
+
+    /// How much a module is lit up by the pointer.
+    fn lit(&self, module: Module) -> f32 {
+        self.hover
+            .iter()
+            .find(|(lit, _)| *lit == module)
+            .map_or(0.0, |(_, motion)| motion.value().clamp(0.0, 1.0))
+    }
+
+    pub fn hover_is_moving(&self) -> bool {
+        self.hover.iter().any(|(_, motion)| motion.is_moving())
     }
 }
 
@@ -183,7 +234,7 @@ impl Detail {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Module {
+pub enum Module {
     Wifi,
     Bluetooth,
     NowPlaying,
@@ -400,10 +451,41 @@ fn module_content(module: Module, panel: &Panel) -> Element<'_> {
 
 pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
     let bubble = |module: Module, rect: Rectangle, radius: f32| {
-        container(module_content(module, panel))
+        let lit = panel.lit(module);
+        let opens_something = matches!(module, Module::Wifi | Module::Bluetooth | Module::Keyboard);
+        let glow = container(Space::new())
             .width(rect.width)
             .height(rect.height)
-            .style(move |_| bubble_style(material, radius))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(Color::from_rgba(
+                    1.0, 1.0, 1.0, HOVER_FILL,
+                ))),
+                border: Border {
+                    color: Color::from_rgba(1.0, 1.0, 1.0, HOVER_RIM),
+                    width: 1.0,
+                    radius: radius.into(),
+                },
+                ..Default::default()
+            });
+        let chevron = icons::icon(
+            Glyph::Chevron,
+            HOVER_CHEVRON,
+            Color::from_rgba(1.0, 1.0, 1.0, 0.75),
+        );
+        container(
+            stack![
+                group(glow).opacity(lit),
+                module_content(module, panel),
+                pin(group(chevron).opacity(if opens_something { lit } else { 0.0 }))
+                    .x(rect.width - HOVER_CHEVRON_INSET)
+                    .y((rect.height - HOVER_CHEVRON) / 2.0),
+            ]
+            .width(rect.width)
+            .height(rect.height),
+        )
+        .width(rect.width)
+        .height(rect.height)
+        .style(move |_| bubble_style(material, radius))
     };
     let layers: Vec<Element<'_>> = match (panel.detail, panel.morph) {
         (Some(detail), None) => {
@@ -461,7 +543,12 @@ pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
         (None, _) => modules(panel)
             .into_iter()
             .map(|(module, rect, radius)| {
-                pin(bubble(module, rect, radius)).x(rect.x).y(rect.y).into()
+                pin(mouse_area(bubble(module, rect, radius))
+                    .on_enter(Message::ControlHover(module, true))
+                    .on_exit(Message::ControlHover(module, false)))
+                .x(rect.x)
+                .y(rect.y)
+                .into()
             })
             .collect(),
     };
@@ -889,7 +976,7 @@ fn detail_view<'a>(
         Some(Message::ControlSettings(settings_page)),
     );
 
-    // Pressing the panel itself shouldn't count as pressing outside it.
+    // Pressing the panel itself goes back, as on macOS; what's on it keeps its own presses.
     mouse_area(
         container(column![
             header,
@@ -917,7 +1004,7 @@ fn detail_view<'a>(
             style
         }),
     )
-    .on_press(Message::Nothing)
+    .on_press(Message::ControlDetail(None))
     .into()
 }
 
@@ -1181,37 +1268,60 @@ mod morph_tests {
     use super::*;
     use std::time::Duration;
 
-    fn morph(from: f32, opening: bool, seconds: f32) -> Morph {
-        Morph {
-            from,
-            opening,
-            started: Instant::now() - Duration::from_secs_f32(seconds),
-        }
+    fn morph(opening: bool, seconds: f32) -> Morph {
+        let panel = Panel {
+            detail: (!opening).then_some(Detail::Wifi),
+            ..Default::default()
+        };
+        let mut morph = Morph::start(&panel, opening);
+        morph.value = morph.value.started_ago(seconds);
+        morph.others = morph.others.started_ago(seconds);
+        morph
     }
 
     #[test]
     fn it_goes_from_end_to_end_and_a_little_past() {
-        assert!(morph(0.0, true, 0.0).value().abs() < 0.05);
-        assert_eq!(morph(0.0, true, MORPH_TIME * 2.0).value(), 1.0);
-        assert_eq!(morph(1.0, false, MORPH_TIME * 2.0).value(), 0.0);
-        let peak = (0..33)
-            .map(|step| morph(0.0, true, step as f32 / 100.0).value())
+        assert!(morph(true, 0.0).value().abs() < 0.05);
+        assert_eq!(morph(true, 2.0).value(), 1.0);
+        assert_eq!(morph(false, 2.0).value(), 0.0);
+        let peak = (0..60)
+            .map(|step| morph(true, step as f32 / 100.0).value())
             .fold(0.0, f32::max);
-        assert!(peak > 1.0 && peak < 1.08, "went to {peak}");
+        assert!(peak > 1.0 && peak < 1.06, "went to {peak}");
+        assert!(morph(true, 2.0).is_done());
+        assert!(!morph(true, 0.05).is_done());
     }
 
     #[test]
     fn changing_its_mind_picks_up_from_where_it_was() {
-        let halfway = morph(0.0, true, MORPH_TIME * 0.3).value();
-        assert!((morph(halfway, false, 0.0).value() - halfway).abs() < 0.05);
+        let there = morph(true, 0.08);
+        let halfway = there.value();
+        let panel = Panel {
+            detail: Some(Detail::Wifi),
+            morph: Some(there),
+            ..Default::default()
+        };
+        assert!((Morph::start(&panel, false).value() - halfway).abs() < 0.02);
     }
 
     #[test]
     fn the_other_modules_fade_out_and_come_back() {
-        assert_eq!(morph(0.0, true, 0.0).others(), 1.0);
-        assert_eq!(morph(0.0, true, 0.4).others(), 0.0);
-        assert_eq!(morph(1.0, false, 0.0).others(), 0.0);
-        assert_eq!(morph(1.0, false, 0.4).others(), 1.0);
+        assert!(morph(true, 0.0).others() > 0.99);
+        assert_eq!(morph(true, 2.0).others(), 0.0);
+        assert!(morph(false, 0.0).others() < 0.01);
+        assert_eq!(morph(false, 2.0).others(), 1.0);
+    }
+
+    #[test]
+    fn the_pointer_lights_one_module_at_a_time() {
+        let mut panel = Panel::default();
+        panel.set_hovered(Module::Wifi, true);
+        panel.set_hovered(Module::Bluetooth, true);
+        // Leaving one it's no longer over changes nothing.
+        panel.set_hovered(Module::Wifi, false);
+        assert_eq!(panel.hovered, Some(Module::Bluetooth));
+        panel.set_hovered(Module::Bluetooth, false);
+        assert_eq!(panel.hovered, None);
     }
 
     #[test]
@@ -1220,7 +1330,7 @@ mod morph_tests {
             detail: Some(Detail::Wifi),
             ..Default::default()
         };
-        panel.morph = Some(morph(0.0, true, 0.1));
+        panel.morph = Some(morph(true, 0.1));
         assert_eq!(
             material_shapes(&panel).len(),
             material_opacities(&panel).len()
@@ -1232,8 +1342,8 @@ mod morph_tests {
     #[test]
     fn a_morph_starts_from_where_things_are() {
         let mut panel = Panel::default();
-        assert_eq!(Morph::start(&panel, true).from, 0.0);
+        assert!(Morph::start(&panel, true).value() < 0.01);
         panel.detail = Some(Detail::Sound);
-        assert_eq!(Morph::start(&panel, false).from, 1.0);
+        assert!(Morph::start(&panel, false).value() > 0.99);
     }
 }

@@ -16,6 +16,7 @@ use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Value};
 
+use crate::anim;
 use crate::app::{Element, Message};
 use crate::apps::AppIndex;
 use crate::group::group;
@@ -69,11 +70,8 @@ const CAPSULE_INSET_BOTTOM: f32 = 10.0;
 const TEXT_FADE: f32 = 30.0;
 const TEXT_FADE_STEPS: usize = 6;
 /// How long the capsule takes to show and to go, measured from Tahoe's.
-const HOVER_IN: Duration = Duration::from_millis(100);
-const HOVER_OUT: Duration = Duration::from_millis(280);
-/// How a row moves when others come or go: fast off the mark and settling within about 270ms,
-/// measured from Tahoe's, as a critically damped spring.
-const SPRING: f32 = 22.0;
+const HOVER_IN: Duration = Duration::from_millis(130);
+const HOVER_OUT: Duration = Duration::from_millis(250);
 pub const CLOSE_SIZE: f32 = 19.0;
 /// What's on a chip, like the ✕ on its button.
 pub const CHIP_INK: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.75);
@@ -264,43 +262,6 @@ fn time_ago(then: DateTime<Local>, now: DateTime<Local>) -> String {
     }
 }
 
-/// A position that moves toward where it should be like a critically damped spring, starting fast
-/// and settling, whenever that changes and however irregular the frames are.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Spring {
-    pub value: f32,
-    velocity: f32,
-}
-
-impl Spring {
-    pub fn at(value: f32) -> Self {
-        Self {
-            value,
-            velocity: 0.0,
-        }
-    }
-
-    pub fn step(&mut self, target: f32, seconds: f32) {
-        let distance = self.value - target;
-        let decay = (-SPRING * seconds).exp();
-        let lead = self.velocity + SPRING * distance;
-        let (distance, velocity) = (
-            (distance + lead * seconds) * decay,
-            (self.velocity - SPRING * lead * seconds) * decay,
-        );
-        if distance.abs() < 0.25 && velocity.abs() < 4.0 {
-            *self = Self::at(target);
-        } else {
-            self.value = target + distance;
-            self.velocity = velocity;
-        }
-    }
-
-    pub fn is_at(&self, target: f32) -> bool {
-        self.value == target && self.velocity == 0.0
-    }
-}
-
 /// How much a card's capsule shows, which comes and goes gradually with the pointer.
 #[derive(Debug, Default)]
 pub struct HoverFade {
@@ -325,13 +286,13 @@ impl HoverFade {
             .iter()
             .find(|(moving, ..)| *moving == id)
             .map_or(target, |(_, from, started)| {
-                let t = started.elapsed().as_secs_f32() / self.time(id).as_secs_f32();
-                from + (target - from) * t.min(1.0)
+                let t = (anim::seconds_since(*started) / self.time(id).as_secs_f32()).min(1.0);
+                from + (target - from) * t * t * (3.0 - 2.0 * t)
             })
     }
 
     /// Says which card the pointer's over now.
-    pub fn aim(&mut self, hovered: Option<u32>, now: Instant) {
+    pub fn aim(&mut self, hovered: Option<u32>) {
         if hovered != self.current {
             let starts: Vec<(u32, f32)> = [self.current, hovered]
                 .into_iter()
@@ -342,12 +303,12 @@ impl HoverFade {
             self.moving
                 .retain(|(id, ..)| !starts.iter().any(|(start, _)| start == id));
             self.moving
-                .extend(starts.into_iter().map(|(id, from)| (id, from, now)));
+                .extend(starts.into_iter().map(|(id, from)| (id, from, anim::now())));
         }
         let moving = std::mem::take(&mut self.moving);
         self.moving = moving
             .into_iter()
-            .filter(|(id, _, started)| started.elapsed() < self.time(*id))
+            .filter(|(id, _, started)| anim::seconds_since(*started) < self.time(*id).as_secs_f32())
             .collect();
     }
 
@@ -493,23 +454,24 @@ fn face<'a>(
             let room = (rect.x - text_left - 4.0).min(width);
             let area = Size::new(width, notification.body_height);
             let solid = (room - TEXT_FADE).max(0.0);
-            // All of it, going as what's in front of the capsule takes over: whole up to where the
-            // fade starts, and then strips of less and less of it, side by side so that nothing's
-            // drawn twice, which would make it look bolder.
+            // Side by side, so that nothing's drawn twice, which would dim or thicken it: what's clear
+            // of the capsule as it is, what would run under it going, and strips of less and less
+            // of it in between.
             let mut layers: Vec<Element<'a>> = vec![
-                group(body()).opacity(1.0 - capsule).clip(area).into(),
+                group(body()).clip(Size::new(solid, area.height)).into(),
                 group(body())
-                    .opacity(capsule)
-                    .clip(Size::new(solid, area.height))
+                    .opacity(1.0 - capsule)
+                    .clip(area)
+                    .clip_left(room)
                     .into(),
             ];
             let strip = (room - solid) / TEXT_FADE_STEPS as f32;
             for step in 0..TEXT_FADE_STEPS {
                 let left = solid + strip * step as f32;
-                let shows = 1.0 - (step as f32 + 0.5) / TEXT_FADE_STEPS as f32;
+                let thins_to = 1.0 - (step as f32 + 0.5) / TEXT_FADE_STEPS as f32;
                 layers.push(
                     group(body())
-                        .opacity(shows * capsule)
+                        .opacity(1.0 - capsule * (1.0 - thins_to))
                         .clip(Size::new(left + strip, area.height))
                         .clip_left(left)
                         .into(),
@@ -931,27 +893,6 @@ mod motion_tests {
     use chrono::TimeZone as _;
 
     #[test]
-    fn a_spring_gets_there_about_as_fast_as_tahoes() {
-        // The share of the way left in a recording, at 33, 67, 100, 133, 167 and 200ms.
-        let measured = [0.89, 0.6, 0.36, 0.2, 0.09, 0.04];
-        let mut spring = Spring::at(100.0);
-        for left in measured {
-            for _ in 0..2 {
-                spring.step(0.0, 1.0 / 60.0);
-            }
-            assert!(
-                (spring.value / 100.0 - left).abs() < 0.13,
-                "{} where Tahoe has {left}",
-                spring.value / 100.0
-            );
-        }
-        for _ in 0..60 {
-            spring.step(0.0, 1.0 / 60.0);
-        }
-        assert!(spring.is_at(0.0));
-    }
-
-    #[test]
     fn times_read_like_macos() {
         let at = |day, hour, minute| {
             Local
@@ -970,15 +911,14 @@ mod motion_tests {
     fn a_capsule_comes_and_goes_gradually() {
         let mut fade = HoverFade::default();
         assert_eq!(fade.amount(1), 0.0);
-        fade.aim(Some(1), Instant::now());
+        fade.aim(Some(1));
         assert!(fade.is_animating());
         assert!(fade.amount(1) < 0.5);
-        fade.aim(Some(1), Instant::now() - HOVER_IN);
-        fade.moving[0].2 -= HOVER_IN;
+        fade.moving[0].2 -= HOVER_IN * 2;
         assert_eq!(fade.amount(1), 1.0);
-        fade.aim(Some(1), Instant::now());
+        fade.aim(Some(1));
         assert!(!fade.is_animating());
-        fade.aim(None, Instant::now());
+        fade.aim(None);
         assert!(fade.amount(1) > 0.5);
     }
 }

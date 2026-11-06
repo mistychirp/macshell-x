@@ -18,7 +18,7 @@
 namespace Macshell
 {
 
-static constexpr int s_version = 10;
+static constexpr int s_version = 11;
 
 /// Reading pixels back stalls the GPU, so brightness is measured at most this often.
 static constexpr int s_probeIntervalMs = 500;

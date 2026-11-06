@@ -20,6 +20,7 @@ use iced_widget::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::anim;
 use crate::app::{Element, Message};
 use crate::group::group;
 use crate::icons::{self, Glyph};
@@ -708,18 +709,18 @@ impl Tint {
         if tinted != self.to {
             self.from = self.value();
             self.to = tinted;
-            self.started = Instant::now();
+            self.started = anim::now();
         }
     }
 
     pub fn value(&self) -> f32 {
-        let t = (self.started.elapsed().as_secs_f32() / TINT_TIME.as_secs_f32()).min(1.0);
+        let t = (anim::seconds_since(self.started) / TINT_TIME.as_secs_f32()).min(1.0);
         let to = if self.to { 1.0 } else { 0.0 };
         self.from + (to - self.from) * t * t * (3.0 - 2.0 * t)
     }
 
     pub fn is_animating(&self) -> bool {
-        self.started.elapsed() < TINT_TIME
+        anim::seconds_since(self.started) < TINT_TIME.as_secs_f32()
     }
 }
 
@@ -1300,7 +1301,7 @@ pub fn gallery_settings() -> NewLayerShellSettings {
         exclusive_zone: Some(-1),
         margin: Some((0, 0, crate::dock::reserved_height() as i32 + 12, 0)),
         keyboard_interactivity: KeyboardInteractivity::None,
-        namespace: Some(String::from("macshell-widget-gallery")),
+        namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }

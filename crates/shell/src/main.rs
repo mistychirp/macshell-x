@@ -1,4 +1,5 @@
 mod alert;
+mod anim;
 mod app;
 mod appmenu;
 mod apps;

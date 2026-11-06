@@ -5,7 +5,6 @@
 //! why hovering is worked out here rather than by widgets: they can't tell they've been rotated.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use iced_layershell::reexport::{
     Anchor, IcedId, KeyboardInteractivity, Layer, NewLayerShellSettings,
@@ -15,36 +14,36 @@ use iced_widget::graphics::text::{cosmic_text, font_system, to_attributes, to_sh
 use iced_widget::{Space, container, image, mouse_area, pin};
 use wayland_client::protocol::wl_surface::WlSurface;
 
+use crate::anim::{Motion, Spring};
 use crate::app::{Element, Message};
 use crate::{dock, fonts, material, menu};
 
 /// How far apart the rows are, and how big a file's picture is.
-const ROW_STEP: f32 = 42.0;
-const PICTURE_SIZE: f32 = 38.0;
-const PICTURE_RADIUS: f32 = 4.0;
+const ROW_STEP: f32 = 64.0;
+const PICTURE_SIZE: f32 = 58.0;
+const PICTURE_RADIUS: f32 = 5.0;
 /// From the top of the space above the dock to the middle of the first row.
-const BOTTOM_ROW: f32 = 30.0;
-const LABEL_GAP: f32 = 8.0;
-const LABEL_HEIGHT: f32 = 21.0;
-const LABEL_PADDING: f32 = 12.0;
-const LABEL_TEXT: f32 = 12.0;
-const LABEL_MAX_WIDTH: f32 = 380.0;
+const BOTTOM_ROW: f32 = 55.0;
+const LABEL_GAP: f32 = 14.0;
+const LABEL_HEIGHT: f32 = 26.0;
+const LABEL_PADDING: f32 = 14.0;
+const LABEL_TEXT: f32 = 13.5;
+const LABEL_MAX_WIDTH: f32 = 470.0;
 /// How many times finer than a logical pixel names are drawn, to stay sharp when rotated.
 const LABEL_SCALE: f32 = 3.0;
 const MAX_ROWS: usize = 11;
 /// How far right the arc has gone and how far it leans, at the tenth row, measured from Tahoe's.
-const ARC_REACH: f32 = 58.0;
+const ARC_REACH: f32 = 104.0;
 const ARC_LEAN: f32 = 13.0;
 const LEAN_AT_START: f32 = 1.0;
-/// Measured from Tahoe's: about 350ms out, with the bottom row leading, and a little less back.
-const OPEN_TIME: Duration = Duration::from_millis(350);
-const CLOSE_TIME: Duration = Duration::from_millis(280);
-/// How far ahead the bottom row is of the top one, as a share of the animation.
-const STAGGER: f32 = 0.15;
+// Measured from a recording of Tahoe's: half way in about 110ms, and there by about 230ms, with the
+// rows moving almost as one.
+const OUT_SPRING: Spring = Spring::new(0.33, 0.9);
+const BACK_SPRING: Spring = Spring::new(0.26, 1.0);
+/// How far behind the bottom row the top one is, in seconds.
+const STAGGER: f32 = 0.025;
 /// How far the pointer moves with a row pressed before it's a drag.
 const DRAG_DISTANCE: f32 = 4.0;
-/// How far past its place a row goes as it opens: the usual constant for a slight bounce.
-const OVERSHOOT: f32 = 0.5;
 
 /// With glass under it, a name needs nothing behind it. Without, it needs a dark capsule.
 const LABEL_ON_GLASS: [u8; 4] = [0, 0, 0, 0];
@@ -134,8 +133,9 @@ pub struct Fan {
     /// The row pressed, and where.
     pub pressed: Option<(usize, Point)>,
     pub dragging: bool,
-    opened: Instant,
-    closing: Option<Instant>,
+    /// How far out it is, from 0 to 1.
+    out: Motion,
+    closing: bool,
     /// The glass behind its capsules, and what was last sent.
     pub material: Option<material::MaterialSurface>,
     pub shapes: Vec<material::Shape>,
@@ -152,7 +152,7 @@ impl Fan {
         glass: bool,
     ) -> Self {
         let plain_color = if glass { LABEL_ON_GLASS } else { LABEL_COLOR };
-        let lean_of = |index: usize| (LEAN_AT_START + ARC_LEAN * index as f32 / 10.0).to_radians();
+        let lean_of = |index: usize| (LEAN_AT_START + ARC_LEAN * index as f32 / 11.0).to_radians();
         let rows: Vec<Row> = rows
             .into_iter()
             .enumerate()
@@ -179,8 +179,15 @@ impl Fan {
             hovered: None,
             pressed: None,
             dragging: false,
-            opened: Instant::now(),
-            closing: None,
+            out: {
+                let mut out = Motion::at(0.0, OUT_SPRING, 0.002);
+                // Otherwise it waits for its glass to show up.
+                if !glass {
+                    out.go_to(1.0);
+                }
+                out
+            },
+            closing: false,
             material: None,
             shapes: Vec::new(),
             shape_opacities: Vec::new(),
@@ -192,41 +199,38 @@ impl Fan {
         (((height - BOTTOM_ROW - ROW_STEP) / ROW_STEP).floor() as usize).clamp(1, MAX_ROWS)
     }
 
-    /// How far open it is, from 0 to 1.
-    fn progress(&self) -> f32 {
-        match self.closing {
-            Some(closing) => {
-                1.0 - (closing.elapsed().as_secs_f32() / CLOSE_TIME.as_secs_f32()).min(1.0)
-            }
-            None => (self.opened.elapsed().as_secs_f32() / OPEN_TIME.as_secs_f32()).min(1.0),
+    /// Sets off, now that there's glass to show it on.
+    pub fn arrive(&mut self) {
+        if !self.closing {
+            self.out.go_to(1.0);
         }
     }
 
     pub fn is_animating(&self) -> bool {
-        match self.closing {
-            Some(closing) => closing.elapsed() < CLOSE_TIME,
-            None => self.opened.elapsed() < OPEN_TIME,
-        }
+        self.out.is_moving_delayed(STAGGER)
     }
 
     pub fn is_closing(&self) -> bool {
-        self.closing.is_some()
+        self.closing
     }
 
     pub fn has_closed(&self) -> bool {
-        self.closing
-            .is_some_and(|closing| closing.elapsed() >= CLOSE_TIME)
+        self.closing && !self.out.is_moving_delayed(STAGGER)
     }
 
     pub fn close(&mut self) {
-        if self.closing.is_none() {
-            self.closing = Some(Instant::now());
-        }
+        self.closing = true;
+        self.out.go_to_on(0.0, BACK_SPRING);
+    }
+
+    /// Follows the tile it came out of.
+    pub fn set_tile(&mut self, x: f32) {
+        self.tile_x = x;
     }
 
     /// Where the row at `index` ends up.
     fn place_of(&self, index: usize) -> Place {
-        let along = index as f32 / 10.0;
+        let along = index as f32 / 11.0;
         Place {
             center: Point::new(
                 self.tile_x + ARC_REACH * along.powf(1.8),
@@ -312,15 +316,7 @@ impl Fan {
     fn place_now(&self, index: usize) -> Place {
         let end = self.place_of(index);
         let count = (self.rows.len() + 1) as f32;
-        let delay = STAGGER * index as f32 / count;
-        let t = (self.progress() * (1.0 + STAGGER) - delay).clamp(0.0, 1.0);
-        // A little past the end and back, except on the way in.
-        let out = if self.closing.is_some() {
-            1.0 - (1.0 - t).powi(3)
-        } else {
-            let back = t - 1.0;
-            1.0 + (OVERSHOOT + 1.0) * back.powi(3) + OVERSHOOT * back.powi(2)
-        };
+        let out = self.out.delayed(STAGGER * index as f32 / count);
         let spread = out.max(0.0).min(1.0).powi(2);
         let start = Point::new(self.tile_x, self.height + PICTURE_SIZE / 2.0);
         Place {
@@ -601,7 +597,7 @@ pub fn settings(screen_height: f32) -> NewLayerShellSettings {
         size: Some((0, surface_height(screen_height) as u32)),
         exclusive_zone: Some(-1),
         keyboard_interactivity: KeyboardInteractivity::None,
-        namespace: Some(String::from("macshell-fan")),
+        namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }
@@ -630,7 +626,7 @@ mod tests {
     #[test]
     fn it_arcs_right_and_leans_more_as_it_rises() {
         let fan = fan(10);
-        let (low, high) = (fan.place_of(0), fan.place_of(10));
+        let (low, high) = (fan.place_of(0), fan.place_of(11));
         assert!(high.center.y < low.center.y);
         assert!(high.center.x > low.center.x);
         assert!(high.lean > low.lean);
@@ -656,7 +652,10 @@ mod tests {
     #[test]
     fn rows_start_small_and_end_in_place() {
         let mut fan = fan(5);
-        fan.opened = Instant::now() - OPEN_TIME * 3;
+        // It waits for its glass.
+        assert_eq!(fan.place_now(2).out, 0.0);
+        fan.arrive();
+        fan.out = fan.out.started_ago(3.0);
         let done = fan.place_now(2);
         assert!((done.out - 1.0).abs() < 0.001);
         assert_eq!(done.center, fan.place_of(2).center);
@@ -665,7 +664,9 @@ mod tests {
                 .iter()
                 .all(|opacity| *opacity == 1.0)
         );
-        fan.closing = Some(Instant::now() - CLOSE_TIME * 3);
+        fan.close();
+        fan.out = fan.out.started_ago(3.0);
+        assert!(fan.has_closed());
         assert_eq!(fan.place_now(2).out, 0.0);
         assert!(
             fan.material_opacities()
@@ -694,7 +695,8 @@ mod tests {
     #[test]
     fn its_glass_holds_each_capsule_and_stays_one_size_on_the_way_out() {
         let mut fan = fan(10);
-        fan.opened = Instant::now() - OPEN_TIME * 3;
+        fan.arrive();
+        fan.out = fan.out.started_ago(3.0);
         let shapes = fan.material_shapes();
         assert_eq!(shapes.len(), 12);
         for (index, shape) in shapes.iter().take(11).enumerate() {
@@ -743,7 +745,7 @@ mod tests {
     #[test]
     fn fits_rows_above_the_dock() {
         assert_eq!(Fan::rows_that_fit(1200.0), MAX_ROWS);
-        assert_eq!(Fan::rows_that_fit(300.0), 5);
+        assert_eq!(Fan::rows_that_fit(300.0), 2);
         assert_eq!(Fan::rows_that_fit(50.0), 1);
     }
 

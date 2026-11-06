@@ -7,9 +7,10 @@ use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerSh
 use iced_widget::core::Length;
 use iced_widget::{container, pin, stack};
 
+use crate::anim::{self, Motion, Spring};
 use crate::app::{Element, Message};
 use crate::notifications::{
-    CARD_WIDTH, HoverFade, Notification, OVERHANG, RADIUS, Spring, card, chip_shape, close_shape,
+    CARD_WIDTH, HoverFade, Notification, OVERHANG, RADIUS, card, chip_shape, close_shape,
 };
 use crate::{material, menubar};
 
@@ -21,10 +22,14 @@ const RIGHT_MARGIN: f32 = 16.0;
 const WIDTH: f32 = OVERHANG + CARD_WIDTH + RIGHT_MARGIN;
 /// Room for [`MAX_BANNERS`] of the tallest cards.
 const HEIGHT: f32 = OVERHANG + MAX_BANNERS as f32 * (134.0 + GAP);
-/// Time constant of how a banner slides in, in seconds.
-const EASING: f32 = 0.07;
-/// How long it takes to slide out, picking up speed, measured from Tahoe's.
-const SLIDE_OUT: Duration = Duration::from_millis(220);
+// Measured from a recording of Tahoe's.
+/// How fast a banner comes in: how long it takes to get about two thirds of the way, in seconds. It's
+/// fastest at the start.
+const SLIDE_IN: f32 = 0.042;
+/// How long it takes to slide out.
+const SLIDE_OUT: Duration = Duration::from_millis(200);
+/// How the ones under one that's gone move up.
+const ROW_SPRING: Spring = Spring::new(0.285, 0.92);
 /// A banner that was being pointed at stays this long after the pointer leaves.
 const AFTER_HOVER: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -36,7 +41,7 @@ pub fn settings() -> NewLayerShellSettings {
         exclusive_zone: Some(-1),
         margin: Some((menubar::HEIGHT as i32 + TOP_MARGIN, 0, 0, 0)),
         keyboard_interactivity: KeyboardInteractivity::None,
-        namespace: Some(String::from("macshell-notifications")),
+        namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }
@@ -44,17 +49,37 @@ pub fn settings() -> NewLayerShellSettings {
 struct Banner {
     notification: Notification,
     expires: Option<Instant>,
-    /// How far it has slid out: 0 in place, 1 off the screen.
-    slide: f32,
+    arrived: Instant,
     leaving: bool,
     /// When it started sliding out, and from where, once it has.
     left: Option<(Instant, f32)>,
-    y: Spring,
+    y: Motion,
 }
 
 impl Banner {
+    /// How far it has slid out: 0 in place, 1 off the screen.
+    fn slide(&self) -> f32 {
+        match self.left {
+            Some((started, from)) => {
+                let t = (anim::seconds_since(started) / SLIDE_OUT.as_secs_f32()).min(1.0);
+                from + (1.0 - from) * t * t * (3.0 - 2.0 * t)
+            }
+            None => {
+                let out = (-anim::seconds_since(self.arrived) / SLIDE_IN).exp();
+                if out < 0.002 { 0.0 } else { out }
+            }
+        }
+    }
+
     fn x(&self) -> f32 {
-        OVERHANG + self.slide * (CARD_WIDTH + RIGHT_MARGIN)
+        OVERHANG + self.slide() * (CARD_WIDTH + RIGHT_MARGIN)
+    }
+
+    fn leave(&mut self) {
+        self.leaving = true;
+        if self.left.is_none() {
+            self.left = Some((anim::now(), self.slide()));
+        }
     }
 }
 
@@ -62,7 +87,6 @@ impl Banner {
 #[derive(Default)]
 pub struct Banners {
     banners: Vec<Banner>,
-    last_frame: Option<Instant>,
 }
 
 impl Banners {
@@ -80,14 +104,22 @@ impl Banners {
 
     /// Whether anything is moving, which takes frames.
     pub fn animating(&self) -> bool {
-        self.banners.iter().enumerate().any(|(index, banner)| {
-            banner.slide != slide_target(banner) || !banner.y.is_at(self.y_target(index))
-        })
+        self.banners
+            .iter()
+            .any(|banner| banner.left.is_some() || banner.slide() != 0.0 || banner.y.is_moving())
     }
 
     /// Whether any banner is waiting to expire.
     pub fn counting_down(&self) -> bool {
         self.banners.iter().any(|banner| banner.expires.is_some())
+    }
+
+    /// Sends each one toward where it should be now.
+    fn rearrange(&mut self) {
+        for index in 0..self.banners.len() {
+            let target = self.y_target(index);
+            self.banners[index].y.go_to(target);
+        }
     }
 
     /// Shows a new banner on top, sending off the oldest if there are too many.
@@ -97,10 +129,10 @@ impl Banners {
             Banner {
                 expires: notification.timeout.map(|timeout| now + timeout),
                 notification,
-                slide: 1.0,
+                arrived: anim::now(),
                 leaving: false,
                 left: None,
-                y: Spring::default(),
+                y: Motion::at(0.0, ROW_SPRING, 0.25),
             },
         );
         if let Some(oldest) = self
@@ -109,11 +141,9 @@ impl Banners {
             .filter(|banner| !banner.leaving)
             .nth(MAX_BANNERS)
         {
-            oldest.leaving = true;
+            oldest.leave();
         }
-        // It starts where it's going to be; only the slide shows.
-        self.banners[0].y = Spring::at(self.y_target(0));
-        self.last_frame = None;
+        self.rearrange();
     }
 
     /// Updates the banner showing this notification, if any, and restarts its time.
@@ -127,7 +157,7 @@ impl Banners {
         };
         banner.expires = notification.timeout.map(|timeout| now + timeout);
         banner.notification = notification.clone();
-        self.last_frame = None;
+        self.rearrange();
         true
     }
 
@@ -135,7 +165,7 @@ impl Banners {
     /// it's closed. Those under it move up.
     pub fn remove(&mut self, id: u32) {
         self.banners.retain(|banner| banner.notification.id != id);
-        self.last_frame = None;
+        self.rearrange();
     }
 
     /// Sends off the banner showing this notification, if any.
@@ -145,16 +175,15 @@ impl Banners {
             .iter_mut()
             .find(|banner| banner.notification.id == id)
         {
-            banner.leaving = true;
+            banner.leave();
         }
-        self.last_frame = None;
+        self.rearrange();
     }
 
     pub fn dismiss_all(&mut self) {
         for banner in &mut self.banners {
-            banner.leaving = true;
+            banner.leave();
         }
-        self.last_frame = None;
     }
 
     /// The pointer left a banner: gives it a moment before it goes.
@@ -173,42 +202,24 @@ impl Banners {
     /// which are over; the others live on in Notification Center.
     pub fn frame(&mut self, now: Instant, hovered: Option<u32>) -> Vec<u32> {
         let mut over = Vec::new();
+        let mut gone = false;
         for banner in &mut self.banners {
             if !banner.leaving
                 && hovered != Some(banner.notification.id)
                 && banner.expires.is_some_and(|expires| now >= expires)
             {
-                banner.leaving = true;
+                banner.leave();
+                gone = true;
                 if banner.notification.transient {
                     over.push(banner.notification.id);
                 }
             }
         }
-
-        // Exponential easing, independent of how regularly frames arrive.
-        let dt = self
-            .last_frame
-            .map_or(0.016, |last| (now - last).as_secs_f32())
-            .min(0.05);
-        self.last_frame = Some(now);
-        let ease = 1.0 - (-dt / EASING).exp();
-
-        for index in 0..self.banners.len() {
-            let y_target = self.y_target(index);
-            let banner = &mut self.banners[index];
-            banner.y.step(y_target, dt);
-            if banner.leaving {
-                let (started, from) = *banner.left.get_or_insert((now, banner.slide));
-                let t = (now.saturating_duration_since(started).as_secs_f32()
-                    / SLIDE_OUT.as_secs_f32())
-                .min(1.0);
-                banner.slide = from + (1.0 - from) * t * t;
-            } else {
-                banner.slide = approach(banner.slide, 0.0, ease);
-            }
-        }
         self.banners
-            .retain(|banner| !(banner.leaving && banner.slide == 1.0));
+            .retain(|banner| !(banner.leaving && banner.slide() >= 1.0));
+        if gone {
+            self.rearrange();
+        }
         over
     }
 
@@ -234,7 +245,7 @@ impl Banners {
             shapes.push(material::Shape {
                 rect: (
                     banner.x() as i32,
-                    (banner.y.value + OVERHANG) as i32,
+                    (banner.y.value() + OVERHANG) as i32,
                     CARD_WIDTH as i32,
                     banner.notification.height() as i32,
                 ),
@@ -249,14 +260,14 @@ impl Banners {
             {
                 shapes.push(chip_shape(
                     banner.x() + rect.x,
-                    banner.y.value + OVERHANG + rect.y,
+                    banner.y.value() + OVERHANG + rect.y,
                     rect.width,
                     rect.height,
                 ));
                 opacities.push(capsule);
             }
             if hovered == Some(id) {
-                shapes.push(close_shape(banner.x() - OVERHANG, banner.y.value));
+                shapes.push(close_shape(banner.x() - OVERHANG, banner.y.value()));
                 opacities.push(1.0);
             }
         }
@@ -271,7 +282,7 @@ impl Banners {
             .map(|banner| {
                 (
                     (banner.x() - OVERHANG) as i32,
-                    banner.y.value as i32,
+                    banner.y.value() as i32,
                     (CARD_WIDTH + OVERHANG) as i32,
                     (banner.notification.height() + OVERHANG) as i32,
                 )
@@ -295,13 +306,13 @@ impl Banners {
                     None,
                     hovered == Some(id),
                     fade.amount(id),
-                    (banner.x(), banner.y.value + OVERHANG),
+                    (banner.x(), banner.y.value() + OVERHANG),
                     material,
                     Message::NotificationPressed(id),
                     Message::NotificationDismissed(id),
                 ))
                 .x(banner.x() - OVERHANG)
-                .y(banner.y.value)
+                .y(banner.y.value())
                 .into()
             })
             .collect();
@@ -309,18 +320,5 @@ impl Banners {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
-    }
-}
-
-fn slide_target(banner: &Banner) -> f32 {
-    if banner.leaving { 1.0 } else { 0.0 }
-}
-
-fn approach(value: f32, target: f32, ease: f32) -> f32 {
-    let next = value + (target - value) * ease;
-    if (target - next).abs() < 0.004 * target.abs().max(1.0) {
-        target
-    } else {
-        next
     }
 }

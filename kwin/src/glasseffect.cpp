@@ -60,6 +60,8 @@ static bool isDialog(Style style)
 static constexpr QSize s_probeSize(32, 4);
 /// How far past the edges of glass to repaint when it changes, in logical pixels.
 static constexpr int s_edgeRepaint = 2;
+/// How many shapes' textures are kept when there are fewer shapes than there were.
+static constexpr size_t s_spareRenders = 6;
 /// How long glass a client let go of stays if its window turns out not to be closing.
 static constexpr int s_releasedGlassMs = 1000;
 
@@ -438,8 +440,9 @@ static float spring(float seconds, float response, float damping)
 
 static AppearState appearState(const WindowGlass &glass)
 {
-    // Measured from a recording of Tahoe: panels fade with next to no scaling, menus are there at
-    // once, and alerts grow out of a point and vanish at once.
+    // Measured from a recording of Tahoe, frame by frame. Panels fade with next to no scaling, menus
+    // are there at once, alerts spring out of a point, going about 7% past their size and back, and
+    // vanish at once. Notification Center comes in fast and slows down, and goes picking up speed.
     AppearState state;
     if (glass.appear.kind == 0) {
         return state;
@@ -448,34 +451,46 @@ static AppearState appearState(const WindowGlass &glass)
     constexpr int pop = 2;
     constexpr int slide = 3;
     constexpr int grow = 4;
+    constexpr int quick = 5;
     if (glass.disappearing.isValid()) {
         const float seconds = glass.disappearing.elapsed() / 1000.0f;
-        const float duration = glass.appear.kind == slide ? 0.2f : glass.appear.kind == fade ? 0.13f : glass.appear.kind == pop ? 0.1f : 0.0f;
+        const float duration = glass.appear.kind == slide   ? 0.2f
+            : glass.appear.kind == fade || glass.appear.kind == quick ? 0.13f
+            : glass.appear.kind == pop                       ? 0.1f
+                                                             : 0.0f;
         const float t = duration > 0 ? std::min(seconds / duration, 1.0f) : 1.0f;
-        const float out = t * t;
-        state.opacity = glass.appear.kind == slide ? 1 - out * out : 1 - t;
-        state.slide = glass.appear.kind == slide ? out : 0;
+        const float eased = t * t * (3 - 2 * t);
+        state.opacity = glass.appear.kind == slide ? 1 - eased * eased : 1 - eased;
+        state.slide = glass.appear.kind == slide ? eased : 0;
         state.done = t >= 1;
         return state;
     }
     const float seconds = glass.appearing.elapsed() / 1000.0f;
     switch (glass.appear.kind) {
     case fade:
-        state.opacity = std::min(seconds / 0.13f, 1.0f);
-        state.done = seconds >= 0.13f;
+    case quick: {
+        const float duration = glass.appear.kind == quick ? 0.04f : 0.13f;
+        const float t = std::min(seconds / duration, 1.0f);
+        state.opacity = t * t * (3 - 2 * t);
+        state.done = t >= 1;
         break;
+    }
     case slide: {
-        const float value = spring(seconds, 0.2f, 1.0f);
-        state.slide = 1 - value;
-        state.done = seconds > 0.4f;
+        state.slide = std::exp(-seconds / 0.073f);
+        state.done = state.slide < 0.002f;
+        if (state.done) {
+            state.slide = 0;
+        }
         break;
     }
     case grow: {
-        const float t = std::min(seconds / 0.13f, 1.0f);
-        const float value = 1 - (1 - t) * (1 - t) * (1 - t);
-        state.scale = 0.75f + 0.25f * value;
-        state.opacity = t;
-        state.done = t >= 1;
+        const float value = spring(seconds, 0.26f, 0.62f);
+        state.scale = 0.4f + 0.6f * value;
+        state.opacity = std::min(seconds / 0.11f, 1.0f);
+        state.done = seconds >= 0.6f;
+        if (state.done) {
+            state.scale = 1;
+        }
         break;
     }
     case pop:
@@ -711,8 +726,13 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
     // Gone once the surface is, while the window finishes closing.
     GlassSurface *glass = w->surface() ? m_manager->glassFor(w->surface()) : nullptr;
     const QList<Shape> &shapes = it->second.shapes;
+    // What's past the shapes is kept for a moment, for shapes that come back.
     std::vector<ShapeRender> &renders = it->second.render[m_currentView];
-    renders.resize(shapes.size());
+    if (renders.size() < size_t(shapes.size()) || renders.size() > size_t(shapes.size()) + s_spareRenders) {
+        renders.resize(shapes.size() + (renders.size() < size_t(shapes.size()) ? 0 : s_spareRenders));
+    }
+    // There's a reference into this while spares are added to it, so it mustn't have to move.
+    renders.reserve(shapes.size() + s_spareRenders);
 
     const GLenum format = renderTarget.texture() ? renderTarget.texture()->internalFormat() : GL_RGBA8;
     const bool linear = format == GL_RGBA16F || format == GL_RGBA32F;
@@ -754,7 +774,28 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         if (offscreen && render.textures.empty()) {
             continue;
         }
-        const bool fresh = render.textures.empty() || render.textures[0]->size() != deviceRect.size();
+        // A shape coming or going shifts the ones after it, and setting up textures is slow enough
+        // to miss frames, so textures that fit go with the shape they fit.
+        const auto fits = [&](const ShapeRender &candidate) {
+            return int(candidate.textures.size()) == levels && candidate.textures[0]->size() == deviceRect.size() && candidate.textures[0]->internalFormat() == format;
+        };
+        bool swapped = false;
+        if (!offscreen && !fits(render)) {
+            for (size_t other = i + 1; other < renders.size(); ++other) {
+                if (fits(renders[other])) {
+                    std::swap(render, renders[other]);
+                    swapped = true;
+                    break;
+                }
+            }
+            // What it has may be what another shape wants in a moment.
+            if (!swapped && !render.textures.empty() && renders.size() < size_t(shapes.size()) + s_spareRenders) {
+                ShapeRender kept;
+                std::swap(render, kept);
+                renders.push_back(std::move(kept));
+            }
+        }
+        const bool fresh = swapped || render.textures.empty() || render.textures[0]->size() != deviceRect.size();
         if (!offscreen && !ensureTextures(render, deviceRect.size(), format, levels)) {
             continue;
         }
@@ -864,10 +905,11 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("boxSize", shape.box.isEmpty() ? QVector2D(logical.width(), logical.height()) : QVector2D(shape.box.width() * data.xScale(), shape.box.height() * data.yScale()));
         m_glassShader->setUniform("boxOffset", QVector2D(shape.boxOffset.x() * data.xScale(), shape.boxOffset.y() * data.yScale()));
         m_glassShader->setUniform("rotation", shape.rotation);
+        static constexpr const char *dropletUniforms[4] = {"droplets[0]", "droplets[1]", "droplets[2]", "droplets[3]"};
         for (int droplet = 0; droplet < 4; ++droplet) {
             const QVector4D value = droplet < shape.droplets.size() ? shape.droplets[droplet] : QVector4D();
             // From the middle of the shape, rather than of what it's drawn in.
-            m_glassShader->setUniform(QStringLiteral("droplets[%1]").arg(droplet).toLatin1().constData(),
+            m_glassShader->setUniform(dropletUniforms[droplet],
                                       QVector4D(value.x() - float(shape.boxOffset.x()), value.y() - float(shape.boxOffset.y()), value.z(), value.w()));
         }
         m_glassShader->setUniform("cornerRadius", (shape.boxRadius >= 0 ? shape.boxRadius : float(shape.radius)) * scale);

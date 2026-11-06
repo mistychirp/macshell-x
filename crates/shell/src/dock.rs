@@ -18,6 +18,7 @@ use iced_widget::{Space, container, image, mouse_area, pin, stack, text};
 
 use std::collections::BTreeMap;
 
+use crate::anim::Spring;
 use crate::app::{Element, Message};
 use crate::apps;
 use crate::apps::{App, AppIndex};
@@ -283,7 +284,8 @@ fn headroom(max_icon: f32) -> f32 {
 }
 
 /// How long the dock takes to make room for a new tile or close up behind one, from Tahoe's.
-const ROOM_TIME: Duration = Duration::from_millis(330);
+const ROOM_TIME: Duration = Duration::from_millis(450);
+const ROOM_SPRING: Spring = Spring::new(0.3, 0.82);
 /// The least of its room a new slot starts with: what's in a tile is sized from it, and text can't
 /// have no size at all.
 const MIN_GROWN: f32 = 0.02;
@@ -304,7 +306,7 @@ pub fn settings(max_icon: f32) -> NewLayerShellSettings {
         // region lets clicks there through.
         exclusive_zone: Some(reserved_height() as i32),
         keyboard_interactivity: KeyboardInteractivity::None,
-        namespace: Some(String::from("macshell-dock")),
+        namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }
@@ -364,9 +366,7 @@ pub struct RoomTracker {
 }
 
 fn room_eased(started: Instant, now: Instant) -> f32 {
-    let t =
-        (now.saturating_duration_since(started).as_secs_f32() / ROOM_TIME.as_secs_f32()).min(1.0);
-    t * t * (3.0 - 2.0 * t)
+    ROOM_SPRING.progress(now.saturating_duration_since(started).as_secs_f32())
 }
 
 impl RoomTracker {
@@ -452,7 +452,7 @@ pub fn layout(
         room.closing
             .iter()
             .filter(|(slot, _)| *slot == index)
-            .map(|(_, left)| left * (base_icon() + spacing()))
+            .map(|(_, left)| left.max(0.0) * (base_icon() + spacing()))
             .sum()
     };
     let room_between: f32 = (0..sizes.len())
@@ -1228,8 +1228,8 @@ mod room_tests {
         let room = tracker.room(start);
         assert_eq!(room.grown.get(&1), Some(&MIN_GROWN));
         assert!(room.closing.is_empty());
-        let room = tracker.room(start + ROOM_TIME / 2);
-        assert!((room.grown[&1] - 0.5).abs() < 0.01);
+        let room = tracker.room(start + ROOM_TIME / 4);
+        assert!(room.grown[&1] > 0.5 && room.grown[&1] < 1.1);
         assert!(tracker.room(start + ROOM_TIME).grown.is_empty());
         assert!(!tracker.is_animating());
 

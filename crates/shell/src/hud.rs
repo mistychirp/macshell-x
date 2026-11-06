@@ -9,6 +9,7 @@ use iced_layershell::reexport::{
 use iced_widget::core::{Alignment, Background, Border, Color, Length};
 use iced_widget::{Space, column, container, row, stack, text};
 
+use crate::anim::{Motion, Spring};
 use crate::app::Element;
 use crate::icons::{self, Glyph};
 use crate::{fonts, material, menubar};
@@ -24,8 +25,7 @@ const ICON_SIZE: f32 = 17.0;
 const BAR_WIDTH: f32 = WIDTH - 2.0 * 16.0 - 2.0 * (ICON_SIZE + 8.0);
 /// How long it stays after the last change.
 const SHOWN_FOR: Duration = Duration::from_millis(1500);
-/// How much of the way to the new level the bar goes each frame.
-const EASE: f32 = 0.28;
+const BAR_SPRING: Spring = Spring::new(0.25, 0.85);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -40,7 +40,7 @@ pub struct Hud {
     level: f32,
     muted: bool,
     /// What the bar's showing on its way to `level`.
-    shown: f32,
+    shown: Motion,
     changed: Instant,
 }
 
@@ -52,15 +52,18 @@ impl Hud {
             kind,
             level,
             muted,
-            shown: if muted { 0.0 } else { level },
+            shown: Motion::at(if muted { 0.0 } else { level }, BAR_SPRING, 0.002),
             changed: Instant::now(),
         }
     }
 
     /// Shows a new level, and stays for longer.
     pub fn update(&mut self, kind: Kind, level: f32, muted: bool) {
-        if kind != self.kind {
-            self.shown = if muted { 0.0 } else { level };
+        let target = if muted { 0.0 } else { level };
+        if kind == self.kind {
+            self.shown.go_to(target);
+        } else {
+            self.shown.jump_to(target);
         }
         self.kind = kind;
         self.level = level;
@@ -68,13 +71,13 @@ impl Hud {
         self.changed = Instant::now();
     }
 
-    /// Moves the bar along. Returns whether it's time for it to go.
-    pub fn frame(&mut self) -> bool {
-        let target = if self.muted { 0.0 } else { self.level };
-        self.shown += (target - self.shown) * EASE;
-        if (target - self.shown).abs() < 0.002 {
-            self.shown = target;
-        }
+    /// Whether the bar's on its way somewhere.
+    pub fn is_animating(&self) -> bool {
+        self.shown.is_moving()
+    }
+
+    /// Returns whether it's time for it to go.
+    pub fn frame(&self) -> bool {
         self.changed.elapsed() >= SHOWN_FOR
     }
 
@@ -99,7 +102,10 @@ impl Hud {
         };
         let bar = stack![
             line(BAR_WIDTH, Color::from_rgba(1.0, 1.0, 1.0, 0.25)),
-            line((self.shown * BAR_WIDTH).max(0.0), Color::WHITE),
+            line(
+                (self.shown.value() * BAR_WIDTH).clamp(0.0, BAR_WIDTH),
+                Color::WHITE
+            ),
         ];
         container(
             column![
@@ -133,7 +139,7 @@ pub fn settings() -> NewLayerShellSettings {
         exclusive_zone: Some(-1),
         margin: Some((menubar::HEIGHT as i32 + GAP_UNDER_BAR, MARGIN_RIGHT, 0, 0)),
         keyboard_interactivity: KeyboardInteractivity::None,
-        namespace: Some(String::from("macshell-hud")),
+        namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }
@@ -150,23 +156,30 @@ pub fn material_shapes() -> Vec<material::Shape> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_bar_eases_to_the_level_and_settles() {
-        let mut hud = Hud::new(IcedId::unique(), Kind::Sound, 0.2, false);
-        hud.update(Kind::Sound, 0.8, false);
-        hud.frame();
-        assert!(hud.shown > 0.2 && hud.shown < 0.8);
-        for _ in 0..60 {
-            hud.frame();
-        }
-        assert_eq!(hud.shown, 0.8);
+    fn hud(level: f32, muted: bool) -> Hud {
+        Hud::new(IcedId::unique(), Kind::Sound, level, muted)
     }
 
     #[test]
-    fn muting_empties_the_bar_and_switching_kinds_jumps() {
-        let mut hud = Hud::new(IcedId::unique(), Kind::Sound, 0.5, true);
-        assert_eq!(hud.shown, 0.0);
+    fn the_bar_follows_the_level_on_a_spring() {
+        let mut hud = hud(0.2, false);
+        assert_eq!(hud.shown.value(), 0.2);
+        hud.update(Kind::Sound, 0.8, false);
+        assert!(hud.is_animating());
+        hud.shown = hud.shown.started_ago(0.05);
+        assert!(hud.shown.value() > 0.2 && hud.shown.value() < 0.8);
+        hud.shown = hud.shown.started_ago(2.0);
+        assert_eq!(hud.shown.value(), 0.8);
+        assert!(!hud.is_animating());
+    }
+
+    #[test]
+    fn muted_goes_to_nothing_and_the_other_kind_is_there_at_once() {
+        let mut hud = hud(0.8, false);
+        hud.update(Kind::Sound, 0.8, true);
+        hud.shown = hud.shown.started_ago(2.0);
+        assert_eq!(hud.shown.value(), 0.0);
         hud.update(Kind::Display, 0.9, false);
-        assert_eq!(hud.shown, 0.9);
+        assert_eq!(hud.shown.value(), 0.9);
     }
 }

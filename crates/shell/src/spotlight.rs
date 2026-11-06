@@ -19,6 +19,7 @@ use iced_widget::{
     text_input,
 };
 
+use crate::anim::{self, Motion, Spring};
 use crate::app::{Element, Message};
 use crate::apps::App;
 use crate::clipboard::Content;
@@ -27,46 +28,60 @@ use crate::icons::{self, Glyph};
 use crate::menubar::SystemAction;
 use crate::{fonts, material, places};
 
-const WIDTH: f32 = 660.0;
-const FIELD_HEIGHT: f32 = 52.0;
-const FIELD_WIDTH: f32 = 440.0;
-const CHIP_SIZE: f32 = 44.0;
-const CHIP_GAP: f32 = 8.0;
-const PANEL_HEIGHT: f32 = 500.0;
-const PANEL_RADIUS: f32 = 26.0;
+const WIDTH: f32 = 844.0;
+const FIELD_HEIGHT: f32 = 54.0;
+const FIELD_WIDTH: f32 = 390.0;
+const CHIP_SIZE: f32 = 54.0;
+const CHIP_GAP: f32 = 12.0;
+const PANEL_HEIGHT: f32 = 576.0;
+const PANEL_RADIUS: f32 = 28.0;
 const PADDING: f32 = 14.0;
 const ROW_HEIGHT: f32 = 44.0;
 const CLIP_ROW_HEIGHT: f32 = 52.0;
 const COLUMNS: usize = 7;
-const CELL_HEIGHT: f32 = 92.0;
+const CELL_HEIGHT: f32 = 102.0;
 /// How long an app's name in the grid gets before it's cut short. In letters rather than measured,
 /// since the grid is drawn often and has a lot of names.
-const CELL_LABEL_LENGTH: usize = 14;
+const CELL_LABEL_LENGTH: usize = 18;
 const ICON_SIZE: f32 = 26.0;
-const GRID_ICON_SIZE: f32 = 52.0;
+const GRID_ICON_SIZE: f32 = 62.0;
 const TEXT_SIZE: f32 = 14.0;
-const FIELD_TEXT_SIZE: f32 = 20.0;
+const FIELD_TEXT_SIZE: f32 = 21.0;
 const CAPTION_SIZE: f32 = 11.0;
-/// How far down the screen it sits, as a share of its height.
-const TOP: f32 = 0.16;
+/// How far down the screen its panel starts, as a share of its height, and how far the field is below
+/// that.
+const TOP: f32 = 0.2333;
+const FIELD_DROP: f32 = 4.0;
 const MAX_CLIPS: usize = 50;
 const FIELD_PADDING: f32 = 16.0;
-// Measured from a recording of Tahoe's.
-/// How long the field takes to grow into the panel, or back, going a little past.
-const EXPAND_TIME: Duration = Duration::from_millis(200);
-const EXPAND_OVERSHOOT: f32 = 0.5;
+// All measured from a recording of Tahoe's, frame by frame, in seconds.
+/// How the field grows into the panel and back: its height first, and its width a little after, which
+/// is much of why it looks like liquid.
+const EXPAND_SPRING: Spring = Spring::new(0.24, 0.92);
+const WIDTH_LAG: f32 = 0.05;
 /// How long what's in the panel takes to fade in.
 const CONTENT_FADE: Duration = Duration::from_millis(120);
-/// How long the round buttons take to come out of the field, as drops of the same liquid.
-const CHIPS_TIME: Duration = Duration::from_millis(370);
-/// How far through that the field's done shrinking from its starting width, the first drop's on its
-/// way, each of the others follows, and their icons start to show.
-const CHIPS_SHRINK: f32 = 0.5;
-const CHIPS_EMERGE: f32 = 0.2;
-const CHIPS_STAGGER: f32 = 0.08;
-const CHIPS_ICONS: f32 = 0.7;
-/// How far a drop reaches for the field at first, which is what makes the neck between them.
-const CHIPS_BLEND: f32 = 14.0;
+/// It starts as one long capsule, whose end draws in after a moment.
+const PINCH_AT: f32 = 0.05;
+const PINCH: Spring = Spring::new(0.13, 1.0);
+/// What it leaves behind is the four buttons, as drops of the same liquid: thin at first and all in
+/// one blob, which spreads out, setting off fast, going a little too far and coming back.
+const DROPS_AT: f32 = 0.08;
+const DROPS: Spring = Spring::new(0.42, 0.8);
+const DROPS_SPEED: f32 = 7.0;
+const DROPS_GROW: Spring = Spring::new(0.25, 1.0);
+const DROP_SMALLEST: f32 = 0.4;
+/// How far a drop reaches for what's before it at first, which is what makes the necks, and when each
+/// has let go: the one by the field first, and then each of the others after it.
+const DROP_REACH: f32 = 16.0;
+const DROP_LETS_GO: [f32; 4] = [0.2, 0.3, 0.36, 0.42];
+/// When their icons start to show, and how long that takes.
+const CHIP_ICONS_AT: f32 = 0.3;
+const CHIP_ICONS_FADE: f32 = 0.2;
+/// When the drops are all still, and can be buttons of their own.
+const CHIPS_TIME: f32 = 0.62;
+/// How long after the panel starts to shrink back the buttons come out again.
+const CHIPS_RETURN: f32 = 0.1;
 const DIM: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.55);
 
 /// Which of its panels it's showing.
@@ -315,12 +330,9 @@ pub struct Spotlight {
     /// The last shapes sent, to tell when they change, and how opaque they were.
     pub shapes: Vec<material::Shape>,
     pub opacities: Vec<f32>,
-    /// How far it's grown from the field to the panel, where it started from, where it's going, and
-    /// since when. It can change its mind on the way.
-    expansion_from: f32,
-    expansion_to: f32,
-    expansion_started: Instant,
-    /// When the round buttons started coming out of the field, which can be yet to come.
+    /// How far it's grown from the field to the panel.
+    expansion: Motion,
+    /// When it started out as a capsule, which the buttons' coming out is timed from.
     chips_started: Instant,
     /// Whether the field's starting out wide, which only happens when it first opens.
     starts_wide: bool,
@@ -342,26 +354,23 @@ impl Spotlight {
             recent_files: Vec::new(),
             shapes: Vec::new(),
             opacities: Vec::new(),
-            expansion_from: 0.0,
-            expansion_to: 0.0,
-            expansion_started: Instant::now() - EXPAND_TIME,
-            chips_started: Instant::now(),
+            expansion: Motion::at(0.0, EXPAND_SPRING, 0.002),
+            chips_started: anim::now(),
             starts_wide: true,
-            content_changed: Instant::now() - CONTENT_FADE,
+            content_changed: anim::now() - CONTENT_FADE,
         }
     }
 
     /// Starts growing or shrinking, if what it's showing calls for that.
     pub fn sync_expansion(&mut self) {
         let target = if self.expanded() { 1.0 } else { 0.0 };
-        if target != self.expansion_to {
-            self.expansion_from = self.expansion();
-            self.expansion_to = target;
-            self.expansion_started = Instant::now();
-            self.content_changed = Instant::now();
+        if target != self.expansion.target() {
+            self.expansion.go_to(target);
+            self.content_changed = anim::now();
             if target == 0.0 {
                 // The buttons come back out as it gets there.
-                self.chips_started = Instant::now() + EXPAND_TIME / 2;
+                self.chips_started = anim::now() + Duration::from_secs_f32(CHIPS_RETURN)
+                    - Duration::from_secs_f32(DROPS_AT);
                 self.starts_wide = false;
             }
         }
@@ -369,42 +378,43 @@ impl Spotlight {
 
     /// Starts the timeline over, now that there's glass to show it on.
     pub fn glass_arrived(&mut self) {
-        self.chips_started = Instant::now();
+        self.chips_started = anim::now();
     }
 
     /// Says that what's in the panel changed, which fades it in.
     pub fn content_changed(&mut self) {
-        self.content_changed = Instant::now();
+        self.content_changed = anim::now();
     }
 
     /// How far it's grown from the field to the panel, going a little past on the way.
     fn expansion(&self) -> f32 {
-        let t = (self.expansion_started.elapsed().as_secs_f32() / EXPAND_TIME.as_secs_f32())
-            .min(1.0)
-            - 1.0;
-        let eased = 1.0 + (EXPAND_OVERSHOOT + 1.0) * t.powi(3) + EXPAND_OVERSHOOT * t.powi(2);
-        self.expansion_from + (self.expansion_to - self.expansion_from) * eased
+        self.expansion.value()
     }
 
-    /// How far along the round buttons are in coming out of the field, from 0 to 1.
-    fn chips_progress(&self) -> f32 {
-        let now = Instant::now();
-        if now < self.chips_started {
-            return 0.0;
-        }
-        (now.duration_since(self.chips_started).as_secs_f32() / CHIPS_TIME.as_secs_f32()).min(1.0)
+    /// How long it's been since it started out as a capsule.
+    fn timeline(&self) -> f32 {
+        anim::seconds_since(self.chips_started)
+    }
+
+    /// Whether the round buttons are out, and on their own.
+    fn chips_are_out(&self) -> bool {
+        self.timeline() >= CHIPS_TIME
     }
 
     pub fn is_animating(&self) -> bool {
-        self.expansion_started.elapsed() < EXPAND_TIME
-            || self.content_changed.elapsed() < CONTENT_FADE
-            || self.chips_progress() < 1.0
+        self.expansion.is_moving_delayed(WIDTH_LAG)
+            || anim::seconds_since(self.content_changed) < CONTENT_FADE.as_secs_f32()
+            || !self.chips_are_out()
     }
 
     /// The panel's rectangle, which all the glass is drawn in, so that it never has to be set up
     /// again, and the field's and the first button's, on a screen of this size.
     fn geometry(width: f32, height: f32) -> (Rectangle, Rectangle) {
-        let top = (height * TOP).round();
+        // A small screen has to fit it.
+        let top = (height * TOP)
+            .round()
+            .min(height - PANEL_HEIGHT - 20.0)
+            .max(0.0);
         let panel = Rectangle {
             x: ((width - WIDTH) / 2.0).round(),
             y: top,
@@ -414,7 +424,7 @@ impl Spotlight {
         let total = FIELD_WIDTH + 4.0 * (CHIP_GAP + CHIP_SIZE);
         let field = Rectangle {
             x: ((width - total) / 2.0).round(),
-            y: top,
+            y: top + FIELD_DROP,
             width: FIELD_WIDTH,
             height: FIELD_HEIGHT,
         };
@@ -423,21 +433,21 @@ impl Spotlight {
 
     /// The glass as it is now, between the field and the panel, and its corner radius.
     fn glass_now(&self, panel: Rectangle, field: Rectangle) -> (Rectangle, f32) {
-        let e = self.expansion();
-        let along = |from: f32, to: f32| from + (to - from) * e;
+        let tall = self.expansion.value();
+        let wide = self.expansion.delayed(WIDTH_LAG);
+        let along = |from: f32, to: f32, by: f32| from + (to - from) * by;
         let mut rect = Rectangle {
-            x: along(field.x, panel.x),
-            y: along(field.y, panel.y),
-            width: along(field.width, panel.width).max(1.0),
-            height: along(field.height, panel.height).max(1.0),
+            x: along(field.x, panel.x, wide),
+            y: along(field.y, panel.y, tall),
+            width: along(field.width, panel.width, wide).max(1.0),
+            height: along(field.height, panel.height, tall).max(1.0),
         };
-        // It starts out as wide as it'll be with its buttons, and they come out of its end.
-        if self.starts_wide && e.abs() < 0.001 {
-            let shrink = (self.chips_progress() / CHIPS_SHRINK).min(1.0);
-            let eased = 1.0 - (1.0 - shrink).powi(3);
-            rect.width += 4.0 * (CHIP_GAP + CHIP_SIZE) * (1.0 - eased);
+        // It starts out as long as it'll be with its buttons, and draws in from the end.
+        if self.starts_wide && tall.abs() < 0.001 {
+            let drawn_in = PINCH.progress(self.timeline() - PINCH_AT);
+            rect.width += 4.0 * (CHIP_GAP + CHIP_SIZE) * (1.0 - drawn_in);
         }
-        (rect, along(FIELD_HEIGHT / 2.0, PANEL_RADIUS).max(0.0))
+        (rect, along(FIELD_HEIGHT / 2.0, PANEL_RADIUS, tall).max(0.0))
     }
 
     /// The middle of the round button at `index`.
@@ -570,25 +580,19 @@ impl Spotlight {
             ]
         };
         // While they're coming out, the buttons are drops of the same liquid as the field.
-        let chips = self.chips_progress();
+        let timeline = self.timeline();
         let mut drops = [[0; 4]; 4];
-        let on_their_own = chips >= 1.0;
-        if !on_their_own && self.chips_show() > 0.0 {
+        let on_their_own = self.chips_are_out();
+        if !on_their_own && self.chips_show() > 0.0 && timeline >= DROPS_AT {
+            let since = timeline - DROPS_AT;
+            let out = DROPS.progress_from(DROPS_SPEED, since);
+            let size = DROP_SMALLEST + (1.0 - DROP_SMALLEST) * DROPS_GROW.progress(since);
+            let from = field.x + FIELD_WIDTH - CHIP_SIZE / 2.0;
             for (index, drop) in drops.iter_mut().enumerate() {
-                let start = CHIPS_EMERGE + index as f32 * CHIPS_STAGGER;
-                let t = ((chips - start) / (1.0 - start)).clamp(0.0, 1.0);
-                if t <= 0.0 {
-                    continue;
-                }
-                let eased = 1.0 - (1.0 - t).powi(3);
                 let end = Self::chip_center(field, index);
-                let from = field.x + FIELD_WIDTH - CHIP_SIZE / 2.0;
-                let center = Point::new(from + (end.x - from) * eased, end.y);
-                *drop = drop_of(
-                    center,
-                    CHIP_SIZE / 2.0 * eased.sqrt(),
-                    CHIPS_BLEND * (1.0 - chips),
-                );
+                let center = Point::new(from + (end.x - from) * out, end.y);
+                let reach = DROP_REACH * (1.0 - timeline / DROP_LETS_GO[index]).max(0.0);
+                *drop = drop_of(center, CHIP_SIZE / 2.0 * size, reach);
             }
         }
         let mut shapes = vec![material::Shape {
@@ -631,7 +635,7 @@ impl Spotlight {
     /// How opaque each of [`Spotlight::material_shapes`] is: the buttons go as the panel grows.
     pub fn material_opacities(&self) -> Vec<f32> {
         let mut opacities = vec![1.0];
-        if self.chips_progress() >= 1.0 {
+        if self.chips_are_out() {
             opacities.extend([self.chips_show(); 4]);
         }
         opacities
@@ -672,7 +676,7 @@ impl Spotlight {
             .center_y(FIELD_HEIGHT);
 
         let content_fade =
-            (self.content_changed.elapsed().as_secs_f32() / CONTENT_FADE.as_secs_f32()).min(1.0);
+            (anim::seconds_since(self.content_changed) / CONTENT_FADE.as_secs_f32()).min(1.0);
         let shows = ((e - 0.5) / 0.5).clamp(0.0, 1.0) * content_fade;
         let body: Element<'a> = if self.expanded() || e > 0.01 {
             let line = container(Space::new())
@@ -692,8 +696,7 @@ impl Spotlight {
         };
         let clip = Size::new(rect.width, (rect.height - FIELD_HEIGHT).max(0.0));
 
-        let icons_show = ((self.chips_progress() - CHIPS_ICONS) / (1.0 - CHIPS_ICONS))
-            .clamp(0.0, 1.0)
+        let icons_show = ((self.timeline() - CHIP_ICONS_AT) / CHIP_ICONS_FADE).clamp(0.0, 1.0)
             * self.chips_show();
         let chips: Element<'a> = if icons_show > 0.0 {
             row![
@@ -856,7 +859,7 @@ impl Spotlight {
 /// A round button that opens a panel.
 fn chip<'a>(mode: Mode, glyph: Glyph) -> Element<'a> {
     button(
-        container(icons::icon(glyph, 20.0, Color::WHITE))
+        container(icons::icon(glyph, 22.0, Color::WHITE))
             .center_x(Length::Fill)
             .center_y(Length::Fill),
     )
@@ -1134,7 +1137,7 @@ pub fn settings() -> NewLayerShellSettings {
         size: Some((0, 0)),
         exclusive_zone: Some(-1),
         keyboard_interactivity: KeyboardInteractivity::Exclusive,
-        namespace: Some(String::from("macshell-spotlight")),
+        namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }
@@ -1240,12 +1243,12 @@ mod tests {
         assert_eq!(spotlight.expansion(), 0.0);
         spotlight.mode = Mode::Apps;
         spotlight.sync_expansion();
-        spotlight.expansion_started = Instant::now() - EXPAND_TIME * 2;
+        spotlight.expansion = spotlight.expansion.started_ago(2.0);
         assert_eq!(spotlight.expansion(), 1.0);
         spotlight.mode = Mode::Search;
         spotlight.sync_expansion();
         assert!((spotlight.expansion() - 1.0).abs() < 0.05);
-        spotlight.expansion_started = Instant::now() - EXPAND_TIME * 2;
+        spotlight.expansion = spotlight.expansion.started_ago(2.0);
         assert_eq!(spotlight.expansion(), 0.0);
     }
 
@@ -1267,7 +1270,7 @@ mod tests {
             );
         };
         check(&spotlight);
-        spotlight.chips_started = Instant::now() - CHIPS_TIME * 2;
+        spotlight.chips_started = Instant::now() - Duration::from_secs(2);
         check(&spotlight);
         assert_eq!(spotlight.material_shapes(1280.0, 720.0).len(), 5);
         // All four buttons fit inside the panel's rectangle.

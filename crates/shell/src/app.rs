@@ -24,6 +24,7 @@ use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Proxy as _};
 
 use crate::alert::{self, Alert};
+use crate::anim;
 use crate::apps::{self, App, AppIndex};
 use crate::banners::{self, Banners};
 use crate::config::{self, Config};
@@ -170,10 +171,15 @@ pub enum Message {
     /// Time to check for news about the brightness behind the bar.
     BarBrightness,
     /// A dock icon was right-clicked; carries the app's id.
+    /// A frame was just drawn, at this moment, which is when everything moving takes its next step.
+    Frame(Instant),
+    /// In case nothing's drawing, like when what's moving is out of sight.
+    FrameKick,
+    /// The pointer came onto a Control Center module, or left it.
+    ControlHover(control::Module, bool),
     /// A menu's row was chosen, in a menu this many submenus deep, and what to do once it's blinked.
     MenuRowChosen(usize, usize, Box<Message>),
     MenuBlinkFrame,
-    WidgetTintFrame,
     DockMenuRequested(String),
     /// A minimized window's tile in the dock was pressed, or right-clicked.
     DockThumbnailPressed(u64),
@@ -444,6 +450,11 @@ struct Shell {
     dock_last_frame: Option<Instant>,
     dock_room: dock::RoomTracker,
     dock_was_dragged: bool,
+    dock_was_pinned: bool,
+    /// The pointer left the dock while it was pinned.
+    dock_pointer_left: bool,
+    /// When the last frame was drawn, of any surface, while things are moving.
+    last_frame: Instant,
     /// Size of a fully magnified icon.
     dock_max_icon: f32,
     /// The wallpaper as it's written in the config file.
@@ -528,7 +539,7 @@ struct Shell {
     /// The card whose menu of options is open, which counts as being pointed at.
     notification_pinned: Option<u32>,
     notification_fade: notifications::HoverFade,
-    center_motion: notification_center::Motion,
+    center_motion: notification_center::Motions,
     banners_opacities: Vec<f32>,
     /// Groups opened in Notification Center, by app.
     open_groups: HashSet<String>,
@@ -572,6 +583,8 @@ const FALLBACK_SCREEN_HEIGHT: f32 = 700.0;
 /// How long the pointer has to stay on a menu's row to change which submenus are open, so that
 /// heading for an open submenu across other rows doesn't close it.
 const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
+/// How long things can go without a frame while they're moving, before they move anyway.
+const FRAME_KICK: Duration = Duration::from_millis(32);
 /// How long the dock fills up for as the session starts, which isn't worth animating.
 const DOCK_SETTLE: Duration = Duration::from_secs(3);
 /// How long a chosen menu row stays off, and then back on, measured from Tahoe's.
@@ -679,6 +692,9 @@ impl Shell {
             dock_last_frame: None,
             dock_room: dock::RoomTracker::default(),
             dock_was_dragged: false,
+            dock_was_pinned: false,
+            dock_pointer_left: false,
+            last_frame: Instant::now(),
             dock_max_icon,
             dock_layout: dock::Layout::default(),
             material,
@@ -728,7 +744,7 @@ impl Shell {
             notification_hovered: None,
             notification_pinned: None,
             notification_fade: notifications::HoverFade::default(),
-            center_motion: notification_center::Motion::default(),
+            center_motion: notification_center::Motions::default(),
             banners_opacities: Vec::new(),
             open_groups: HashSet::new(),
             center_scroll: 0.0,
@@ -760,7 +776,12 @@ impl Shell {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        // While things move, time goes by frames, which keeps it steady. Otherwise, it's now.
+        if !self.is_moving() {
+            anim::set_now(Instant::now());
+        }
         let task = self.apply(message);
+        self.update_dock_pin();
         self.update_notification_motion();
         self.update_panel_shapes();
         self.update_desktop_shapes();
@@ -1147,6 +1168,12 @@ impl Shell {
                 }
             }
             Message::DockPointerMoved(_) if self.dock_drag.is_some() => {}
+            Message::DockPointerMoved(_) if self.dock_pinned() => {
+                self.dock_pointer_left = false;
+            }
+            Message::DockPointerLeft if self.dock_pinned() => {
+                self.dock_pointer_left = true;
+            }
             Message::DockPointerMoved(point) => {
                 self.dock_pointer.base_x = Some(dock::base_x(&self.dock_layout, point.x));
                 self.dock_pointer.hovered = dock::item_at(&self.dock_layout, point);
@@ -1533,7 +1560,7 @@ impl Shell {
                 return self.step_brightness(step);
             }
             Message::HudFrame => {
-                if let Some(open) = &mut self.hud
+                if let Some(open) = &self.hud
                     && open.frame()
                 {
                     return iced_runtime::window::close(open.id);
@@ -2139,19 +2166,22 @@ impl Shell {
                     self.menu_blink = Some(MenuBlink {
                         level,
                         row,
-                        started: Instant::now(),
+                        started: anim::now(),
                         chosen: *chosen,
                     });
                 }
             }
-            // What's drawn follows the time, in [`App::update`]'s redraw.
-            Message::WidgetTintFrame => {}
+            Message::Frame(at) => return self.next_frame(at),
+            Message::FrameKick => {
+                if self.is_moving() && self.last_frame.elapsed() >= FRAME_KICK {
+                    return self.next_frame(Instant::now());
+                }
+            }
+            Message::ControlHover(module, over) => self.control.set_hovered(module, over),
             Message::MenuBlinkFrame => {
-                if self
-                    .menu_blink
-                    .as_ref()
-                    .is_some_and(|blink| blink.started.elapsed() >= 2 * MENU_BLINK_PHASE)
-                    && let Some(blink) = self.menu_blink.take()
+                if self.menu_blink.as_ref().is_some_and(|blink| {
+                    anim::seconds_since(blink.started) >= 2.0 * MENU_BLINK_PHASE.as_secs_f32()
+                }) && let Some(blink) = self.menu_blink.take()
                 {
                     return Task::done(blink.chosen);
                 }
@@ -2356,6 +2386,7 @@ impl Shell {
             menubar::Title::ControlCenter => {
                 self.control.detail = None;
                 self.control.morph = None;
+                self.control.clear_hover();
                 self.control.volume = audio::volume();
                 let reread = Task::perform(brightness::level(), Message::BrightnessRead);
                 let anchor = self.bar().screen_edge_anchor();
@@ -2677,6 +2708,7 @@ impl Shell {
             Some(Surface::Fan) => match &mut self.fan {
                 Some(open) if open.id == id => {
                     open.shapes = open.material_shapes();
+                    open.arrive();
                     open.shape_opacities = open.material_opacities();
                     material.set_faded_shapes(&target, &open.shapes, &open.shape_opacities);
                     open.material = Some(target);
@@ -2687,7 +2719,7 @@ impl Shell {
                 let (width, height) = (self.menubar_width, self.screen_height);
                 match &mut self.spotlight {
                     Some(open) if open.id == id => {
-                        material.set_appear(&target, material::Appear::Fade);
+                        material.set_appear(&target, material::Appear::Quick);
                         open.glass_arrived();
                         open.shapes = open.material_shapes(width, height);
                         open.opacities = open.material_opacities();
@@ -2743,7 +2775,12 @@ impl Shell {
         self.menu_blink
             .as_ref()
             .filter(|blink| blink.level == level)
-            .map(|blink| (blink.row, blink.started.elapsed() >= MENU_BLINK_PHASE))
+            .map(|blink| {
+                (
+                    blink.row,
+                    anim::seconds_since(blink.started) >= MENU_BLINK_PHASE.as_secs_f32(),
+                )
+            })
     }
 
     fn bar(&self) -> menubar::Bar<'_> {
@@ -2804,6 +2841,81 @@ impl Shell {
             }
         }
         self.sync_banners()
+    }
+
+    /// Whether anything's moving, which is what takes frames.
+    fn is_moving(&self) -> bool {
+        self.dock_is_moving()
+            || self.banners.animating()
+            || self
+                .fan
+                .as_ref()
+                .is_some_and(|open| open.is_animating() || open.is_closing())
+            || self.control.morph.is_some()
+            || self.control.hover_is_moving()
+            || self.hud.as_ref().is_some_and(hud::Hud::is_animating)
+            || self
+                .spotlight
+                .as_ref()
+                .is_some_and(spotlight::Spotlight::is_animating)
+            || self.notification_fade.is_animating()
+            || self.center_motion.is_animating()
+            || self.menu_blink.is_some()
+            || self.widget_tint.is_animating()
+    }
+
+    fn dock_is_moving(&self) -> bool {
+        self.dock_pointer.amount != self.dock_target
+            || !self.launching.is_empty()
+            || self.dock_room.is_animating()
+            || self.dock.iter().any(dock::Item::wants_attention)
+    }
+
+    /// Moves everything on to the frame for this moment.
+    fn next_frame(&mut self, at: Instant) -> Task<Message> {
+        let now = anim::next_frame(at);
+        self.last_frame = at;
+        let mut steps = Vec::new();
+        if self.dock_is_moving() {
+            steps.push(self.apply(Message::DockFrame(now)));
+        }
+        if self.banners.animating() {
+            steps.push(self.apply(Message::BannerFrame(at)));
+        }
+        if self.fan.is_some() {
+            steps.push(self.apply(Message::FanFrame));
+        }
+        if self.control.morph.is_some() {
+            steps.push(self.apply(Message::ControlFrame));
+        }
+        if self.menu_blink.is_some() {
+            steps.push(self.apply(Message::MenuBlinkFrame));
+        }
+        if self.notification_fade.is_animating() || self.center_motion.is_animating() {
+            steps.push(self.apply(Message::NotificationFrame));
+        }
+        Task::batch(steps)
+    }
+
+    /// While a dock menu or the fan is open, the dock stays as it was when it opened, magnified or
+    /// not, like on macOS, so that what they point at doesn't move out from under them.
+    fn dock_pinned(&self) -> bool {
+        self.fan_is_open()
+            || self
+                .popup
+                .as_ref()
+                .is_some_and(|popup| popup.tail.is_some())
+    }
+
+    /// Catches up with where the pointer went while the dock was pinned.
+    fn update_dock_pin(&mut self) {
+        let pinned = self.dock_pinned();
+        if self.dock_was_pinned && !pinned && self.dock_pointer_left {
+            self.dock_pointer.hovered = None;
+            self.dock_target = 0.0;
+            self.dock_pointer_left = false;
+        }
+        self.dock_was_pinned = pinned;
     }
 
     /// Which card counts as being pointed at.
@@ -2873,8 +2985,7 @@ impl Shell {
 
     /// Keeps what moves by itself in notifications going.
     fn update_notification_motion(&mut self) {
-        let now = Instant::now();
-        self.notification_fade.aim(self.card_pointed_at(), now);
+        self.notification_fade.aim(self.card_pointed_at());
         match &self.popup {
             Some(popup) if matches!(popup.content, PopupContent::NotificationCenter) => {
                 self.center_motion.sync(
@@ -2882,10 +2993,9 @@ impl Shell {
                     &self.open_groups,
                     self.center_scroll as usize,
                     popup.size.1 as f32,
-                    now,
                 );
             }
-            _ => self.center_motion = notification_center::Motion::default(),
+            _ => self.center_motion = notification_center::Motions::default(),
         }
     }
 
@@ -2954,7 +3064,7 @@ impl Shell {
         if (shapes != self.banners_shapes || opacities != self.banners_opacities)
             && let (Some(material), Some(target)) = (&self.material, &self.banners_material)
         {
-            material.set_faded_shapes(target, &shapes, &opacities);
+            material.queue_faded_shapes(target, &shapes, &opacities);
             self.banners_shapes = shapes;
             self.banners_opacities = opacities;
         }
@@ -2999,7 +3109,7 @@ impl Shell {
         if (shapes != popup.shapes || opacities != popup.shape_opacities)
             && let (Some(material), Some(target)) = (&self.material, &popup.material)
         {
-            material.set_faded_shapes(target, &shapes, &opacities);
+            material.queue_faded_shapes(target, &shapes, &opacities);
             popup.shapes = shapes;
             popup.shape_opacities = opacities;
         }
@@ -3159,20 +3269,11 @@ impl Shell {
             open.close();
             return self.relayout_dock();
         }
-        // Where the tile will be once the dock's magnification has settled.
-        let resting = dock::layout(
-            self.dock_width,
-            &self.dock,
-            &self.minimized,
-            &dock::Pointer::default(),
-            self.dock_max_icon,
-            Vec::new(),
-            None,
-            &dock::Room::default(),
-        );
-        let tile_x = resting
+        // Right over the tile, wherever the dock's magnification has it now; it stays there.
+        let tile_x = self
+            .dock_layout
             .icons
-            .get(dock::place_slot(&resting, 0))
+            .get(dock::place_slot(&self.dock_layout, 0))
             .map_or(self.dock_width / 2.0, |tile| tile.center_x());
         let height = fan::surface_height(self.screen_height);
         let room = fan::Fan::rows_that_fit(height);
@@ -3278,7 +3379,7 @@ impl Shell {
             if (shapes != open.shapes || opacities != open.shape_opacities)
                 && let Some(target) = &open.material
             {
-                material.set_faded_shapes(target, &shapes, &opacities);
+                material.queue_faded_shapes(target, &shapes, &opacities);
                 open.shapes = shapes;
                 open.shape_opacities = opacities;
             }
@@ -3295,7 +3396,7 @@ impl Shell {
             if (shapes != open.shapes || opacities != open.opacities)
                 && let Some(target) = &open.material
             {
-                material.set_faded_shapes(target, &shapes, &opacities);
+                material.queue_faded_shapes(target, &shapes, &opacities);
                 open.shapes = shapes;
                 open.opacities = opacities;
             }
@@ -3351,7 +3452,7 @@ impl Shell {
         match &app.command {
             Some(command) => {
                 apps::spawn(command.clone());
-                self.launching.insert(app.id.clone(), Instant::now());
+                self.launching.insert(app.id.clone(), anim::now());
             }
             None => log::warn!("don't know how to launch {}", app.id),
         }
@@ -3918,7 +4019,7 @@ impl Shell {
             return Task::none();
         };
         if !item.has_windows() && item.app.command.is_some() {
-            self.launching.insert(app_id.to_owned(), Instant::now());
+            self.launching.insert(app_id.to_owned(), anim::now());
         }
         // An app that was hidden comes back with all its windows.
         let hidden: Vec<u64> = item
@@ -4032,7 +4133,7 @@ impl Shell {
             return Task::none();
         }
 
-        let now = Instant::now();
+        let now = anim::now();
         // Not for what a drag already made room for, nor for the dock filling up as the session starts.
         let dragging = self.dock_drag.is_some();
         self.dock_room.update(
@@ -4072,6 +4173,11 @@ impl Shell {
         if layout == self.dock_layout {
             return Task::none();
         }
+        if let Some(open) = &mut self.fan
+            && let Some(tile) = layout.icons.get(dock::place_slot(&layout, 0))
+        {
+            open.set_tile(tile.center_x());
+        }
         let input_region = dock::input_region(&layout);
         let input_changed = input_region != dock::input_region(&self.dock_layout);
         self.dock_layout = layout;
@@ -4080,7 +4186,7 @@ impl Shell {
         if shapes != self.dock_shapes
             && let (Some(material), Some(target)) = (&self.material, &self.dock_material)
         {
-            material.set_shapes(target, &shapes);
+            material.queue_faded_shapes(target, &shapes, &[]);
             self.dock_shapes = shapes;
         }
 
@@ -4208,13 +4314,16 @@ impl Shell {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        // Only tick while something in the dock moves.
-        let animating = self.dock_pointer.amount != self.dock_target
-            || !self.launching.is_empty()
-            || self.dock_room.is_animating()
-            || self.dock.iter().any(dock::Item::wants_attention);
-        let dock_frames = if animating {
-            time::every(Duration::from_millis(16)).map(Message::DockFrame)
+        // What moves goes by the frames, right after each one's drawn, so that it's sampled at a
+        // steady distance from when it's shown.
+        let frames = if self.is_moving() {
+            Subscription::batch([
+                iced_futures::event::listen_raw(|event, _, _| match event {
+                    Event::Window(window::Event::RedrawRequested(at)) => Some(Message::Frame(at)),
+                    _ => None,
+                }),
+                time::every(FRAME_KICK).map(|_| Message::FrameKick),
+            ])
         } else {
             Subscription::none()
         };
@@ -4237,10 +4346,8 @@ impl Shell {
             Subscription::none()
         };
 
-        // Banners take frames while they move, and otherwise only need watching to expire.
-        let banner_frames = if self.banners.animating() {
-            time::every(Duration::from_millis(16)).map(Message::BannerFrame)
-        } else if self.banners.counting_down() {
+        // Banners need watching to expire.
+        let banner_expiry = if self.banners.counting_down() {
             time::every(Duration::from_millis(250)).map(Message::BannerFrame)
         } else {
             Subscription::none()
@@ -4257,33 +4364,12 @@ impl Shell {
         } else {
             time::every(Duration::from_millis(30)).map(|_| Message::SpotlightLoadApps)
         };
-        // Closing needs one more frame after the animation, to say it's over.
-        let fan_frames = if self
-            .fan
-            .as_ref()
-            .is_some_and(|open| open.is_animating() || open.is_closing())
-        {
-            time::every(Duration::from_millis(16)).map(|_| Message::FanFrame)
+        let hud_expiry = if self.hud.is_some() {
+            time::every(Duration::from_millis(100)).map(|_| Message::HudFrame)
         } else {
             Subscription::none()
         };
-        let control_frames = if self.control.morph.is_some() {
-            time::every(Duration::from_millis(16)).map(|_| Message::ControlFrame)
-        } else {
-            Subscription::none()
-        };
-        let hud_frames = if self.hud.is_some() {
-            time::every(Duration::from_millis(16)).map(|_| Message::HudFrame)
-        } else {
-            Subscription::none()
-        };
-        let spotlight_tick = if self
-            .spotlight
-            .as_ref()
-            .is_some_and(|open| open.is_animating())
-        {
-            time::every(Duration::from_millis(16)).map(|_| Message::SpotlightTick)
-        } else if self.spotlight.is_some() {
+        let spotlight_tick = if self.spotlight.is_some() {
             time::every(Duration::from_millis(250)).map(|_| Message::SpotlightTick)
         } else {
             Subscription::none()
@@ -4293,38 +4379,16 @@ impl Shell {
         } else {
             Subscription::none()
         };
-        let notification_frames =
-            if self.notification_fade.is_animating() || self.center_motion.is_animating() {
-                time::every(Duration::from_millis(16)).map(|_| Message::NotificationFrame)
-            } else {
-                Subscription::none()
-            };
-        let menu_blink = if self.menu_blink.is_some() {
-            time::every(Duration::from_millis(16)).map(|_| Message::MenuBlinkFrame)
-        } else {
-            Subscription::none()
-        };
-        let widget_tint = if self.widget_tint.is_animating() {
-            time::every(Duration::from_millis(16)).map(|_| Message::WidgetTintFrame)
-        } else {
-            Subscription::none()
-        };
-
         Subscription::batch([
-            dock_frames,
-            banner_frames,
-            notification_frames,
+            frames,
+            banner_expiry,
             menu_hover,
-            menu_blink,
-            widget_tint,
             notifications::events().map(Message::Notification),
             network::secret_agent().map(Message::WifiAgent),
             dnd::events().map(Message::Dnd),
             arrange::events().map(Message::Arrange),
             clipboard::events().map(Message::Copied),
-            control_frames,
-            fan_frames,
-            hud_frames,
+            hud_expiry,
             spotlight_load,
             spotlight_tick,
             time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),

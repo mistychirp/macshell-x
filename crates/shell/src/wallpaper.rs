@@ -17,8 +17,11 @@ pub fn settings() -> NewLayerShellSettings {
         size: Some((0, 0)),
         // Under the bar too, rather than in the space it leaves.
         exclusive_zone: Some(-1),
-        keyboard_interactivity: KeyboardInteractivity::None,
-        namespace: Some(String::from("macshell-wallpaper")),
+        // So that Show Desktop can take the keyboard from the window it hides, or that stays active.
+        keyboard_interactivity: KeyboardInteractivity::OnDemand,
+        // KWin goes by this exact name. It's what makes this what Show Desktop leaves showing and
+        // Overview draws behind the windows, and it keeps our other surfaces from counting as windows.
+        namespace: Some(String::from("desktop")),
         ..Default::default()
     }
 }

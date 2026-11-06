@@ -152,7 +152,7 @@ pub fn settings() -> NewLayerShellSettings {
         size: Some((0, HEIGHT)),
         exclusive_zone: Some(HEIGHT as i32),
         keyboard_interactivity: KeyboardInteractivity::None,
-        namespace: Some(String::from("macshell-menubar")),
+        namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }

@@ -37,7 +37,7 @@
     their glass is, to pick a text color that stays legible over it.
   </description>
 
-  <interface name="macshell_glass_manager_v1" version="10">
+  <interface name="macshell_glass_manager_v1" version="11">
     <description summary="glass factory">
       Creates glass objects for surfaces.
     </description>
@@ -63,7 +63,7 @@
     </request>
   </interface>
 
-  <interface name="macshell_glass_v1" version="10">
+  <interface name="macshell_glass_v1" version="11">
     <description summary="glass shapes behind a surface">
       Holds a list of glass shapes rendered behind the surface. The list is
       double-buffered state, applied on the next wl_surface.commit, and starts
@@ -152,6 +152,7 @@
       <entry name="pop" value="2" summary="there at once, and fades out quickly"/>
       <entry name="slide" value="3" summary="slides in from the right, and back out there"/>
       <entry name="grow" value="4" since="10" summary="grows out of the point as it fades in, and goes at once"/>
+      <entry name="quick" value="5" since="11" summary="fades in almost at once, and out like fade"/>
     </enum>
 
     <request name="set_appear" since="8">
