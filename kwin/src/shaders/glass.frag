@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #version 140
 
-// Glass the way Tahoe draws it, measured from macOS screenshots: a flat interior with no glow.
-// Tahoe's glass is a lens: each pixel shows the background from further in, by an amount that grows
-// sharply toward the edge, and the very edge shows a wide average of the surroundings. That's why
-// an edge can be pink right above purple wallpaper, and why it doesn't read as an outline.
+// Glass as a physical material: a flat interior with no glow, whose curved edge is a lens. Each pixel
+// shows the background from further in, by an amount that grows sharply toward the edge, and the very
+// edge also reflects the surroundings. That's why an edge can be pink right above purple wallpaper,
+// and why it doesn't read as an outline.
 
 // The background behind the shape (frosted ones: blurred), stretched over the shape.
 uniform sampler2D sampler;
@@ -20,15 +20,12 @@ uniform float cornerRadius;
 // Device pixels per logical pixel. The edge lines are sized in device pixels, to stay crisp.
 uniform float deviceScale;
 
-// The lens: how far it bends the background, in logical pixels, at one logical pixel in from the
-// edge, and how far in it reaches. A strength of 0 means no lens.
-uniform float lensStrength;
-uniform float lensRadius;
-// A physical lens instead, when thickness isn't 0: a slab of glass whose edge curves down in a
-// rounded shoulder. Each ray looks straight down, refracts where it enters the curved surface, and
-// lands on the background below, so the whole bend follows from the shape and the material. Sizes
-// are for a shape at least 62 logical pixels across; smaller ones are the same lens, scaled down.
-// Refracting through a bezel's normal is MacShell's idea (see below).
+// The lens, when thickness isn't 0: a slab of glass whose edge curves down in a rounded shoulder. Each
+// ray looks straight down, refracts where it enters the curved surface, and lands on the background
+// below, so the whole bend follows from the shape and the material. Sizes are for a shape at least 62
+// logical pixels across; smaller ones are the same lens, scaled down.
+// Refracting through a bezel's normal, and the noise below, are adapted from MacShell's shader
+// (https://github.com/0-ss/MacShell, MIT; see LICENSES/MacShell-MIT.txt).
 // thickness: how tall the slab is at its very edge, in logical pixels.
 uniform float thickness;
 // How wide the shoulder is, in logical pixels, and how tall as a share of that.
@@ -42,17 +39,6 @@ uniform float iorSpread;
 // How bright a light looks reflected in the shoulder, from the top left, with a dimmer glint across
 // from it where that light leaves the glass again.
 uniform float gloss;
-// A lens that takes what's far in, right past the middle of a capsule, and mirrors it at the edge:
-// measured from Tahoe, it bends by lensStrength * (1 - depth / lensRadius)^2.
-uniform float lensMirrors;
-// How much further red bends than green, and blue less, as a share of the bend: real glass splits
-// light a little, which is the faint rainbow along a lens's edge. This, the highlight below and the
-// noise are adapted from MacShell's shader (https://github.com/0-ss/MacShell, MIT; see
-// LICENSES/MacShell-MIT.txt).
-uniform float dispersion;
-// How strong the soft highlight is just inside the rim, like the surface tension of something
-// thick, for light coming from the top left.
-uniform float meniscus;
 // How much fine noise there is, which breaks up the banding of smooth blurs on an 8-bit screen.
 uniform float grain;
 // How much of a soft rim's color comes from what's behind it, rather than being a plain grey.
@@ -214,8 +200,6 @@ void main(void)
         sdShape(p + e.yx, halfSize, cornerRadius) - sdShape(p - e.yx, halfSize, cornerRadius));
     n = length(n) > 0.0 ? normalize(n) : vec2(0.0);
 
-    // The lens bends the background toward the center, most at the edge. Thin shapes get a
-    // proportionally smaller one.
     vec2 refracted = geo;
     vec3 surface = vec3(0.0, 0.0, 1.0);
     float slabHeight = 0.0;
@@ -228,39 +212,18 @@ void main(void)
         surface = normalize(vec3(n * shoulder * pow(across, profile - 1.0), pow(curve, (profile - 1.0) / profile)));
         slabHeight = thickness * fit + shoulder * width * pow(curve, 1.0 / profile);
         refracted = geo + throughGlass(surface, slabHeight, ior) / geoSize;
-    } else if (lensMirrors > 0.0) {
-        // Measured on capsules 62 pixels tall; smaller shapes get a smaller one.
-        float fit = min(1.0, min(geoSize.x, geoSize.y) / 62.0);
-        float falloff = max(1.0 - max(-d, 0.0) / (lensRadius * fit), 0.0);
-        refracted = geo - n * fit * lensStrength * falloff * falloff / geoSize;
-    } else if (lensStrength > 0.0) {
-        float fit = min(1.0, 0.35 * min(geoSize.x, geoSize.y) / lensRadius);
-        float depth = max(-d, 0.5);
-        float bend = fit * lensStrength * max(pow(depth / fit, -0.75) - pow(lensRadius, -0.75), 0.0);
-        refracted = geo - n * bend / geoSize;
     }
 
     vec4 sampled = sampleGeo(refracted);
     if (thickness > 0.0) {
         sampled.r = sampleGeo(geo + throughGlass(surface, slabHeight, ior + iorSpread) / geoSize).r;
         sampled.b = sampleGeo(geo + throughGlass(surface, slabHeight, ior - iorSpread) / geoSize).b;
-    } else if (dispersion > 0.0) {
-        vec2 bent = refracted - geo;
-        sampled.r = sampleGeo(geo + bent * (1.0 + dispersion)).r;
-        sampled.b = sampleGeo(geo + bent * (1.0 - dispersion)).b;
     }
     vec4 color = sampled * colorMatrix;
     // The copied background is opaque wherever there's anything behind it.
     color.a = 1.0;
     color.rgb *= brightness;
     color.rgb = mix(color.rgb, tint.rgb, tint.a);
-
-    if (meniscus > 0.0) {
-        float along = (max(-d, 0.0) - lensRadius * 0.5) / (lensRadius * 0.2 + 1.0);
-        float facing = dot(n, normalize(vec2(-0.55, -0.83)));
-        float light = pow(max(facing, 0.0), 1.6) + 0.55 * pow(max(-facing, 0.0), 2.2);
-        color.rgb += exp(-along * along) * meniscus * (0.35 + light);
-    }
 
     if (thickness > 0.0) {
         // Glass reflects more the more glancing the view is (Schlick's approximation): here, the

@@ -232,7 +232,7 @@ impl Cache {
 
         let image = memory.host()?;
 
-        const MAX_SYNC_SIZE: usize = 2 * 1024 * 1024;
+        const MAX_SYNC_SIZE: usize = 8 * 1024 * 1024;
 
         // TODO: Concurrent Wasm support
         if image.len() < MAX_SYNC_SIZE || cfg!(target_arch = "wasm32") {

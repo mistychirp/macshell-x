@@ -9,6 +9,11 @@ takes the first format the driver lists, which on Mesa is `Rgb10a2Unorm`. That h
 so every translucent pixel of a surface, including the edges of text and icons, snaps to 0, 1/3, 2/3
 or 1. It doesn't show on an opaque window, but all of the shell's surfaces are translucent.
 
+Patch: upload images of up to 8 MiB right away, instead of 2 (`src/image/cache.rs`). Anything bigger
+goes through a background worker and draws as nothing until it's done and something else redraws. A
+photo widget swaps between two 1200-pixel pictures whenever the desktop's focus changes, and the
+cache drops the one that isn't showing, so it went blank for up to a second.
+
 The first commit that adds this directory contains the pristine 0.14.0 sources, so
 `git diff <that commit> -- vendor/iced_wgpu` shows the patch.
 

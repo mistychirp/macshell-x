@@ -41,11 +41,6 @@ struct GlassSettings {
     int frostPasses = 4;
     float frostOffset = 3.0;
 
-    /// The lens of liquid glass and bubbles: how far it bends the background, in logical pixels, at
-    /// one logical pixel from the edge, and how far in it reaches.
-    float lensStrength = 32.0;
-    float lensRadius = 24.0;
-
     /// Frosted glass, for menus, popovers and alerts: flat and tinted, with a light line that's
     /// mostly the surroundings, inside a dark one.
     float frostSaturation = 1.5;
@@ -62,26 +57,19 @@ struct GlassSettings {
 
     /// Control modules, like Control Center's capsules, sit on a backdrop that's blurred already.
     /// Measured from Tahoe: a grey veil keeps them legible on anything, taking white to 181 and
-    /// black to 31. Their lens is strong enough to mirror the far side of the capsule: it bends by
-    /// controlLensStrength * (1 - depth / controlLensRadius)^2, in logical pixels.
+    /// black to 31.
     float controlTint = 0.35;
     float controlTintGrey = 0.35;
     float controlSaturation = 1.1;
-    float controlLensStrength = 52.0;
-    float controlLensRadius = 17.0;
     float controlRim = 0.88;
 
-    /// What makes glass look thick, learned from MacShell's shader: the split of colors along a lens,
-    /// the highlight inside the rim, grain against banding, and a rim that takes after what's behind.
-    float dispersion = 0.05;
-    float meniscus = 0.07;
+    /// Grain against banding, and how much a rim takes after what's behind it.
     float grain = 0.006;
     float rimTint = 0.4;
 
     /// Glass as a physical slab: its edge curves down, and the background is refracted through that
-    /// curve. 0 for glassModel uses the fitted curves above instead. These values reproduce the bend
-    /// measured from Tahoe's capsules to within a pixel and a half, mirrored edge included.
-    int glassModel = 1;
+    /// curve. These values reproduce the bend measured from Tahoe's capsules to within a pixel and a
+    /// half, mirrored edge included.
     float glassIor = 1.5;
     float glassIorSpread = 0.02;
     float glassProfile = 2.5;

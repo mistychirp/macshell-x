@@ -151,8 +151,6 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.blurOffset = group.readEntry("BlurOffset", defaults.blurOffset);
     m_settings.frostPasses = std::clamp(group.readEntry("FrostPasses", defaults.frostPasses), 1, 5);
     m_settings.frostOffset = group.readEntry("FrostOffset", defaults.frostOffset);
-    m_settings.lensStrength = group.readEntry("LensStrength", defaults.lensStrength);
-    m_settings.lensRadius = group.readEntry("LensRadius", defaults.lensRadius);
     m_settings.frostSaturation = group.readEntry("FrostSaturation", defaults.frostSaturation);
     m_settings.frostTint = group.readEntry("FrostTint", defaults.frostTint);
     m_settings.frostEdgeWhite = group.readEntry("FrostEdgeWhite", defaults.frostEdgeWhite);
@@ -164,15 +162,10 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.controlTint = group.readEntry("ControlTint", defaults.controlTint);
     m_settings.controlTintGrey = group.readEntry("ControlTintGrey", defaults.controlTintGrey);
     m_settings.controlSaturation = group.readEntry("ControlSaturation", defaults.controlSaturation);
-    m_settings.controlLensStrength = group.readEntry("ControlLensStrength", defaults.controlLensStrength);
-    m_settings.controlLensRadius = group.readEntry("ControlLensRadius", defaults.controlLensRadius);
     m_settings.controlRim = group.readEntry("ControlRim", defaults.controlRim);
     m_settings.backdropBrightness = group.readEntry("BackdropBrightness", defaults.backdropBrightness);
-    m_settings.dispersion = group.readEntry("Dispersion", defaults.dispersion);
-    m_settings.meniscus = group.readEntry("Meniscus", defaults.meniscus);
     m_settings.grain = group.readEntry("Grain", defaults.grain);
     m_settings.rimTint = group.readEntry("RimTint", defaults.rimTint);
-    m_settings.glassModel = group.readEntry("GlassModel", defaults.glassModel);
     m_settings.glassIor = group.readEntry("GlassIor", defaults.glassIor);
     m_settings.glassIorSpread = group.readEntry("GlassIorSpread", defaults.glassIorSpread);
     m_settings.glassProfile = group.readEntry("GlassProfile", defaults.glassProfile);
@@ -282,7 +275,7 @@ void GlassEffect::updateWindow(EffectWindow *w)
     // The lens and the blur read the background well away from each pixel, so repaints under the
     // glass have to reach that far.
     const int blurReach = blurOffset * (1 << passes) * 2;
-    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(std::max({m_settings.lensStrength, m_settings.controlLensStrength, m_settings.controlThickness * 1.2f, m_settings.liquidThickness * 1.2f}) * 2) + blurReach);
+    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(std::max(m_settings.controlThickness, m_settings.liquidThickness) * 2.4f) + blurReach);
     data.item->setEffectBoundingRect(bounds);
     w->addRepaintFull();
 
@@ -713,9 +706,6 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("deviceScale", float(viewport.scale()));
         m_glassShader->setUniform("wide", 1);
         m_glassShader->setUniform("sharp", 2);
-        m_glassShader->setUniform("lensStrength", frosted || chip ? 0.0f : control ? m_settings.controlLensStrength : m_settings.lensStrength);
-        m_glassShader->setUniform("lensRadius", control ? m_settings.controlLensRadius : m_settings.lensRadius);
-        m_glassShader->setUniform("lensMirrors", control ? 1.0f : 0.0f);
         m_glassShader->setUniform("brightness", backdrop ? m_settings.backdropBrightness : liquid ? m_settings.liquidBrightness : 1.0f);
         m_glassShader->setUniform("colorMatrix", saturationMatrix(saturation));
         // Measured from Tahoe: menus have a dark tint with a hint of purple, under the edge, and its
@@ -728,17 +718,14 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("rimDirectional", control ? 1.0f : 0.0f);
         m_glassShader->setUniform("rimInner", 1.0f);
         m_glassShader->setUniform("rimSoft", control ? 1.0f : 0.0f);
-        const bool lens = control || liquid || shape.style == Style::Card;
-        const bool physical = m_settings.glassModel != 0 && (lens || bubble);
-        m_glassShader->setUniform("thickness", !physical ? 0.0f : control ? m_settings.controlThickness : m_settings.liquidThickness);
+        const bool lens = control || liquid || bubble || shape.style == Style::Card;
+        m_glassShader->setUniform("thickness", !lens ? 0.0f : control ? m_settings.controlThickness : m_settings.liquidThickness);
         m_glassShader->setUniform("bezel", control ? m_settings.controlBezel : m_settings.liquidBezel);
         m_glassShader->setUniform("shoulder", m_settings.glassShoulder);
         m_glassShader->setUniform("profile", m_settings.glassProfile);
         m_glassShader->setUniform("ior", m_settings.glassIor);
         m_glassShader->setUniform("iorSpread", m_settings.glassIorSpread);
         m_glassShader->setUniform("gloss", m_settings.glassGloss);
-        m_glassShader->setUniform("dispersion", lens ? m_settings.dispersion : 0.0f);
-        m_glassShader->setUniform("meniscus", lens && !physical ? m_settings.meniscus : 0.0f);
         m_glassShader->setUniform("grain", blurred || control ? m_settings.grain : 0.0f);
         m_glassShader->setUniform("rimTint", m_settings.rimTint);
         m_glassShader->setUniform("softEdges", shape.softEdges);
