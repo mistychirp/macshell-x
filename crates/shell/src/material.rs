@@ -416,6 +416,9 @@ impl Material {
                                 box_height as u32,
                                 millidegrees,
                             );
+                            if opacity < 1.0 && glass.version() >= 10 {
+                                glass.set_last_opacity(f64::from(opacity));
+                            }
                         }
                         continue;
                     }
