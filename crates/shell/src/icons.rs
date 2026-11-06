@@ -64,6 +64,10 @@ pub enum Glyph {
     Chevron,
     /// A drop of something clear, for the glass settings.
     Drop,
+    /// A magnifying glass.
+    Search,
+    Folder,
+    Clipboard,
     Keyboard,
 }
 
@@ -216,6 +220,23 @@ impl Glyph {
                 <rect x="3.5" y="3.5" width="17" height="6" rx="1.6"/>
                 <rect x="3.5" y="13" width="7" height="7.5" rx="1.6"/>
                 <rect x="13.5" y="13" width="7" height="7.5" rx="1.6"/>
+                </svg>"##
+            }
+            Glyph::Search => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round">
+                <circle cx="10.5" cy="10.5" r="6.5"/>
+                <path d="M15.5 15.5 21 21"/>
+                </svg>"##
+            }
+            Glyph::Folder => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round">
+                <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.7l2.3 2.5h7A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>
+                </svg>"##
+            }
+            Glyph::Clipboard => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round">
+                <rect x="5" y="4.5" width="14" height="17" rx="2.5"/>
+                <rect x="9" y="2.5" width="6" height="4" rx="1.2" fill="#000"/>
                 </svg>"##
             }
             Glyph::Drop => {

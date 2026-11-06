@@ -32,9 +32,9 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appmenu, arrange, audio, autostart, bluetooth, brightness, control, dbusmenu, desktop, dnd,
-    dock, fonts, icons, launcher, media, menu, menubar, network, notification_center, portal,
-    running, stack, tray, wallpaper, widgets,
+    appmenu, arrange, audio, autostart, bluetooth, brightness, clipboard, control, dbusmenu,
+    desktop, dnd, dock, fonts, icons, launcher, media, menu, menubar, network, notification_center,
+    portal, running, spotlight, stack, tray, wallpaper, widgets,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -79,6 +79,7 @@ enum Surface {
     Desktop,
     /// Where to choose widgets from, while editing them.
     WidgetGallery,
+    Spotlight,
     /// The green traffic light's menu.
     ArrangeMenu,
     MenuBar,
@@ -211,6 +212,26 @@ pub enum Message {
     WallpaperChosen(Option<PathBuf>),
     /// "System Settings…" was chosen in the menu.
     OpenSettings,
+    /// Spotlight's shortcut, or its icon in the bar.
+    SpotlightToggle,
+    SpotlightClose,
+    SpotlightTyped(String),
+    SpotlightMode(spotlight::Mode),
+    SpotlightCategory(Option<spotlight::Category>),
+    SpotlightHovered(usize),
+    SpotlightChosen(usize),
+    /// An arrow key: how many rows down, and how many places to the right.
+    SpotlightMoved(i32, i32),
+    /// It's been a moment since this was typed.
+    SpotlightSearchDue(String),
+    SpotlightFilesFound(String, Vec<spotlight::FileHit>),
+    SpotlightRecentFiles(Vec<spotlight::FileHit>),
+    /// Time to read a few more apps, so that it has them all by the time it opens.
+    SpotlightLoadApps,
+    /// Something's been redrawn in the background, like an icon that took a moment to load.
+    SpotlightTick,
+    /// Something was copied.
+    Copied(clipboard::Content),
     /// Hiding an app: its windows go, with no animation and no tile in the dock.
     HideWindows(Vec<u64>),
     /// It's been a moment since an app with this id was asked to close its windows.
@@ -397,6 +418,14 @@ struct Shell {
     dock_drag: Option<dock::Drag>,
     /// Apps launched from the dock that haven't opened a window yet, and when.
     launching: HashMap<String, Instant>,
+    spotlight: Option<spotlight::Spotlight>,
+    /// The apps it lists, as far as they've been read.
+    spotlight_apps: Vec<Rc<App>>,
+    /// The ids of those that haven't been yet.
+    spotlight_unread: Vec<String>,
+    spotlight_file_icons: spotlight::FileIcons,
+    /// What's been copied, newest first.
+    clips: std::collections::VecDeque<spotlight::Clip>,
     /// What's running of each app, by the id its windows give, or a pinned app's id.
     running: BTreeMap<String, Vec<running::Process>>,
     /// Shared start time for attention bounces, so they stay in step.
@@ -489,6 +518,10 @@ const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
 /// How big minimized windows' pictures are kept, on their longer side: enough for a magnified dock.
 const THUMBNAIL_SIZE: u32 = 512;
 /// How long the green light's menu waits for the pointer to come back.
+/// How long Spotlight waits after a keystroke before looking through the files.
+const SPOTLIGHT_TYPING: Duration = Duration::from_millis(180);
+/// How many apps it reads per tick, in the background, since reading one means decoding its icon.
+const SPOTLIGHT_APPS_AT_ONCE: usize = 4;
 /// How long an app has to close its windows when asked to quit, before what's left is told to.
 const QUIT_GRACE: Duration = Duration::from_secs(3);
 const ARRANGE_MENU_GRACE: Duration = Duration::from_millis(350);
@@ -523,6 +556,8 @@ impl Shell {
         let system_icon = menubar::logo_names(configured_logo, false)
             .iter()
             .find_map(|name| apps.themed_icon(name));
+
+        let spotlight_unread = apps.listed_ids();
 
         let shell = Self {
             surfaces: HashMap::from([(menubar_id, Surface::MenuBar), (dock_id, Surface::Dock)]),
@@ -582,6 +617,11 @@ impl Shell {
             dock_drag: None,
             launching: HashMap::new(),
             running: BTreeMap::new(),
+            spotlight: None,
+            spotlight_apps: Vec::new(),
+            spotlight_unread,
+            spotlight_file_icons: spotlight::FileIcons::default(),
+            clips: std::collections::VecDeque::new(),
             started: Instant::now(),
             popup: None,
             next_bar_menu: None,
@@ -640,6 +680,7 @@ impl Shell {
         let task = self.apply(message);
         self.update_panel_shapes();
         self.update_desktop_shapes();
+        self.update_spotlight_shapes();
         self.mark_changed_surfaces();
         let targets = self.update_genie_targets();
         match self.load_new_icons() {
@@ -739,7 +780,7 @@ impl Shell {
                     )
                 }
                 // Short-lived, with live content.
-                Surface::Popup | Surface::Alert | Surface::Banners => {
+                Surface::Popup | Surface::Alert | Surface::Banners | Surface::Spotlight => {
                     iced_layershell::redraw::mark_changed(id);
                     continue;
                 }
@@ -1034,6 +1075,13 @@ impl Shell {
                     }
                 }
                 return self.relayout_dock();
+            }
+            Message::SurfaceOpened(id, _)
+                if self.surfaces.get(&id) == Some(&Surface::Spotlight) =>
+            {
+                let focus =
+                    iced_runtime::widget::operation::focus(spotlight::Spotlight::field_id());
+                return Task::batch([self.reach_surface(id), focus]);
             }
             Message::SurfaceOpened(id, size) if id == self.dock_id => {
                 self.dock_width = size.width;
@@ -1347,6 +1395,124 @@ impl Shell {
                 return close;
             }
             Message::Arrange(arrange::Event::ConfigChanged) => return self.reload_config(),
+            Message::Arrange(arrange::Event::ToggleSpotlight) | Message::SpotlightToggle => {
+                return self.toggle_spotlight();
+            }
+            Message::SpotlightClose => return self.close_spotlight(),
+            Message::SpotlightTyped(query) => {
+                if let Some(open) = &mut self.spotlight {
+                    let was_expanded = open.expanded();
+                    open.query = query;
+                    open.selected = 0;
+                    let refocus = if open.expanded() == was_expanded {
+                        Task::none()
+                    } else {
+                        spotlight::Spotlight::refocus()
+                    };
+                    if let Some(due) = open.wants_file_search() {
+                        let search =
+                            Task::perform(tokio::time::sleep(SPOTLIGHT_TYPING), move |()| {
+                                Message::SpotlightSearchDue(due.clone())
+                            });
+                        return Task::batch([refocus, search]);
+                    }
+                    return refocus;
+                }
+            }
+            Message::SpotlightSearchDue(query) => {
+                let Some(open) = &self.spotlight else {
+                    return Task::none();
+                };
+                if open.query.trim() == query {
+                    return Task::perform(
+                        async move {
+                            let searched = query.clone();
+                            let found = tokio::task::spawn_blocking(move || {
+                                spotlight::search_files(&searched)
+                            })
+                            .await
+                            .unwrap_or_default();
+                            (query, found)
+                        },
+                        |(query, found)| Message::SpotlightFilesFound(query, found),
+                    );
+                }
+            }
+            Message::SpotlightFilesFound(query, found) => {
+                if let Some(open) = &mut self.spotlight
+                    && open.query.trim() == query
+                {
+                    open.files = found;
+                    open.files_query = query;
+                }
+            }
+            Message::SpotlightRecentFiles(recent) => {
+                if let Some(open) = &mut self.spotlight {
+                    open.recent_files = recent;
+                }
+            }
+            Message::SpotlightMode(mode) => {
+                if let Some(open) = &mut self.spotlight {
+                    open.mode = mode;
+                    open.query.clear();
+                    open.category = None;
+                    open.selected = 0;
+                }
+                return spotlight::Spotlight::refocus();
+            }
+            Message::SpotlightCategory(category) => {
+                if let Some(open) = &mut self.spotlight {
+                    open.category = category;
+                    open.selected = 0;
+                }
+                return iced_runtime::widget::operation::focus(spotlight::Spotlight::field_id());
+            }
+            Message::SpotlightHovered(index) => {
+                if let Some(open) = &mut self.spotlight {
+                    open.selected = index;
+                }
+            }
+            Message::SpotlightMoved(rows, across) => {
+                if let Some(open) = &self.spotlight {
+                    let count = open.hits(&self.spotlight_apps, &self.clips).len();
+                    if let Some(open) = &mut self.spotlight {
+                        open.select_by(rows, across, count);
+                        return iced_runtime::widget::operation::snap_to(
+                            spotlight::Spotlight::results_id(),
+                            iced_widget::scrollable::RelativeOffset {
+                                x: None,
+                                y: Some(open.scroll_share(count)),
+                            },
+                        );
+                    }
+                }
+            }
+            Message::SpotlightChosen(index) => return self.choose_in_spotlight(index),
+            Message::SpotlightLoadApps => {
+                for _ in 0..SPOTLIGHT_APPS_AT_ONCE {
+                    let Some(id) = self.spotlight_unread.pop() else {
+                        break;
+                    };
+                    let app = self.apps.resolve(&id);
+                    if app.command.is_some()
+                        && !app.unlisted
+                        && !self.spotlight_apps.iter().any(|known| known.id == app.id)
+                    {
+                        self.spotlight_apps.push(app);
+                    }
+                }
+            }
+            Message::SpotlightTick => {}
+            Message::Copied(content) => {
+                spotlight::remember_clip(
+                    &mut self.clips,
+                    spotlight::Clip {
+                        content,
+                        copied: chrono::Local::now(),
+                        source: self.focused_app.clone(),
+                    },
+                );
+            }
             Message::SurfaceOpened(id, size)
                 if self.surfaces.get(&id) == Some(&Surface::Wallpaper) =>
             {
@@ -1546,6 +1712,23 @@ impl Shell {
                 };
             }
             Message::ReturnOrEscape(confirmed) => {
+                if let Some(open) = &mut self.spotlight {
+                    if confirmed {
+                        let selected = open.selected;
+                        return self.choose_in_spotlight(selected);
+                    }
+                    if !open.query.is_empty() {
+                        open.query.clear();
+                        open.selected = 0;
+                    } else if open.mode != spotlight::Mode::Search {
+                        open.mode = spotlight::Mode::Search;
+                        open.category = None;
+                        open.selected = 0;
+                    } else {
+                        return self.close_spotlight();
+                    }
+                    return spotlight::Spotlight::refocus();
+                }
                 if self.alert.as_ref().is_some_and(|open| open.active) {
                     return Task::done(Message::AlertAnswered(confirmed));
                 }
@@ -1765,6 +1948,12 @@ impl Shell {
             }
             Message::SurfaceClosed(id) => {
                 self.surfaces.remove(&id);
+                if self.spotlight.as_ref().is_some_and(|open| open.id == id) {
+                    if let Some(material) = self.spotlight.take().and_then(|open| open.material) {
+                        material.destroy();
+                    }
+                    iced_layershell::toplevel::set_keyboard_target(None);
+                }
                 if let Some(index) = self.submenus.iter().position(|menu| menu.id == id) {
                     let submenu = self.submenus.remove(index);
                     if let Some(material) = submenu.material {
@@ -1899,6 +2088,7 @@ impl Shell {
                 };
                 menubar::app_menu(app)
             }
+            menubar::Title::Spotlight => return self.toggle_spotlight(),
             menubar::Title::Ethernet => menubar::ethernet_menu(),
             menubar::Title::Input => match &self.keyboard_layouts {
                 Some(layouts) => menubar::input_menu(layouts),
@@ -2227,6 +2417,21 @@ impl Shell {
                 }
                 _ => target.destroy(),
             },
+            Some(Surface::Spotlight) => {
+                let (width, height) = (self.menubar_width, self.screen_height);
+                match &mut self.spotlight {
+                    Some(open) if open.id == id => {
+                        material.set_appear(
+                            &target,
+                            material::Appear::Gentle((width / 2.0) as i32, (height * 0.2) as i32),
+                        );
+                        open.shapes = open.material_shapes(width, height);
+                        material.set_shapes(&target, &open.shapes);
+                        open.material = Some(target);
+                    }
+                    _ => target.destroy(),
+                }
+            }
             Some(Surface::Alert) => match &mut self.alert {
                 Some(open) if open.id == id => {
                     let (x, y) = alert::middle(&open.alert);
@@ -2467,6 +2672,112 @@ impl Shell {
                 min_length: request.min_length,
             }),
         })
+    }
+
+    fn toggle_spotlight(&mut self) -> Task<Message> {
+        if self.spotlight.is_some() {
+            return self.close_spotlight();
+        }
+        let (id, open) = Message::layershell_open(spotlight::settings());
+        self.surfaces.insert(id, Surface::Spotlight);
+        iced_layershell::toplevel::set_keyboard_target(Some(id));
+        self.spotlight = Some(spotlight::Spotlight::new(id));
+        if self.spotlight_file_icons.folder.is_none() {
+            self.spotlight_file_icons = spotlight::FileIcons {
+                folder: self.apps.themed_icon("folder"),
+                image: self.apps.themed_icon("image-x-generic"),
+                video: self.apps.themed_icon("video-x-generic"),
+                audio: self.apps.themed_icon("audio-x-generic"),
+                pdf: self.apps.themed_icon("application-pdf"),
+                text: self.apps.themed_icon("text-x-generic"),
+            };
+        }
+        let recent = Task::perform(
+            async {
+                tokio::task::spawn_blocking(spotlight::recent_files)
+                    .await
+                    .unwrap_or_default()
+            },
+            Message::SpotlightRecentFiles,
+        );
+        Task::batch([self.close_popup(), open, recent])
+    }
+
+    fn close_spotlight(&mut self) -> Task<Message> {
+        match &self.spotlight {
+            Some(open) => iced_runtime::window::close(open.id),
+            None => Task::none(),
+        }
+    }
+
+    /// Keeps the glass behind Spotlight in line with what it's showing.
+    fn update_spotlight_shapes(&mut self) {
+        let (width, height) = (self.menubar_width, self.screen_height);
+        if let (Some(material), Some(open)) = (&self.material, &mut self.spotlight) {
+            let shapes = open.material_shapes(width, height);
+            if shapes != open.shapes
+                && let Some(target) = &open.material
+            {
+                material.set_shapes(target, &shapes);
+                open.shapes = shapes;
+            }
+        }
+    }
+
+    /// Does what the thing at this place in Spotlight is for, and closes it.
+    fn choose_in_spotlight(&mut self, index: usize) -> Task<Message> {
+        let Some(open) = &self.spotlight else {
+            return Task::none();
+        };
+        let Some(hit) = open
+            .hits(&self.spotlight_apps, &self.clips)
+            .into_iter()
+            .nth(index)
+        else {
+            return Task::none();
+        };
+        let close = self.close_spotlight();
+        let done = match hit {
+            spotlight::Hit::App(app) => self.open_app(&app),
+            spotlight::Hit::AppAction(app, action) => {
+                if let Some(action) = app.actions.get(action) {
+                    apps::spawn(action.command.clone());
+                }
+                Task::none()
+            }
+            spotlight::Hit::File(file) => {
+                apps::spawn(vec![
+                    String::from("xdg-open"),
+                    file.path.to_string_lossy().into_owned(),
+                ]);
+                Task::none()
+            }
+            spotlight::Hit::Action(action) => Task::done(action.message()),
+            spotlight::Hit::Clip(clip) => {
+                if let Some(clip) = self.clips.get(clip) {
+                    clipboard::copy(&clip.content);
+                    let clip = clip.clone();
+                    spotlight::remember_clip(&mut self.clips, clip);
+                }
+                Task::none()
+            }
+        };
+        Task::batch([close, done])
+    }
+
+    /// Brings an app up, or starts it.
+    fn open_app(&mut self, app: &App) -> Task<Message> {
+        if self.dock.iter().any(|item| item.app.id == app.id) {
+            return self.activate(&app.id);
+        }
+        match &app.command {
+            Some(command) => {
+                apps::spawn(command.clone());
+                self.launching.insert(app.id.clone(), Instant::now());
+            }
+            None => log::warn!("don't know how to launch {}", app.id),
+        }
+        Task::none()
     }
 
     /// Remembers the processes behind windows, which an app stays running for after they close.
@@ -3244,6 +3555,16 @@ impl Shell {
                     None => Space::new().into(),
                 }
             }
+            Some(Surface::Spotlight) => match &self.spotlight {
+                Some(open) => open.view(
+                    &self.spotlight_apps,
+                    &self.clips,
+                    &self.spotlight_file_icons,
+                    self.menubar_width,
+                    self.screen_height,
+                ),
+                None => Space::new().into(),
+            },
             Some(Surface::Alert) => match &self.alert {
                 Some(open) => alert::view(
                     &open.alert,
@@ -3304,6 +3625,16 @@ impl Shell {
             None => Subscription::none(),
         };
 
+        let spotlight_load = if self.spotlight_unread.is_empty() {
+            Subscription::none()
+        } else {
+            time::every(Duration::from_millis(30)).map(|_| Message::SpotlightLoadApps)
+        };
+        let spotlight_tick = if self.spotlight.is_some() {
+            time::every(Duration::from_millis(250)).map(|_| Message::SpotlightTick)
+        } else {
+            Subscription::none()
+        };
         let menu_hover = if self.menu_hover.is_some() {
             time::every(Duration::from_millis(30)).map(|_| Message::MenuHoverCheck)
         } else {
@@ -3318,6 +3649,9 @@ impl Shell {
             network::secret_agent().map(Message::WifiAgent),
             dnd::events().map(Message::Dnd),
             arrange::events().map(Message::Arrange),
+            clipboard::events().map(Message::Copied),
+            spotlight_load,
+            spotlight_tick,
             time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),
             time::every(Duration::from_secs(2)).map(|_| Message::DesktopRefresh),
             time::every(Duration::from_secs(2)).map(|_| Message::CheckRunning),
@@ -3351,6 +3685,24 @@ impl Shell {
                 ) =>
                 {
                     Some(Message::ReturnOrEscape(key == keyboard::key::Named::Enter))
+                }
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(key),
+                    ..
+                }) if matches!(
+                    key,
+                    keyboard::key::Named::ArrowUp
+                        | keyboard::key::Named::ArrowDown
+                        | keyboard::key::Named::ArrowLeft
+                        | keyboard::key::Named::ArrowRight
+                ) =>
+                {
+                    Some(match key {
+                        keyboard::key::Named::ArrowUp => Message::SpotlightMoved(-1, 0),
+                        keyboard::key::Named::ArrowDown => Message::SpotlightMoved(1, 0),
+                        keyboard::key::Named::ArrowLeft => Message::SpotlightMoved(0, -1),
+                        _ => Message::SpotlightMoved(0, 1),
+                    })
                 }
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
                     Some(Message::PointerMoved(id, position))

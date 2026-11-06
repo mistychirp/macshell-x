@@ -48,6 +48,8 @@ pub enum Title {
     Input,
     /// A wired connection, shown when there's no Wi-Fi.
     Ethernet,
+    /// A magnifying glass, which opens Spotlight.
+    Spotlight,
     /// The Control Center's switches.
     ControlCenter,
     /// The clock, which opens Notification Center.
@@ -212,6 +214,8 @@ impl Bar<'_> {
         titles.push((Title::Clock, rect(x, self.clock_width())));
         x -= CONTROL_CENTER_WIDTH;
         titles.push((Title::ControlCenter, rect(x, CONTROL_CENTER_WIDTH)));
+        x -= STATUS_WIDTH;
+        titles.push((Title::Spotlight, rect(x, STATUS_WIDTH)));
         if self.input.is_some() {
             x -= STATUS_WIDTH;
             titles.push((Title::Input, rect(x, STATUS_WIDTH)));
@@ -383,6 +387,7 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
             Title::Input => input_badge(bar.input.unwrap_or_default(), ink),
             Title::Ethernet => icons::icon(Glyph::Ethernet, 17.0, ink),
             Title::ControlCenter => icons::icon(Glyph::ControlCenter, 17.0, ink),
+            Title::Spotlight => icons::icon(Glyph::Search, 15.0, ink),
             Title::Clock => text(bar.clock).into(),
             Title::Tray(index) => match bar.tray.get(index).and_then(|icon| {
                 match (bar.backdrop, &icon.image_on_light) {

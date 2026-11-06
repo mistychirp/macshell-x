@@ -16,7 +16,7 @@ include(KDECMakeSettings)
 find_package(Qt6 REQUIRED COMPONENTS Core DBus Gui Quick Widgets)
 # ECM's wrapper around qtwaylandscanner, which generates the protocol's server classes.
 find_package(QtWaylandScanner REQUIRED)
-find_package(KF6 REQUIRED COMPONENTS Config CoreAddons)
+find_package(KF6 REQUIRED COMPONENTS Config CoreAddons GlobalAccel)
 find_package(KWin REQUIRED)
 find_package(KDecoration3 REQUIRED)
 
@@ -38,6 +38,7 @@ ecm_add_qtwayland_server_protocol(macshell
 target_link_libraries(macshell PRIVATE
     KWin::kwin
     KF6::ConfigCore
+    KF6::GlobalAccel
     Qt6::Core
     Qt6::DBus
     Qt6::Gui

@@ -93,6 +93,8 @@ pub enum Event {
     Left,
     /// The Settings app changed the config file.
     ConfigChanged,
+    /// Spotlight's shortcut was pressed.
+    ToggleSpotlight,
 }
 
 /// An open menu.
@@ -122,6 +124,12 @@ impl Windows {
     #[zbus(name = "ZoomLeft")]
     fn zoom_left(&self) {
         let _ = self.events.unbounded_send(Event::Left);
+    }
+
+    /// Spotlight's shortcut was pressed, which our KWin plugin listens for.
+    #[zbus(name = "ToggleSpotlight")]
+    fn toggle_spotlight(&self) {
+        let _ = self.events.unbounded_send(Event::ToggleSpotlight);
     }
 
     /// The Settings app changed the config file.

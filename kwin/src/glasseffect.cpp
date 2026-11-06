@@ -19,7 +19,12 @@
 #include <KConfigGroup>
 #include <KSharedConfig>
 
+#include <KGlobalAccel>
+
+#include <QAction>
 #include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusPendingCall>
 
 #include <QLoggingCategory>
 #include <QMatrix4x4>
@@ -138,6 +143,21 @@ GlassEffect::GlassEffect()
         KSharedConfig::openConfig(QStringLiteral("kwinrc"))->sync();
     });
     QDBusConnection::sessionBus().registerObject(QStringLiteral("/org/macshell/Glass"), this, QDBusConnection::ExportScriptableSlots);
+
+    // Spotlight's shortcut. It's here because global shortcuts belong to whatever registers them, and
+    // KWin's are the ones that can be changed along with all the others.
+    auto *spotlight = new QAction(this);
+    spotlight->setObjectName(QStringLiteral("Spotlight"));
+    spotlight->setText(QStringLiteral("Spotlight Search"));
+    KGlobalAccel::self()->setDefaultShortcut(spotlight, {Qt::META | Qt::Key_Space});
+    KGlobalAccel::self()->setShortcut(spotlight, {Qt::META | Qt::Key_Space});
+    connect(spotlight, &QAction::triggered, this, [] {
+        const auto message = QDBusMessage::createMethodCall(QStringLiteral("org.macshell.Shell"),
+                                                            QStringLiteral("/org/macshell/Windows"),
+                                                            QStringLiteral("org.macshell.Windows"),
+                                                            QStringLiteral("ToggleSpotlight"));
+        QDBusConnection::sessionBus().asyncCall(message);
+    });
 
     reconfigure(ReconfigureAll);
     for (EffectWindow *w : effects->stackingOrder()) {

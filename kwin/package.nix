@@ -12,6 +12,7 @@
   qtwayland,
   kconfig,
   kcoreaddons,
+  kglobalaccel,
   kwindowsystem,
   wayland,
   libepoxy,
@@ -48,6 +49,7 @@ stdenv.mkDerivation {
     qtwayland
     kconfig
     kcoreaddons
+    kglobalaccel
     kwindowsystem
     wayland
     libepoxy

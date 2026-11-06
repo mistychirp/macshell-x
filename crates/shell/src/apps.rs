@@ -29,6 +29,8 @@ pub struct App {
     pub command: Option<Vec<String>>,
     /// Whether its desktop entry says it's not for listing: it's a background service, say.
     pub unlisted: bool,
+    /// What its desktop entry says it is, like `Office` or `Game`.
+    pub categories: Vec<String>,
     /// Extra actions from the desktop entry, like "New Private Window".
     pub actions: Vec<DesktopAction>,
 }
@@ -69,6 +71,15 @@ impl AppIndex {
         }
     }
 
+    /// The ids of the apps there are to launch, like a launcher would list them.
+    pub fn listed_ids(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| !entry.no_display() && entry.exec().is_some())
+            .map(|entry| entry.id().to_owned())
+            .collect()
+    }
+
     pub fn resolve(&mut self, app_id: &str) -> Rc<App> {
         if let Some(app) = self.cache.get(app_id) {
             return app.clone();
@@ -86,6 +97,12 @@ impl AppIndex {
                     .and_then(|path| load_icon(&path)),
                 command: entry.parse_exec().ok(),
                 unlisted: entry.no_display(),
+                categories: entry
+                    .categories()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
                 actions: entry
                     .actions()
                     .unwrap_or_default()
@@ -104,6 +121,7 @@ impl AppIndex {
                 icon: self.find_icon(app_id).and_then(|path| load_icon(&path)),
                 command: None,
                 unlisted: false,
+                categories: Vec::new(),
                 actions: Vec::new(),
             },
         });
