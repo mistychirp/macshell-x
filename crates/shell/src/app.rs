@@ -183,7 +183,7 @@ pub enum Message {
     DesktopReceived(Vec<String>, Point),
     Widget(widgets::Action),
     WidgetPhotoChosen(u64, Option<PathBuf>),
-    WidgetPhotoLoaded(PathBuf, Option<image::Handle>),
+    WidgetPhotoLoaded(PathBuf, Option<widgets::Picture>),
     FetchWeather,
     WeatherFetched(Option<widgets::Weather>),
     DesktopPressed,
@@ -308,6 +308,8 @@ struct Shell {
     desktop_id: IcedId,
     desktop: desktop::Desktop,
     desktop_surface: Option<WlSurface>,
+    desktop_material: Option<MaterialSurface>,
+    desktop_shapes: Vec<material::Shape>,
     /// View Options are waiting for the menu they were chosen from to go.
     next_view_options: Option<IcedNewPopupSettings>,
     dock_surface: Option<ObjectId>,
@@ -456,6 +458,8 @@ const FALLBACK_SCREEN_HEIGHT: f32 = 700.0;
 const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
 /// How big minimized windows' pictures are kept, on their longer side: enough for a magnified dock.
 const THUMBNAIL_SIZE: u32 = 512;
+/// How soon to look up the weather again when that didn't work.
+const WEATHER_RETRY: Duration = Duration::from_secs(60);
 /// How many past notifications Notification Center keeps.
 const MAX_NOTIFICATIONS: usize = 100;
 
@@ -497,6 +501,8 @@ impl Shell {
             desktop_id,
             desktop: desktop::Desktop::load(),
             desktop_surface: None,
+            desktop_material: None,
+            desktop_shapes: Vec::new(),
             next_view_options: None,
             dock_surface: None,
             drag_over: None,
@@ -598,6 +604,7 @@ impl Shell {
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.apply(message);
         self.update_panel_shapes();
+        self.update_desktop_shapes();
         self.mark_changed_surfaces();
         match self.load_new_icons() {
             Some(loading) => Task::batch([task, loading]),
@@ -642,9 +649,9 @@ impl Shell {
                 Surface::Desktop => format!(
                     "{} {}",
                     self.desktop.content_key(self.focused_app.is_none()),
-                    self.widgets.content_key()
+                    self.widgets.content_key(self.widgets_tinted())
                 ),
-                Surface::WidgetGallery => self.widgets.content_key(),
+                Surface::WidgetGallery => self.widgets.content_key(false),
                 Surface::MenuBar => format!("{:?}", self.bar()),
                 Surface::Dock => {
                     format!(
@@ -1067,8 +1074,12 @@ impl Shell {
                 }
             }
             Message::WeatherFetched(Some(weather)) => self.widgets.weather = Some(weather),
-            // Whatever it last said is still the best guess.
-            Message::WeatherFetched(None) => {}
+            // Whatever it last said is still the best guess, but ask again soon.
+            Message::WeatherFetched(None) => {
+                return Task::perform(tokio::time::sleep(WEATHER_RETRY), |()| {
+                    Message::FetchWeather
+                });
+            }
             Message::AddingModifiers(adding) => self.desktop.adding = adding,
             Message::DesktopPressed => {
                 // A click that closes a menu doesn't do anything else.
@@ -1173,7 +1184,8 @@ impl Shell {
                 }
             }
             Message::SurfaceReached(id, Some(surface)) if id == self.desktop_id => {
-                self.desktop_surface = Some(surface);
+                self.desktop_surface = Some(surface.clone());
+                self.attach_material(id, surface);
             }
             Message::SurfaceReached(id, Some(surface)) => {
                 if id == self.dock_id {
@@ -1992,7 +2004,12 @@ impl Shell {
                 material.set_shapes(&target, &widgets::gallery_shapes());
                 self.gallery_material = Some(target);
             }
-            Some(Surface::Wallpaper | Surface::Desktop) | None => target.destroy(),
+            Some(Surface::Desktop) => {
+                self.desktop_shapes = self.widgets.material_shapes(self.widgets_tinted());
+                material.set_shapes(&target, &self.desktop_shapes);
+                self.desktop_material = Some(target);
+            }
+            Some(Surface::Wallpaper) | None => target.destroy(),
         }
     }
 
@@ -2196,6 +2213,23 @@ impl Shell {
                 min_length: request.min_length,
             }),
         })
+    }
+
+    /// Whether widgets are glass: like on macOS, they are while a window is active, and in color
+    /// when the desktop is.
+    fn widgets_tinted(&self) -> bool {
+        self.focused_app.is_some() && !self.widgets.editing && !self.widgets.is_dragging()
+    }
+
+    /// Keeps the glass behind widgets in line with them.
+    fn update_desktop_shapes(&mut self) {
+        let shapes = self.widgets.material_shapes(self.widgets_tinted());
+        if shapes != self.desktop_shapes
+            && let (Some(material), Some(target)) = (&self.material, &self.desktop_material)
+        {
+            material.set_shapes(target, &shapes);
+            self.desktop_shapes = shapes;
+        }
     }
 
     fn is_desktop(&self, surface: &ObjectId) -> bool {
@@ -2444,7 +2478,7 @@ impl Shell {
                 }
             }
             Action::Remove(id) => self.widgets.remove(id),
-            Action::SetWide(id, wide) => self.widgets.set_wide(id, wide),
+            Action::SetSize(id, size) => self.widgets.set_size(id, size),
             Action::ChoosePhoto(id) => return self.choose_widget_photo(id),
             Action::ChangeCity => return self.ask_for_city(),
             Action::Edit => {
@@ -2785,7 +2819,8 @@ impl Shell {
             Some(Surface::Desktop) => desktop::view(
                 &self.desktop,
                 self.focused_app.is_none(),
-                self.widgets.layers(),
+                self.widgets
+                    .layers(self.widgets_tinted(), self.screen_height),
             ),
             Some(Surface::WidgetGallery) => {
                 widgets::gallery(&self.widgets, self.material.as_ref().map(|m| m.kind()))
