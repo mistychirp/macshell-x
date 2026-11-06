@@ -144,6 +144,8 @@ pub enum Message {
     GlassReleased(&'static str),
     GlassReset,
     MagnificationToggled(bool),
+    IconSizeChanged(f32),
+    IconSizeReleased,
     MagnifiedSizeChanged(f32),
     MagnifiedSizeReleased,
     AlwaysGlassyToggled(bool),
@@ -381,6 +383,7 @@ struct SettingsApp {
     page: Page,
     lights_hovered: bool,
     glass: Option<HashMap<&'static str, f32>>,
+    icon_size: f32,
     magnification: bool,
     magnified_size: f32,
     always_glassy: bool,
@@ -461,6 +464,7 @@ impl SettingsApp {
             page: Page::Glass,
             lights_hovered: false,
             glass: None,
+            icon_size: config.dock.icon_size,
             magnification: config.dock.magnification,
             magnified_size: config.dock.magnified_size,
             always_glassy: config.desktop.always_glassy_widgets,
@@ -529,6 +533,13 @@ impl SettingsApp {
                 }
                 return Task::future(tell_shell()).discard();
             }
+            Message::IconSizeChanged(size) => self.icon_size = size,
+            Message::IconSizeReleased => {
+                if let Err(err) = config::save_icon_size(self.icon_size) {
+                    log::warn!("can't save the dock's icon size: {err}");
+                }
+                return Task::future(tell_shell()).discard();
+            }
             Message::MagnifiedSizeChanged(size) => self.magnified_size = size,
             Message::MagnifiedSizeReleased => {
                 if let Err(err) = config::save_magnified_size(self.magnified_size) {
@@ -591,6 +602,7 @@ impl SettingsApp {
                 self.transfer_status = Some(result.unwrap_or_else(|err| err));
                 if imported {
                     let config = Config::load();
+                    self.icon_size = config.dock.icon_size;
                     self.magnification = config.dock.magnification;
                     self.magnified_size = config.dock.magnified_size;
                     self.always_glassy = config.desktop.always_glassy_widgets;
@@ -784,16 +796,28 @@ impl SettingsApp {
             .and_then(|path| path.rsplit('/').next())
             .unwrap_or("None");
 
-        let mut dock = vec![setting_row(
-            "Magnification",
-            settings_toggle(self.magnification, Message::MagnificationToggled),
-        )];
+        let mut dock = vec![
+            setting_row(
+                "Size",
+                settings_slider(
+                    crate::dock::ICON_RANGE,
+                    self.icon_size,
+                    1.0,
+                    Message::IconSizeChanged,
+                    Message::IconSizeReleased,
+                ),
+            ),
+            setting_row(
+                "Magnification",
+                settings_toggle(self.magnification, Message::MagnificationToggled),
+            ),
+        ];
         if self.magnification {
             dock.push(setting_row(
                 "Magnified Size",
                 settings_slider(
-                    (crate::dock::ICON_SIZE, 128.0),
-                    self.magnified_size,
+                    (self.icon_size, 128.0),
+                    self.magnified_size.max(self.icon_size),
                     1.0,
                     Message::MagnifiedSizeChanged,
                     Message::MagnifiedSizeReleased,

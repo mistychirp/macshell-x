@@ -607,7 +607,7 @@ pub fn settings(screen_height: f32) -> NewLayerShellSettings {
 }
 
 pub fn surface_height(screen_height: f32) -> f32 {
-    screen_height - dock::RESERVED_HEIGHT
+    screen_height - dock::reserved_height()
 }
 
 #[cfg(test)]

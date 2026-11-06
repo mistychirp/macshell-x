@@ -1298,7 +1298,7 @@ pub fn gallery_settings() -> NewLayerShellSettings {
         layer: Layer::Top,
         size: Some((GALLERY_WIDTH as u32, GALLERY_HEIGHT as u32)),
         exclusive_zone: Some(-1),
-        margin: Some((0, 0, crate::dock::RESERVED_HEIGHT as i32 + 12, 0)),
+        margin: Some((0, 0, crate::dock::reserved_height() as i32 + 12, 0)),
         keyboard_interactivity: KeyboardInteractivity::None,
         namespace: Some(String::from("macshell-widget-gallery")),
         ..Default::default()

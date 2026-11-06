@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
@@ -29,28 +30,90 @@ use crate::menu;
 use crate::places::Place;
 use crate::running::Process;
 
-pub const ICON_SIZE: f32 = 48.0;
+/// How big the dock's icons are by default, in logical pixels.
+pub const DEFAULT_ICON: f32 = 48.0;
+/// What the Settings app lets it be.
+pub const ICON_RANGE: (f32, f32) = (32.0, 96.0);
 const DOT_SIZE: f32 = 4.0;
 const DOT_GAP: f32 = 3.0;
-/// Above and below icons, which sit in the middle of the pill, with a running app's dot under them.
-const PADDING_Y: f32 = 10.0;
-const PADDING_X: f32 = 8.0;
-const SPACING: f32 = 4.0;
-const RADIUS: f32 = 20.0;
 const MARGIN: f32 = 6.0;
-const PILL_HEIGHT: f32 = ICON_SIZE + 2.0 * PADDING_Y;
-/// What the dock keeps windows out of, at the bottom of the screen.
-pub const RESERVED_HEIGHT: f32 = PILL_HEIGHT + MARGIN;
 
-/// Extra room between the apps and the places, where the separator line goes.
-const SEPARATOR_GAP: f32 = 12.0;
 /// A minimized window's app icon, as a share of its tile.
 const TILE_BADGE: f32 = 0.42;
 const BADGE_SIZE: f32 = 21.0;
 const BADGE_TEXT_SIZE: f32 = 12.0;
 const BADGE_PADDING: f32 = 11.0;
 const BADGE_OVERHANG: f32 = 5.0;
-const SEPARATOR_HEIGHT: f32 = ICON_SIZE * 0.75;
+
+/// How big icons are, which everything around them follows. It's one setting for the whole dock, and
+/// so much of its layout depends on it that passing it around would bury what's going on.
+static BASE_ICON: AtomicU32 = AtomicU32::new(DEFAULT_ICON.to_bits());
+
+pub fn base_icon() -> f32 {
+    f32::from_bits(BASE_ICON.load(Ordering::Relaxed))
+}
+
+/// Sets how big icons are, within [`ICON_RANGE`], on whole pixels.
+pub fn set_base_icon(size: f32) {
+    BASE_ICON.store(fit_icon(size).to_bits(), Ordering::Relaxed);
+}
+
+fn fit_icon(size: f32) -> f32 {
+    size.clamp(ICON_RANGE.0, ICON_RANGE.1).round()
+}
+
+/// A length that's this at the default size, on whole pixels.
+fn scaled(length: f32) -> f32 {
+    (length * base_icon() / DEFAULT_ICON).round()
+}
+
+/// Above and below icons, which sit in the middle of the pill, with a running app's dot under them.
+fn padding_y() -> f32 {
+    scaled(10.0)
+}
+
+fn padding_x() -> f32 {
+    scaled(8.0)
+}
+
+fn spacing() -> f32 {
+    scaled(4.0)
+}
+
+fn pill_radius() -> f32 {
+    scaled(20.0)
+}
+
+fn pill_height() -> f32 {
+    base_icon() + 2.0 * padding_y()
+}
+
+/// What the dock keeps windows out of, at the bottom of the screen.
+pub fn reserved_height() -> f32 {
+    pill_height() + MARGIN
+}
+
+/// Extra room between the apps and the places, where the separator line goes.
+fn separator_gap() -> f32 {
+    scaled(12.0)
+}
+
+fn separator_height() -> f32 {
+    base_icon() * 0.75
+}
+
+/// Room above the pill for an icon dragged toward removal, with its label.
+fn drag_headroom() -> f32 {
+    REMOVE_DISTANCE + base_icon() + LABEL_GAP + LABEL_HEIGHT + 4.0
+}
+
+fn launch_height() -> f32 {
+    base_icon() * 0.5
+}
+
+fn attention_height() -> f32 {
+    base_icon() * 0.6
+}
 
 /// How many icon slots to either side of the pointer magnification reaches.
 const INFLUENCE: f32 = 2.5;
@@ -67,15 +130,11 @@ const MENU_GAP: f32 = 26.0;
 
 /// How far above the pill the pointer has to drag a pinned icon to remove it.
 const REMOVE_DISTANCE: f32 = 40.0;
-/// Room above the pill for an icon dragged toward removal, with its label.
-const DRAG_HEADROOM: f32 = REMOVE_DISTANCE + ICON_SIZE + LABEL_GAP + LABEL_HEIGHT + 4.0;
 
 /// One launch bounce: up and back down, in seconds.
 const LAUNCH_HOP: f32 = 0.7;
-const LAUNCH_HEIGHT: f32 = ICON_SIZE * 0.5;
 /// One attention bounce, then a pause as long as the hop.
 const ATTENTION_HOP: f32 = 0.6;
-const ATTENTION_HEIGHT: f32 = ICON_SIZE * 0.6;
 
 #[derive(Debug)]
 pub struct Item {
@@ -128,7 +187,7 @@ pub fn place_slot(layout: &Layout, offset: usize) -> usize {
 pub fn next_minimized_tile(layout: &Layout) -> Option<Rectangle> {
     let trash = *layout.icons.get(place_slot(layout, 1))?;
     Some(Rectangle {
-        x: trash.x - (ICON_SIZE + SPACING) / 2.0,
+        x: trash.x - (base_icon() + spacing()) / 2.0,
         ..trash
     })
 }
@@ -146,14 +205,14 @@ fn hop(t: f32, period: f32) -> f32 {
 
 /// How far up a launching icon is, `t` seconds after the launch.
 pub fn launch_bounce(t: f32) -> f32 {
-    hop(t, LAUNCH_HOP) * LAUNCH_HEIGHT
+    hop(t, LAUNCH_HOP) * launch_height()
 }
 
 /// How far up an icon asking for attention is: a hop, then a pause, repeating.
 pub fn attention_bounce(t: f32) -> f32 {
     let t = t % (2.0 * ATTENTION_HOP);
     if t < ATTENTION_HOP {
-        hop(t, ATTENTION_HOP) * ATTENTION_HEIGHT
+        hop(t, ATTENTION_HOP) * attention_height()
     } else {
         0.0
     }
@@ -220,15 +279,18 @@ pub struct Label {
 /// Room above the pill: for the largest icon and the label over it, or for dragging an icon
 /// out, whichever needs more.
 fn headroom(max_icon: f32) -> f32 {
-    ((max_icon - ICON_SIZE).max(0.0) + LABEL_GAP + LABEL_HEIGHT + 4.0).max(DRAG_HEADROOM)
+    ((max_icon - base_icon()).max(0.0) + LABEL_GAP + LABEL_HEIGHT + 4.0).max(drag_headroom())
 }
 
 /// How long the dock takes to make room for a new tile or close up behind one, from Tahoe's.
 const ROOM_TIME: Duration = Duration::from_millis(330);
+/// The least of its room a new slot starts with: what's in a tile is sized from it, and text can't
+/// have no size at all.
+const MIN_GROWN: f32 = 0.02;
 
 /// How tall the dock's surface is. `max_icon` is the size of a fully magnified icon.
 pub fn surface_height(max_icon: f32) -> f32 {
-    (headroom(max_icon) + PILL_HEIGHT + MARGIN).ceil()
+    (headroom(max_icon) + pill_height() + MARGIN).ceil()
 }
 
 /// `max_icon` is the size of a fully magnified icon (the plain icon size without magnification).
@@ -240,7 +302,7 @@ pub fn settings(max_icon: f32) -> NewLayerShellSettings {
         size: Some((0, height as u32)),
         // Only the pill reserves space; the room above it overlaps windows, and the input
         // region lets clicks there through.
-        exclusive_zone: Some(RESERVED_HEIGHT as i32),
+        exclusive_zone: Some(reserved_height() as i32),
         keyboard_interactivity: KeyboardInteractivity::None,
         namespace: Some(String::from("macshell-dock")),
         ..Default::default()
@@ -250,20 +312,21 @@ pub fn settings(max_icon: f32) -> NewLayerShellSettings {
 /// Unmagnified center of slot `index`, in pill coordinates, with `apps` app slots before the
 /// separator.
 fn base_center(index: usize, apps: usize) -> f32 {
-    let gap = if index >= apps { SEPARATOR_GAP } else { 0.0 };
-    PADDING_X + index as f32 * (ICON_SIZE + SPACING) + gap + ICON_SIZE / 2.0
+    let gap = if index >= apps { separator_gap() } else { 0.0 };
+    padding_x() + index as f32 * (base_icon() + spacing()) + gap + base_icon() / 2.0
 }
 
 fn icon_size(index: usize, apps: usize, pointer: &Pointer, max_icon: f32) -> f32 {
     let Some(base_x) = pointer.base_x else {
-        return ICON_SIZE;
+        return base_icon();
     };
-    let distance = (base_x - base_center(index, apps)).abs() / (INFLUENCE * (ICON_SIZE + SPACING));
+    let distance =
+        (base_x - base_center(index, apps)).abs() / (INFLUENCE * (base_icon() + spacing()));
     if distance >= 1.0 {
-        return ICON_SIZE;
+        return base_icon();
     }
     let falloff = (1.0 + (PI * distance).cos()) / 2.0;
-    ICON_SIZE + (max_icon - ICON_SIZE) * falloff * pointer.amount
+    base_icon() + (max_icon - base_icon()) * falloff * pointer.amount
 }
 
 /// How the dock's slots are opening and closing right now, as tiles come and go.
@@ -349,7 +412,9 @@ impl RoomTracker {
             grown: self
                 .growing
                 .iter()
-                .filter_map(|(key, started)| Some((slot_of(key)?, room_eased(*started, now))))
+                .filter_map(|(key, started)| {
+                    Some((slot_of(key)?, room_eased(*started, now).max(MIN_GROWN)))
+                })
                 .collect(),
             closing: self
                 .closing
@@ -387,25 +452,25 @@ pub fn layout(
         room.closing
             .iter()
             .filter(|(slot, _)| *slot == index)
-            .map(|(_, left)| left * (ICON_SIZE + SPACING))
+            .map(|(_, left)| left * (base_icon() + spacing()))
             .sum()
     };
-    let spacing: f32 = (0..sizes.len())
-        .map(|index| SPACING * grown(index) + gap_before(index))
+    let room_between: f32 = (0..sizes.len())
+        .map(|index| spacing() * grown(index) + gap_before(index))
         .sum();
     // The last slot, which is always there, has nothing after it.
-    let icons_width = sizes.iter().sum::<f32>() + spacing - SPACING + SEPARATOR_GAP;
+    let icons_width = sizes.iter().sum::<f32>() + room_between - spacing() + separator_gap();
 
-    let width = (2.0 * PADDING_X + icons_width).round();
+    let width = (2.0 * padding_x() + icons_width).round();
     let pill = Rectangle {
         x: ((surface_width - width) / 2.0).round(),
         y: headroom(max_icon).round(),
         width,
-        height: PILL_HEIGHT,
+        height: pill_height(),
     };
 
-    let icon_bottom = pill.y + PADDING_Y + ICON_SIZE;
-    let mut x = pill.x + PADDING_X;
+    let icon_bottom = pill.y + padding_y() + base_icon();
+    let mut x = pill.x + padding_x();
     let mut separator = 0.0;
     let icons: Vec<Rectangle> = sizes
         .iter()
@@ -413,8 +478,8 @@ pub fn layout(
         .map(|(index, &size)| {
             x += gap_before(index);
             if index == apps {
-                separator = x - SPACING / 2.0 + SEPARATOR_GAP / 2.0;
-                x += SEPARATOR_GAP;
+                separator = x - spacing() / 2.0 + separator_gap() / 2.0;
+                x += separator_gap();
             }
             let rect = Rectangle {
                 x,
@@ -422,7 +487,7 @@ pub fn layout(
                 width: size,
                 height: size,
             };
-            x += size + SPACING * grown(index);
+            x += size + spacing() * grown(index);
             rect
         })
         .collect();
@@ -489,24 +554,26 @@ fn drag_layout(
     let trailing = Place::ALL.len() + minimized;
     let slots = app_slots + trailing;
 
-    let width =
-        2.0 * PADDING_X + slots as f32 * ICON_SIZE + (slots - 1) as f32 * SPACING + SEPARATOR_GAP;
+    let width = 2.0 * padding_x()
+        + slots as f32 * base_icon()
+        + (slots - 1) as f32 * spacing()
+        + separator_gap();
     let pill = Rectangle {
         x: ((surface_width - width) / 2.0).round(),
         y: pill_y,
         width,
-        height: PILL_HEIGHT,
+        height: pill_height(),
     };
 
     let dragged = Rectangle {
         x: drag.pointer.x - drag.grab.x,
         y: (drag.pointer.y - drag.grab.y).max(0.0),
-        width: ICON_SIZE,
-        height: ICON_SIZE,
+        width: base_icon(),
+        height: base_icon(),
     };
-    let slot_x = |slot: usize| pill.x + PADDING_X + slot as f32 * (ICON_SIZE + SPACING);
+    let slot_x = |slot: usize| pill.x + padding_x() + slot as f32 * (base_icon() + spacing());
     let target = (!removing).then(|| {
-        let slot = (dragged.x - slot_x(0)) / (ICON_SIZE + SPACING);
+        let slot = (dragged.x - slot_x(0)) / (base_icon() + spacing());
         slot.round().clamp(0.0, (count - 1) as f32) as usize
     });
 
@@ -521,21 +588,21 @@ fn drag_layout(
             }
             let rect = Rectangle {
                 x: slot_x(slot),
-                y: pill.y + PADDING_Y,
-                width: ICON_SIZE,
-                height: ICON_SIZE,
+                y: pill.y + padding_y(),
+                width: base_icon(),
+                height: base_icon(),
             };
             slot += 1;
             rect
         })
         .collect();
 
-    let separator = slot_x(app_slots) - SPACING / 2.0 + SEPARATOR_GAP / 2.0;
+    let separator = slot_x(app_slots) - spacing() / 2.0 + separator_gap() / 2.0;
     icons.extend((0..trailing).map(|index| Rectangle {
-        x: slot_x(app_slots + index) + SEPARATOR_GAP,
-        y: pill.y + PADDING_Y,
-        width: ICON_SIZE,
-        height: ICON_SIZE,
+        x: slot_x(app_slots + index) + separator_gap(),
+        y: pill.y + padding_y(),
+        width: base_icon(),
+        height: base_icon(),
     }));
 
     let label = removing.then(|| {
@@ -572,7 +639,7 @@ fn drag_layout(
 /// Where icon `index` of `layout` was grabbed, at the icon's unmagnified size.
 pub fn grab_offset(layout: &Layout, index: usize, pointer: Point) -> Option<Vector> {
     let icon = layout.icons.get(index)?;
-    let scale = ICON_SIZE / icon.width;
+    let scale = base_icon() / icon.width;
     Some(Vector::new(
         (pointer.x - icon.x) * scale,
         (pointer.y - icon.y) * scale,
@@ -582,13 +649,16 @@ pub fn grab_offset(layout: &Layout, index: usize, pointer: Point) -> Option<Vect
 /// Horizontal extent of icon `index`'s slot: the icon plus half the spacing on either side, so
 /// there are no dead gaps between icons.
 fn slot(icon: &Rectangle) -> (f32, f32) {
-    (icon.x - SPACING / 2.0, icon.x + icon.width + SPACING / 2.0)
+    (
+        icon.x - spacing() / 2.0,
+        icon.x + icon.width + spacing() / 2.0,
+    )
 }
 
 /// Converts a surface x to unmagnified pill coordinates. Magnification is computed from this,
 /// so a pointer that doesn't move keeps the dock still even though the icons around it grew.
 pub fn base_x(layout: &Layout, surface_x: f32) -> f32 {
-    let slot_width = ICON_SIZE + SPACING;
+    let slot_width = base_icon() + spacing();
     let (Some(first), Some(last)) = (layout.icons.first(), layout.icons.last()) else {
         return surface_x - layout.pill.x;
     };
@@ -620,7 +690,7 @@ pub fn item_at(layout: &Layout, point: Point) -> Option<usize> {
 pub fn material_shapes(layout: &Layout) -> Vec<Shape> {
     let mut shapes = vec![Shape {
         rect: rect_i32(layout.pill),
-        radius: RADIUS as i32,
+        radius: pill_radius() as i32,
         style: material::Style::Liquid,
     }];
     if let Some(label) = &layout.label {
@@ -894,14 +964,14 @@ pub fn view<'a>(
             border: Border {
                 color: Color::from_rgba(1.0, 1.0, 1.0, border),
                 width: 1.0,
-                radius: RADIUS.into(),
+                radius: pill_radius().into(),
             },
             ..Default::default()
         });
 
     let mut layers: Vec<Element<'a>> = vec![pin(pill).x(layout.pill.x).y(layout.pill.y).into()];
 
-    let dot_y = layout.pill.y + PADDING_Y + ICON_SIZE + DOT_GAP;
+    let dot_y = layout.pill.y + padding_y() + base_icon() + DOT_GAP;
     for (index, (item, rect)) in items.iter().zip(&layout.icons).enumerate() {
         if layout.dragged == Some(index) {
             continue;
@@ -959,7 +1029,7 @@ pub fn view<'a>(
 
     let separator = container(Space::new())
         .width(1)
-        .height(SEPARATOR_HEIGHT)
+        .height(separator_height())
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.3))),
             ..Default::default()
@@ -967,7 +1037,7 @@ pub fn view<'a>(
     layers.push(
         pin(separator)
             .x(layout.separator - 0.5)
-            .y(layout.pill.y + PADDING_Y + (ICON_SIZE - SEPARATOR_HEIGHT) / 2.0)
+            .y(layout.pill.y + padding_y() + (base_icon() - separator_height()) / 2.0)
             .into(),
     );
 
@@ -1023,7 +1093,7 @@ fn minimized_tile(window: &Minimized, size: f32) -> Element<'_> {
 
 /// A red count on an icon's corner, like macOS's.
 fn count_badge<'a>(count: u32, icon: &Rectangle, lift: f32) -> Element<'a> {
-    let scale = icon.width / ICON_SIZE;
+    let scale = icon.width / base_icon();
     let size = BADGE_SIZE * scale;
     let label = if count > 99 {
         String::from("99+")
@@ -1156,7 +1226,7 @@ mod room_tests {
 
         tracker.update(keys(&["a", "new", "b", "trash"]), true, start);
         let room = tracker.room(start);
-        assert_eq!(room.grown.get(&1), Some(&0.0));
+        assert_eq!(room.grown.get(&1), Some(&MIN_GROWN));
         assert!(room.closing.is_empty());
         let room = tracker.room(start + ROOM_TIME / 2);
         assert!((room.grown[&1] - 0.5).abs() < 0.01);
@@ -1176,5 +1246,17 @@ mod room_tests {
         tracker.update(keys(&["a", "b", "trash"]), false, start);
         tracker.update(keys(&["b", "a", "trash"]), true, start);
         assert!(!tracker.is_animating());
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn icon_sizes_stay_in_range_on_whole_pixels() {
+        assert_eq!(fit_icon(1000.0), ICON_RANGE.1);
+        assert_eq!(fit_icon(1.0), ICON_RANGE.0);
+        assert_eq!(fit_icon(50.4), 50.0);
     }
 }

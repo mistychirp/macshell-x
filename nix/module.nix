@@ -67,6 +67,11 @@ let
     export XDG_SESSION_DESKTOP=KDE
     export KDE_SESSION_VERSION=6
     export QT_PLUGIN_PATH=${kwin-macshell}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}
+    # The cursor, before KWin starts, since that's when it reads it. Apps that draw their own go by
+    # the variables.
+    export XCURSOR_THEME=macOS XCURSOR_SIZE=24
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kcminputrc --group Mouse --key cursorTheme macOS
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kcminputrc --group Mouse --key cursorSize 24
 
     exec ${kwin}/bin/kwin_wayland_wrapper --xwayland --exit-with-session ${startup}
   '';
@@ -99,6 +104,8 @@ in
       kwin-macshell
       # tuigreet lists the sessions it finds in the system profile.
       session
+      # The session's cursor, from https://github.com/ful1e5/apple_cursor
+      pkgs.apple-cursor
     ];
 
     systemd.user.targets.macshell-session = {

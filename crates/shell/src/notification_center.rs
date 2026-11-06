@@ -50,7 +50,7 @@ const PIXELS_PER_ROW: f32 = 25.0;
 /// The height of Notification Center's surface on a screen this tall: down to the dock. Any taller
 /// and the compositor slides it up over the bar to keep it out of the dock's reserved area.
 pub fn height(screen_height: f32) -> f32 {
-    (screen_height - menubar::HEIGHT as f32 - dock::RESERVED_HEIGHT - 16.0).max(100.0)
+    (screen_height - menubar::HEIGHT as f32 - dock::reserved_height() - 16.0).max(100.0)
 }
 
 /// What can be scrolled past.

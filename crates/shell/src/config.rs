@@ -31,6 +31,8 @@ pub struct DesktopConfig {
 pub struct DockConfig {
     /// Desktop entry ids (or app ids) kept in the dock even when they aren't running.
     pub pinned: Vec<String>,
+    /// How big its icons are, in logical pixels.
+    pub icon_size: f32,
     /// Grow icons near the pointer.
     pub magnification: bool,
     /// Size of the icon right under the pointer, in logical pixels (icons are 48).
@@ -41,6 +43,7 @@ impl Default for DockConfig {
     fn default() -> Self {
         Self {
             pinned: Vec::new(),
+            icon_size: crate::dock::DEFAULT_ICON,
             magnification: true,
             magnified_size: 80.0,
         }
@@ -80,6 +83,10 @@ pub fn save_magnification(magnification: bool) -> io::Result<()> {
 }
 
 /// Rewrites `[dock] magnified_size`, the same way.
+pub fn save_icon_size(size: f32) -> io::Result<()> {
+    save("dock", "icon_size", toml_edit::value(f64::from(size)))
+}
+
 pub fn save_magnified_size(size: f32) -> io::Result<()> {
     save("dock", "magnified_size", toml_edit::value(f64::from(size)))
 }

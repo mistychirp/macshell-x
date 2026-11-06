@@ -598,6 +598,7 @@ impl Shell {
         let dock = dock::items(&config.dock.pinned, &[], &BTreeMap::new(), &mut apps);
 
         let (menubar_id, open_menubar) = Message::layershell_open(menubar::settings());
+        dock::set_base_icon(config.dock.icon_size);
         let dock_max_icon = dock_max_icon(&config.dock);
         let (dock_id, open_dock) = Message::layershell_open(dock::settings(dock_max_icon));
         let (desktop_id, open_desktop) = Message::layershell_open(desktop::settings());
@@ -1135,7 +1136,7 @@ impl Shell {
             Message::DockPointerMoved(point) => {
                 self.dock_pointer.base_x = Some(dock::base_x(&self.dock_layout, point.x));
                 self.dock_pointer.hovered = dock::item_at(&self.dock_layout, point);
-                if self.dock_max_icon > dock::ICON_SIZE {
+                if self.dock_max_icon > dock::base_icon() {
                     self.dock_target = 1.0;
                 }
                 return self.relayout_dock();
@@ -3284,8 +3285,17 @@ impl Shell {
             self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
             tasks.push(self.relayout_dock());
         }
+        let icon_was = dock::base_icon();
+        dock::set_base_icon(config.dock.icon_size);
+        let icon_changed = dock::base_icon() != icon_was;
+        if icon_changed {
+            tasks.push(Task::done(Message::ExclusiveZoneChange {
+                id: self.dock_id,
+                zone_size: dock::reserved_height() as i32,
+            }));
+        }
         let max_icon = dock_max_icon(&config.dock);
-        if max_icon != self.dock_max_icon {
+        if max_icon != self.dock_max_icon || icon_changed {
             self.dock_max_icon = max_icon;
             self.dock_target = 0.0;
             tasks.push(Task::done(Message::SizeChange {
@@ -4254,9 +4264,9 @@ impl Shell {
 /// The size of a fully magnified icon, which is the plain size without magnification.
 fn dock_max_icon(config: &config::DockConfig) -> f32 {
     if config.magnification {
-        config.magnified_size.clamp(dock::ICON_SIZE, 128.0)
+        config.magnified_size.clamp(dock::base_icon(), 128.0)
     } else {
-        dock::ICON_SIZE
+        dock::base_icon()
     }
 }
 
