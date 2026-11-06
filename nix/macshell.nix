@@ -2,6 +2,7 @@
 {
   lib,
   rustPlatform,
+  runtimeShell,
   pkg-config,
   libxkbcommon,
   wayland,
@@ -38,6 +39,19 @@ rustPlatform.buildRustPackage {
     install -Dm0644 contrib/macshell-settings.desktop $out/share/applications/macshell-settings.desktop
     substituteInPlace $out/share/applications/macshell-settings.desktop \
       --replace-fail @macshell@ $out/bin/macshell
+    cat > $out/bin/macshell-settings <<EOF
+    #!${runtimeShell}
+    exec $out/bin/macshell settings "\$@"
+    EOF
+    chmod +x $out/bin/macshell-settings
+
+    # KWin only reads the first desktop entry naming an executable, so a second one for this binary
+    # can take window management away from the shell.
+    entries=$(grep -lE "^Exec=$out/bin/macshell( |\$)" $out/share/applications/*.desktop | wc -l)
+    if [ "$entries" != 1 ]; then
+      echo "expected one desktop entry to run $out/bin/macshell, found $entries" >&2
+      exit 1
+    fi
   '';
 
   # wgpu and the Wayland client stack load these with dlopen. They go in the binary's runpath
