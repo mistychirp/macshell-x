@@ -110,11 +110,15 @@ struct Item {
 enum Gesture {
     /// A rubber band, and what was selected before it, which it adds to.
     Rubber { start: Point },
-    /// Dragging the selected icons.
+    /// The selected icons were pressed, and might be dragged.
     Icons {
         start: Point,
         from: Vec<(PathBuf, Point)>,
-        moved: bool,
+    },
+    /// The selected icons are being dragged, as a drag and drop, so they can go anywhere.
+    Dragging {
+        start: Point,
+        from: Vec<(PathBuf, Point)>,
     },
 }
 
@@ -149,6 +153,8 @@ pub struct Desktop {
     pub rename: Option<Rename>,
     /// Ctrl or Shift, which add to the selection.
     pub adding: bool,
+    /// The folder a drag would go in, if dropped now.
+    drop_folder: Option<PathBuf>,
 }
 
 /// What a press on the desktop turned out to be about.
@@ -433,7 +439,8 @@ impl Desktop {
         })
     }
 
-    pub fn pointer_moved(&mut self, point: Point) {
+    /// Returns whether a drag of the selection should start.
+    pub fn pointer_moved(&mut self, point: Point) -> bool {
         self.pointer = point;
         match &mut self.gesture {
             Some(Gesture::Rubber { start }) => {
@@ -454,21 +461,77 @@ impl Desktop {
                 }
                 self.selected = selected;
             }
-            Some(Gesture::Icons { start, from, moved }) => {
+            Some(Gesture::Icons { start, from }) => {
                 let delta = point - *start;
-                if !*moved && delta.x.hypot(delta.y) < DRAG_DISTANCE {
-                    return;
-                }
-                *moved = true;
-                for (path, origin) in from.iter() {
-                    if let Some(item) = self.items.iter_mut().find(|item| item.entry.path == *path)
-                    {
-                        item.position = *origin + delta;
-                    }
+                if delta.x.hypot(delta.y) >= DRAG_DISTANCE {
+                    self.gesture = Some(Gesture::Dragging {
+                        start: *start,
+                        from: std::mem::take(from),
+                    });
+                    return true;
                 }
             }
-            None => {}
+            Some(Gesture::Dragging { .. }) | None => {}
         }
+        false
+    }
+
+    /// The icons of what's selected, for a picture of them being dragged.
+    pub fn selected_icons(&self) -> Vec<image::Handle> {
+        self.items
+            .iter()
+            .filter(|item| self.selected.contains(&item.entry.path))
+            .filter_map(|item| item.icon.clone())
+            .collect()
+    }
+
+    /// A drag of the selection is over, wherever it went.
+    pub fn drag_ended(&mut self) {
+        if matches!(self.gesture, Some(Gesture::Dragging { .. })) {
+            self.gesture = None;
+        }
+        self.drop_folder = None;
+    }
+
+    /// The selection was dragged to here on the desktop itself.
+    pub fn moved_selection_to(&mut self, point: Point) {
+        let Some(Gesture::Dragging { start, from }) = self.gesture.take() else {
+            return;
+        };
+        let delta = point - start;
+        for (path, origin) in from {
+            if let Some(index) = self.items.iter().position(|item| item.entry.path == path) {
+                self.place(index, origin + delta);
+            }
+        }
+        // Sorted icons go back to their order, like on macOS.
+        self.arrange();
+        self.save();
+    }
+
+    /// The folder under this point that isn't itself being dragged, if there is one.
+    pub fn folder_at(&self, point: Point) -> Option<PathBuf> {
+        let item = &self.items[self.item_at(point)?];
+        let dragged = matches!(self.gesture, Some(Gesture::Dragging { .. }))
+            && self.selected.contains(&item.entry.path);
+        (item.entry.is_dir && !dragged).then(|| item.entry.path.clone())
+    }
+
+    /// A drag's over this point, which lights up a folder it could go in.
+    pub fn drag_over(&mut self, point: Option<Point>) {
+        self.drop_folder = point.and_then(|point| self.folder_at(point));
+    }
+
+    /// Files that were just dropped go around this point, one cell apart.
+    pub fn place_dropped(&mut self, names: &[String], point: Point) {
+        let columns = 4;
+        for (index, name) in names.iter().enumerate() {
+            let x = point.x - GRID_WIDTH / 2.0 - (index % columns) as f32 * GRID_WIDTH;
+            let y = point.y - BOX_SIZE / 2.0 + (index / columns) as f32 * GRID_HEIGHT;
+            self.positions
+                .insert(name.clone(), (self.size.width - x, y));
+        }
+        self.save();
     }
 
     /// The left button went down at the pointer.
@@ -506,40 +569,24 @@ impl Desktop {
             .filter(|item| self.selected.contains(&item.entry.path))
             .map(|item| (item.entry.path.clone(), item.position))
             .collect();
-        self.gesture = Some(Gesture::Icons {
-            start: point,
-            from,
-            moved: false,
-        });
+        self.gesture = Some(Gesture::Icons { start: point, from });
         Pressed::Nothing
     }
 
     /// The left button came up.
     pub fn released(&mut self) {
-        match self.gesture.take() {
-            Some(Gesture::Icons {
-                from, moved: true, ..
-            }) => {
-                let dragged: Vec<usize> = (0..self.items.len())
-                    .filter(|index| {
-                        from.iter()
-                            .any(|(path, _)| *path == self.items[*index].entry.path)
-                    })
-                    .collect();
-                for index in dragged {
-                    self.place(index, self.items[index].position);
-                }
-                // Sorted icons go back to their order, like on macOS.
-                self.arrange();
-                self.save();
+        if let Some(Gesture::Icons { from, .. }) = &self.gesture
+            && from.len() > 1
+            && !self.adding
+        {
+            // A plain click on one of several selected icons narrows it down to that one.
+            if let Some(index) = self.item_at(self.pointer) {
+                self.selected = HashSet::from([self.items[index].entry.path.clone()]);
             }
-            Some(Gesture::Icons { from, .. }) if from.len() > 1 && !self.adding => {
-                // A plain click on one of several selected icons narrows it down to that one.
-                if let Some(index) = self.item_at(self.pointer) {
-                    self.selected = HashSet::from([self.items[index].entry.path.clone()]);
-                }
-            }
-            _ => {}
+        }
+        // A drag and drop ends when it says so, and the pointer's elsewhere by then anyway.
+        if !matches!(self.gesture, Some(Gesture::Dragging { .. })) {
+            self.gesture = None;
         }
     }
 
@@ -679,10 +726,16 @@ impl Desktop {
         let mut selected: Vec<_> = self.selected.iter().collect();
         selected.sort();
         format!(
-            "{items:?} {selected:?} {:?} {:?} {active}",
+            "{items:?} {selected:?} {:?} {:?} {active} {:?} {}",
             self.rubber_band(),
             self.rename.as_ref().map(|rename| &rename.value),
+            self.drop_folder,
+            self.is_dragging(),
         )
+    }
+
+    fn is_dragging(&self) -> bool {
+        matches!(self.gesture, Some(Gesture::Dragging { .. }))
     }
 
     fn rubber_band(&self) -> Option<Rectangle> {
@@ -718,13 +771,16 @@ pub fn rename_field() -> iced_widget::Id {
 pub fn view<'a>(desktop: &'a Desktop, active: bool, below: Vec<Element<'a>>) -> Element<'a> {
     let mut layers = below;
     for item in &desktop.items {
-        let selected = desktop.selected.contains(&item.entry.path);
+        let in_selection = desktop.selected.contains(&item.entry.path);
+        // A folder that would take what's being dragged lights up like it's selected.
+        let selected = in_selection || desktop.drop_folder.as_ref() == Some(&item.entry.path);
+        let dimmed = in_selection && desktop.is_dragging();
         let renaming = desktop
             .rename
             .as_ref()
             .filter(|rename| rename.path == item.entry.path);
         layers.push(
-            pin(item_view(item, selected, active, renaming))
+            pin(item_view(item, selected, dimmed, active, renaming))
                 .x(item.position.x)
                 .y(item.position.y)
                 .into(),
@@ -763,6 +819,7 @@ pub fn view<'a>(desktop: &'a Desktop, active: bool, below: Vec<Element<'a>>) -> 
 fn item_view<'a>(
     item: &'a Item,
     selected: bool,
+    dimmed: bool,
     active: bool,
     renaming: Option<&'a Rename>,
 ) -> Element<'a> {
@@ -770,6 +827,7 @@ fn item_view<'a>(
         Some(handle) => image(handle.clone())
             .width(ICON_SIZE)
             .height(ICON_SIZE)
+            .opacity(if dimmed { 0.4_f32 } else { 1.0_f32 })
             .into(),
         None => Space::new().width(ICON_SIZE).height(ICON_SIZE).into(),
     };
@@ -959,6 +1017,80 @@ pub fn new_folder(folder: &Path) -> io::Result<PathBuf> {
         }
     }
     unreachable!("there's always another number")
+}
+
+/// Moves files into a folder, without replacing anything: a name that's taken gets a number. Between
+/// disks, it copies them instead, like on macOS. Returns the names they ended up with.
+pub async fn move_into(paths: Vec<PathBuf>, folder: PathBuf) -> Vec<String> {
+    tokio::task::spawn_blocking(move || {
+        paths
+            .iter()
+            .filter_map(|path| {
+                move_one(path, &folder)
+                    .inspect_err(|err| log::warn!("can't move {}: {err}", path.display()))
+                    .ok()
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn move_one(path: &Path, folder: &Path) -> io::Result<String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("it has no name"))?;
+    // Already there.
+    if path.parent() == Some(folder) {
+        return Ok(name.to_string_lossy().into_owned());
+    }
+    if folder.starts_with(path) {
+        return Err(io::Error::other("a folder can't go inside itself"));
+    }
+    let target = free_name(folder, name);
+    match fs::rename(path, &target) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::CrossesDevices => copy_all(path, &target)?,
+        Err(err) => return Err(err),
+    }
+    Ok(target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default())
+}
+
+/// A path in `folder` for a file called `name` that nothing's using yet.
+fn free_name(folder: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let plain = folder.join(name);
+    if !plain.exists() && !plain.is_symlink() {
+        return plain;
+    }
+    let original = Path::new(name);
+    let stem = original.file_stem().unwrap_or(name).to_string_lossy();
+    let extension = original
+        .extension()
+        .map(|extension| format!(".{}", extension.to_string_lossy()))
+        .unwrap_or_default();
+    (2..)
+        .map(|number| folder.join(format!("{stem} {number}{extension}")))
+        .find(|path| !path.exists() && !path.is_symlink())
+        .unwrap_or(plain)
+}
+
+fn copy_all(from: &Path, to: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(from)?;
+    if metadata.is_symlink() {
+        std::os::unix::fs::symlink(fs::read_link(from)?, to)
+    } else if metadata.is_dir() {
+        fs::create_dir(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            copy_all(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        fs::copy(from, to).map(|_| ())
+    }
 }
 
 /// Shows the file manager's properties window for these.

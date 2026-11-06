@@ -3,13 +3,15 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::{fs, process};
 
+use enumflags2::BitFlags;
 use iced_futures::Subscription;
 use iced_futures::futures::channel::mpsc;
 use iced_futures::futures::{FutureExt as _, SinkExt as _, Stream, StreamExt as _, future, stream};
 use iced_widget::image;
-use zbus::fdo::{RequestNameFlags, RequestNameReply};
+use zbus::fdo::RequestNameReply;
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::proxy::CacheProperties;
@@ -22,6 +24,8 @@ use crate::{dbus, menu};
 
 const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
+/// How many times to ask for the watcher's name if the asking fails.
+const WATCHER_ATTEMPTS: usize = 5;
 const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
 const DEFAULT_ITEM_PATH: &str = "/StatusNotifierItem";
 /// Used when an app gives neither a name nor pixels.
@@ -350,34 +354,37 @@ impl OwnWatcher {
     ) -> zbus::Result<()>;
 }
 
-/// Serves the watcher, if no one else is. Returns its list of items if so.
-async fn serve_watcher(connection: &zbus::Connection) -> Option<Arc<Mutex<Vec<String>>>> {
+/// Serves the watcher, so that there's one whatever else is running. Plasma's comes from kded, which
+/// isn't always there, since only some apps bring it. If something else has the name, this waits in
+/// line for it and takes over when it goes. Returns the list of items for when it does.
+async fn serve_watcher(connection: &zbus::Connection) -> Arc<Mutex<Vec<String>>> {
     let items = Arc::new(Mutex::new(Vec::new()));
     let watcher = OwnWatcher {
         items: items.clone(),
     };
-    connection
-        .object_server()
-        .at(WATCHER_PATH, watcher)
-        .await
-        .inspect_err(|err| log::warn!("can't serve a tray watcher: {err}"))
-        .ok()?;
-    match connection
-        .request_name_with_flags(WATCHER_SERVICE, RequestNameFlags::DoNotQueue.into())
-        .await
-    {
-        Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {
-            log::info!("keeping the tray's list of items ourselves");
-            Some(items)
-        }
-        _ => {
-            let _ = connection
-                .object_server()
-                .remove::<OwnWatcher, _>(WATCHER_PATH)
-                .await;
-            None
-        }
+    if let Err(err) = connection.object_server().at(WATCHER_PATH, watcher).await {
+        log::warn!("can't serve a tray watcher: {err}");
+        return items;
     }
+    for _ in 0..WATCHER_ATTEMPTS {
+        // With no flags, it queues instead of giving up.
+        match connection
+            .request_name_with_flags(WATCHER_SERVICE, BitFlags::empty())
+            .await
+        {
+            Ok(RequestNameReply::InQueue) => {
+                log::info!("something else has the tray's list of items, for now");
+                return items;
+            }
+            Ok(_) => {
+                log::info!("keeping the tray's list of items ourselves");
+                return items;
+            }
+            Err(err) => log::warn!("can't ask for the tray watcher's name: {err}"),
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    items
 }
 
 async fn signals(connection: &zbus::Connection, interface: &'static str) -> Option<MessageStream> {
@@ -436,7 +443,7 @@ fn follow() -> impl Stream<Item = Vec<Item>> {
                     return;
                 };
                 // Every app coming and going is announced; only ones we're showing matter.
-                if !is_relevant(&change, &last, own.as_deref()) {
+                if !is_relevant(&change, &last, &own) {
                     continue;
                 }
                 // Apps tend to change several things at once.
@@ -454,11 +461,7 @@ fn follow() -> impl Stream<Item = Vec<Item>> {
 
 /// Whether a signal could change what's shown. A name disappearing also ends its items, in our list
 /// if we're the one keeping it.
-fn is_relevant(
-    change: &message::Message,
-    shown: &[Item],
-    own: Option<&Mutex<Vec<String>>>,
-) -> bool {
+fn is_relevant(change: &message::Message, shown: &[Item], own: &Mutex<Vec<String>>) -> bool {
     let header = change.header();
     if header
         .interface()
@@ -480,15 +483,17 @@ fn is_relevant(
     let Ok((name, _, new_owner)) = change.body().deserialize::<(String, String, String)>() else {
         return false;
     };
+    // Whoever has the list now may have a different one.
+    if name == WATCHER_SERVICE {
+        return true;
+    }
     if !new_owner.is_empty() {
         return false;
     }
     let mut relevant = shown.iter().any(|item| item.service == name);
-    if let Some(own) = own {
-        let mut items = own.lock().expect("watcher's list");
-        let before = items.len();
-        items.retain(|address| split_address(address).0 != name);
-        relevant |= items.len() != before;
-    }
+    let mut items = own.lock().expect("watcher's list");
+    let before = items.len();
+    items.retain(|address| split_address(address).0 != name);
+    relevant |= items.len() != before;
     relevant
 }

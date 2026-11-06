@@ -2136,6 +2136,7 @@ name = "macshell"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "enumflags2",
  "env_logger",
  "freedesktop-desktop-entry",
  "freedesktop-icons",

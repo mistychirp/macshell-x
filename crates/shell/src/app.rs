@@ -17,8 +17,9 @@ use iced_layershell::to_layer_message;
 use iced_widget::core::{Color, Event, Point, Size, Theme, event, keyboard, mouse, theme, window};
 use iced_widget::renderer::Renderer;
 use iced_widget::{Space, image};
-use wayland_client::Connection;
+use wayland_client::backend::ObjectId;
 use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::{Connection, Proxy as _};
 
 use crate::alert::{self, Alert};
 use crate::apps::{self, App, AppIndex};
@@ -29,7 +30,7 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appmenu, audio, autostart, bluetooth, brightness, control, dbusmenu, desktop, dock, fonts,
+    appmenu, audio, autostart, bluetooth, brightness, control, dbusmenu, desktop, dnd, dock, fonts,
     icons, launcher, media, menu, menubar, network, notification_center, portal, stack, tray,
     wallpaper, widgets,
 };
@@ -43,6 +44,9 @@ pub fn run() -> Result<(), iced_layershell::Error> {
         .inspect_err(|err| log::error!("can't connect to Wayland: {err}"))
         .ok();
     let material = connection.as_ref().and_then(Material::new).map(Rc::new);
+    if let Some(connection) = &connection {
+        dnd::start(connection);
+    }
 
     daemon(
         move || Shell::new(material.clone()),
@@ -170,6 +174,12 @@ pub enum Message {
     /// The alert was answered: confirmed, or cancelled.
     AlertAnswered(bool),
     Desktop(desktop::Action),
+    /// News about drags over the shell's surfaces, or from them.
+    Dnd(dnd::Event),
+    /// The press's serial is ready for dragging the selection.
+    DesktopDragReady,
+    /// Files were moved to the desktop: their names, and where they were dropped.
+    DesktopReceived(Vec<String>, Point),
     Widget(widgets::Action),
     WidgetPhotoChosen(u64, Option<PathBuf>),
     WidgetPhotoLoaded(PathBuf, Option<image::Handle>),
@@ -294,6 +304,10 @@ struct Shell {
     wallpaper_loaded: Option<iced_runtime::image::Allocation>,
     desktop_id: IcedId,
     desktop: desktop::Desktop,
+    desktop_surface: Option<WlSurface>,
+    dock_surface: Option<ObjectId>,
+    /// Which of the shell's surfaces a drag is over.
+    drag_over: Option<ObjectId>,
     widgets: widgets::Widgets,
     gallery_id: Option<IcedId>,
     gallery_material: Option<MaterialSurface>,
@@ -477,6 +491,9 @@ impl Shell {
             wallpaper_loaded: None,
             desktop_id,
             desktop: desktop::Desktop::load(),
+            desktop_surface: None,
+            dock_surface: None,
+            drag_over: None,
             widgets: widgets::Widgets::load(),
             gallery_id: None,
             gallery_material: None,
@@ -944,7 +961,13 @@ impl Shell {
             {
                 self.screen_height = size.height;
                 self.desktop.set_size(size);
+                let reach = if self.desktop_surface.is_none() {
+                    self.reach_surface(id)
+                } else {
+                    Task::none()
+                };
                 return Task::batch([
+                    reach,
                     Task::done(Message::DesktopRefresh),
                     Task::done(Message::FetchWeather),
                     self.load_widget_photos(),
@@ -982,9 +1005,27 @@ impl Shell {
             Message::DesktopThumbnail(_, None) => {}
             Message::PointerMoved(id, point) if id == self.desktop_id => {
                 self.widgets.pointer_moved(point);
-                if !self.widgets.is_dragging() {
-                    self.desktop.pointer_moved(point);
+                if !self.widgets.is_dragging() && self.desktop.pointer_moved(point) {
+                    // A drag and drop needs the press's serial, which the event loop has.
+                    return iced_runtime::window::drag(self.desktop_id)
+                        .chain(Task::done(Message::DesktopDragReady));
                 }
+            }
+            Message::DesktopDragReady => {
+                let serial = iced_layershell::toplevel::take_drag_serial();
+                match (serial, &self.desktop_surface) {
+                    (Some(serial), Some(surface)) => {
+                        let icon = dnd::drag_icon(&self.desktop.selected_icons());
+                        let uris = dnd::uris_of(&self.desktop.selection());
+                        dnd::start_drag(surface, serial, &uris, icon);
+                    }
+                    _ => self.desktop.drag_ended(),
+                }
+            }
+            Message::Dnd(event) => return self.handle_drag(event),
+            Message::DesktopReceived(names, at) => {
+                self.desktop.place_dropped(&names, at);
+                return Task::done(Message::DesktopRefresh);
             }
             Message::PointerReleased(id) if id == self.desktop_id => {
                 self.widgets.released();
@@ -1119,7 +1160,15 @@ impl Shell {
                     return self.relayout_dock();
                 }
             }
-            Message::SurfaceReached(id, Some(surface)) => self.attach_material(id, surface),
+            Message::SurfaceReached(id, Some(surface)) if id == self.desktop_id => {
+                self.desktop_surface = Some(surface);
+            }
+            Message::SurfaceReached(id, Some(surface)) => {
+                if id == self.dock_id {
+                    self.dock_surface = Some(surface.id());
+                }
+                self.attach_material(id, surface);
+            }
             Message::SurfaceReached(_, None) => log::warn!("can't reach a wl_surface; no material"),
             Message::BarPressed(title) => return self.open_bar_menu(title),
             // Like on macOS, while a bar menu is open, pointing at another title switches to its
@@ -2130,6 +2179,128 @@ impl Shell {
         })
     }
 
+    fn is_desktop(&self, surface: &ObjectId) -> bool {
+        self.desktop_surface
+            .as_ref()
+            .is_some_and(|desktop| desktop.id() == *surface)
+    }
+
+    fn handle_drag(&mut self, event: dnd::Event) -> Task<Message> {
+        match event {
+            dnd::Event::Entered { surface, x, y } => {
+                self.drag_over = Some(surface);
+                self.drag_moved(Point::new(x, y))
+            }
+            dnd::Event::Moved { x, y } => self.drag_moved(Point::new(x, y)),
+            dnd::Event::Left => self.drag_left(),
+            dnd::Event::Dropped {
+                surface,
+                x,
+                y,
+                uris,
+                own,
+            } => {
+                let left = self.drag_left();
+                let at = Point::new(x, y);
+                let dropped = if self.is_desktop(&surface) {
+                    self.drop_on_desktop(uris, own, at)
+                } else if self.dock_surface.as_ref() == Some(&surface) {
+                    self.drop_on_dock(uris, at)
+                } else {
+                    Task::none()
+                };
+                Task::batch([left, dropped])
+            }
+            dnd::Event::DragEnded => {
+                self.desktop.drag_ended();
+                Task::done(Message::DesktopRefresh)
+            }
+        }
+    }
+
+    fn drag_moved(&mut self, at: Point) -> Task<Message> {
+        let Some(surface) = self.drag_over.clone() else {
+            return Task::none();
+        };
+        if self.is_desktop(&surface) {
+            self.desktop.drag_over(Some(at));
+            return Task::none();
+        }
+        if self.dock_surface.as_ref() == Some(&surface) {
+            return self.apply(Message::DockPointerMoved(at));
+        }
+        Task::none()
+    }
+
+    fn drag_left(&mut self) -> Task<Message> {
+        self.desktop.drag_over(None);
+        let was_on_dock = self
+            .drag_over
+            .take()
+            .is_some_and(|surface| self.dock_surface.as_ref() == Some(&surface));
+        if was_on_dock {
+            return self.apply(Message::DockPointerLeft);
+        }
+        Task::none()
+    }
+
+    fn drop_on_desktop(&mut self, uris: Vec<String>, own: bool, at: Point) -> Task<Message> {
+        let paths = dnd::paths_of(&uris);
+        if let Some(folder) = self.desktop.folder_at(at) {
+            return Task::perform(desktop::move_into(paths, folder), |_| {
+                Message::DesktopRefresh
+            });
+        }
+        if own {
+            self.desktop.moved_selection_to(at);
+            return Task::none();
+        }
+        Task::perform(
+            desktop::move_into(paths, self.desktop.folder()),
+            move |names| Message::DesktopReceived(names, at),
+        )
+    }
+
+    /// Something dropped on the dock: an app opens it, and the places take it in.
+    fn drop_on_dock(&mut self, uris: Vec<String>, at: Point) -> Task<Message> {
+        let Some(index) = dock::item_at(&self.dock_layout, at) else {
+            return Task::none();
+        };
+        let paths = dnd::paths_of(&uris);
+        if let Some(item) = self
+            .dock
+            .get(index)
+            .filter(|_| index < self.dock_layout.apps)
+        {
+            let uris: Vec<&str> = uris.iter().map(String::as_str).collect();
+            if let Some(command) = self.apps.command_with_uris(&item.app.id, &uris) {
+                apps::spawn(command);
+            }
+            return Task::none();
+        }
+        let place = Place::ALL
+            .iter()
+            .enumerate()
+            .find(|(offset, _)| dock::place_slot(&self.dock_layout, *offset) == index)
+            .map(|(_, place)| *place);
+        match place {
+            Some(Place::Trash) => {
+                for path in &paths {
+                    if let Err(err) = places::move_to_trash(path) {
+                        log::warn!("can't move {} to the trash: {err}", path.display());
+                    }
+                }
+                Task::done(Message::DesktopRefresh)
+            }
+            Some(Place::Downloads) => {
+                Task::perform(desktop::move_into(paths, places::downloads_dir()), |_| {
+                    Message::DesktopRefresh
+                })
+            }
+            None => Task::none(),
+        }
+    }
+
     fn start_desktop_rename(&mut self, path: PathBuf) -> Task<Message> {
         self.desktop.start_rename(path);
         iced_layershell::toplevel::set_keyboard_target(Some(self.desktop_id));
@@ -2691,6 +2862,7 @@ impl Shell {
             menu_hover,
             notifications::events().map(Message::Notification),
             network::secret_agent().map(Message::WifiAgent),
+            dnd::events().map(Message::Dnd),
             time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),
             time::every(Duration::from_secs(2)).map(|_| Message::DesktopRefresh),
             time::every(widgets::WEATHER_INTERVAL).map(|_| Message::FetchWeather),

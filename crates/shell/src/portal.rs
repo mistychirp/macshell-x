@@ -89,7 +89,7 @@ pub async fn choose_image() -> Option<PathBuf> {
 }
 
 /// The path of a `file://` URI.
-fn path_of(uri: &str) -> Option<PathBuf> {
+pub fn path_of(uri: &str) -> Option<PathBuf> {
     let encoded = uri.strip_prefix("file://")?.as_bytes();
     let mut bytes = Vec::with_capacity(encoded.len());
     let mut index = 0;

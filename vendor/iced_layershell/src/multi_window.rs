@@ -1275,10 +1275,12 @@ pub(crate) fn run_action<P, C, E: Executor>(
             }
             WindowAction::Drag(id) => {
                 if let Some(window) = window_manager.get(id)
-                    && let Some(toplevel) = window.raw.toplevel.as_ref()
                     && let Some(serial) = ev.take_popup_grab_serial()
                 {
-                    crate::toplevel::start_move(toplevel, serial);
+                    match window.raw.toplevel.as_ref() {
+                        Some(toplevel) => crate::toplevel::start_move(toplevel, serial),
+                        None => crate::toplevel::set_drag_serial(serial),
+                    }
                 }
             }
             _ => {}

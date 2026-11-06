@@ -35,7 +35,9 @@ is the arrow rather than upstream's busy cursor.
 
 Patch: make ordinary windows usable (`src/toplevel.rs`, `src/actions.rs`, `src/multi_window.rs`).
 `IcedXdgWindowSettings` gains an app ID, a title and a fixed size, applied before the window's first
-buffer, and `window::Action::Drag` starts an interactive move. Upstream drops that action.
+buffer, and `window::Action::Drag` starts an interactive move. Upstream drops that action. On a
+layer surface, it instead keeps the press's serial for `toplevel::take_drag_serial`, for starting a
+drag and drop.
 `layershellev` keeps its seat private, so the application hands one in with `toplevel::set_seat`.
 
 Patch: send the keyboard to a chosen window (`toplevel::set_keyboard_target`, `src/multi_window.rs`).

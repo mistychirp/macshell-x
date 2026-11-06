@@ -12,6 +12,7 @@ mod control;
 mod dbus;
 mod dbusmenu;
 mod desktop;
+mod dnd;
 mod dock;
 mod fonts;
 mod glass_protocol;

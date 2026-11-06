@@ -208,7 +208,7 @@ fn box_blur(
 }
 
 /// A file with these contents that's gone once the compositor and we let go of it.
-fn anonymous_file(bytes: &[u8]) -> std::io::Result<std::fs::File> {
+pub fn anonymous_file(bytes: &[u8]) -> std::io::Result<std::fs::File> {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let directory = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)

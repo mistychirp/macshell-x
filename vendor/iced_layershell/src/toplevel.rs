@@ -14,6 +14,17 @@ thread_local! {
     static PENDING: RefCell<HashMap<IcedId, IcedXdgWindowSettings>> = RefCell::new(HashMap::new());
     static SEAT: RefCell<Option<WlSeat>> = const { RefCell::new(None) };
     static KEYBOARD_TARGET: RefCell<Option<IcedId>> = const { RefCell::new(None) };
+    static DRAG_SERIAL: RefCell<Option<u32>> = const { RefCell::new(None) };
+}
+
+/// The serial of the press behind a `window::Action::Drag` on something that isn't an ordinary
+/// window, for the application to start a drag and drop with. It's only known inside the event loop.
+pub fn take_drag_serial() -> Option<u32> {
+    DRAG_SERIAL.with_borrow_mut(Option::take)
+}
+
+pub(crate) fn set_drag_serial(serial: u32) {
+    DRAG_SERIAL.with_borrow_mut(|current| *current = Some(serial));
 }
 
 /// Sends the keyboard to this window, or stops doing so. `layershellev` sends keys to whichever
