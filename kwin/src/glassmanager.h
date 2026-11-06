@@ -12,6 +12,7 @@
 #include <QHash>
 #include <QList>
 #include <QObject>
+#include <QPointF>
 #include <QPointer>
 #include <QRect>
 #include <QVector3D>
@@ -44,6 +45,14 @@ enum class Style {
     WindowInactive,
 };
 
+/// How a surface wants to come and go.
+struct Appear {
+    /// One of the protocol's kinds. 0 means there's no animation.
+    int kind = 0;
+    /// What it grows out of, in surface-local logical coordinates.
+    QPointF origin;
+};
+
 struct Shape {
     /// Surface-local logical rectangle.
     QRect rect;
@@ -67,6 +76,8 @@ public:
     explicit GlassManager(KWin::Display *display, QObject *parent = nullptr);
 
     GlassSurface *glassFor(KWin::SurfaceInterface *surface) const;
+    /// Whether the surface's client uses glass, so that the surface is likely to get some.
+    bool usesGlass(KWin::SurfaceInterface *surface) const;
 
 Q_SIGNALS:
     /// The surface's glass shapes changed (applied on commit), or its glass went away.
@@ -92,6 +103,10 @@ public:
 
     const QList<Shape> &shapes() const;
     bool tracksBrightness() const;
+    Appear appear() const
+    {
+        return m_appear;
+    }
 
     /// How long until the next brightness measurement is due; 0 when it's due now.
     int msUntilProbe() const;
@@ -106,6 +121,7 @@ protected:
     void macshell_glass_v1_add_rounded_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style) override;
     void macshell_glass_v1_add_backdrop(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t fade_left, uint32_t fade_top, uint32_t fade_right, uint32_t fade_bottom) override;
     void macshell_glass_v1_add_rounded_rect_with_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height) override;
+    void macshell_glass_v1_set_appear(Resource *resource, uint32_t kind, int32_t x, int32_t y) override;
     void macshell_glass_v1_add_rounded_rect_with_top_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height) override;
     void macshell_glass_v1_track_brightness(Resource *resource) override;
 
@@ -116,6 +132,7 @@ private:
     QPointer<KWin::SurfaceInterface> m_surface;
     QList<Shape> m_pending;
     QList<Shape> m_current;
+    Appear m_appear;
     bool m_dirty = false;
 
     bool m_tracking = false;

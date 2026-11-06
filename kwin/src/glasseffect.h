@@ -7,10 +7,14 @@
 #pragma once
 
 #include "effect/effect.h"
+#include "effect/effectwindow.h"
 #include "glassmanager.h"
 #include "opengl/glutils.h"
 
+#include <QElapsedTimer>
+
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -67,6 +71,13 @@ struct GlassSettings {
     float controlLensRadius = 17.0;
     float controlRim = 0.88;
 
+    /// What makes glass look thick, learned from MacShell's shader: the split of colors along a lens,
+    /// the highlight inside the rim, grain against banding, and a rim that takes after what's behind.
+    float dispersion = 0.05;
+    float meniscus = 0.07;
+    float grain = 0.006;
+    float rimTint = 0.4;
+
     /// Backdrops, which set things apart from a busy background, dim it a little as well.
     float backdropBrightness = 0.9;
 
@@ -100,6 +111,12 @@ struct WindowGlass {
     bool probeScheduled = false;
     /// Where the glass last was, in global logical coordinates.
     KWin::Rect lastBounds;
+    /// The animation for its coming and going.
+    Appear appear;
+    QElapsedTimer appearing;
+    QElapsedTimer disappearing;
+    /// Keeps a closed window around for as long as it's disappearing.
+    std::optional<KWin::EffectWindowDeletedRef> deletedRef;
     /// The shapes, which outlive the surface, so that glass fades out with a closing window.
     QList<Shape> shapes;
     /// The window's closing. Its glass is fading out with it, and needs repainting all the way.
@@ -121,6 +138,8 @@ public:
     void reconfigure(ReconfigureFlags flags) override;
     void prePaintScreen(KWin::ScreenPrePaintData &data) override;
     void postPaintScreen() override;
+    void prePaintWindow(KWin::RenderView *view, KWin::EffectWindow *w, KWin::WindowPrePaintData &data) override;
+    void paintWindow(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, int mask, const KWin::Region &deviceRegion, KWin::WindowPaintData &data) override;
     void drawWindow(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, int mask, const KWin::Region &deviceRegion, KWin::WindowPaintData &data) override;
 
     bool isActive() const override;
@@ -155,6 +174,9 @@ private:
 
     KWin::RenderView *m_currentView = nullptr;
     std::unordered_map<KWin::EffectWindow *, WindowGlass> m_windows;
+    /// New surfaces of clients that use glass, kept out of sight until theirs comes, a moment later,
+    /// so that nothing shows without its glass or before its animation has started.
+    std::unordered_map<KWin::EffectWindow *, QElapsedTimer> m_awaitingGlass;
     bool m_valid = false;
 };
 

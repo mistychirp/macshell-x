@@ -1,0 +1,9 @@
+{
+    "KPlugin": {
+        "Category": "Appearance",
+        "Description": "Windows pour into their place in macshell's dock when minimized",
+        "EnabledByDefault": true,
+        "License": "GPL",
+        "Name": "macshell Genie"
+    }
+}

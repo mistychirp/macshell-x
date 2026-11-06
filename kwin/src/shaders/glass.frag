@@ -27,6 +27,18 @@ uniform float lensRadius;
 // A lens that takes what's far in, right past the middle of a capsule, and mirrors it at the edge:
 // measured from Tahoe, it bends by lensStrength * (1 - depth / lensRadius)^2.
 uniform float lensMirrors;
+// How much further red bends than green, and blue less, as a share of the bend: real glass splits
+// light a little, which is the faint rainbow along a lens's edge. This, the highlight below and the
+// noise are adapted from MacShell's shader (https://github.com/0-ss/MacShell, MIT; see
+// LICENSES/MacShell-MIT.txt).
+uniform float dispersion;
+// How strong the soft highlight is just inside the rim, like the surface tension of something
+// thick, for light coming from the top left.
+uniform float meniscus;
+// How much fine noise there is, which breaks up the banding of smooth blurs on an 8-bit screen.
+uniform float grain;
+// How much of a soft rim's color comes from what's behind it, rather than being a plain grey.
+uniform float rimTint;
 // Multiplies the background's color; below 1 darkens it.
 uniform float brightness;
 // Saturation of the background.
@@ -115,6 +127,17 @@ vec4 sampleGeo(vec2 geo)
     return texture(sampler, vec2(geo.x, 1.0 - geo.y));
 }
 
+// Noise with a triangular distribution, around 0, the same for every channel.
+float noise()
+{
+    vec3 p = fract(gl_FragCoord.xyx * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    float first = fract((p.x + p.y) * p.z);
+    p = fract((gl_FragCoord.xyx * 1.7 + 17.0) * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return first + fract((p.x + p.y) * p.z) - 1.0;
+}
+
 // 1 between two distances from the edge, in device pixels, antialiased.
 float band(float depth, float from, float to)
 {
@@ -146,6 +169,7 @@ void main(void)
         vec3 color = mix(disc / float(samples), sampleGeo(geo).rgb, smoothstep(0.3, 0.85, amount));
         color *= mix(1.0, brightness, amount);
         // Only so the very first pixels don't pick up rounding.
+        color += noise() * grain * amount;
         fragColor = vec4(color, 1.0) * clamp(amount * 20.0, 0.0, 1.0) * opacity;
         return;
     }
@@ -180,11 +204,24 @@ void main(void)
         refracted = geo - n * bend / geoSize;
     }
 
-    vec4 color = sampleGeo(refracted) * colorMatrix;
+    vec4 sampled = sampleGeo(refracted);
+    if (dispersion > 0.0) {
+        vec2 bent = refracted - geo;
+        sampled.r = sampleGeo(geo + bent * (1.0 + dispersion)).r;
+        sampled.b = sampleGeo(geo + bent * (1.0 - dispersion)).b;
+    }
+    vec4 color = sampled * colorMatrix;
     // The copied background is opaque wherever there's anything behind it.
     color.a = 1.0;
     color.rgb *= brightness;
     color.rgb = mix(color.rgb, tint.rgb, tint.a);
+
+    if (meniscus > 0.0) {
+        float along = (max(-d, 0.0) - lensRadius * 0.5) / (lensRadius * 0.2 + 1.0);
+        float facing = dot(n, normalize(vec2(-0.55, -0.83)));
+        float light = pow(max(facing, 0.0), 1.6) + 0.55 * pow(max(-facing, 0.0), 2.2);
+        color.rgb += exp(-along * along) * meniscus * (0.35 + light);
+    }
 
     // The edge, with no dimming: it shows the surroundings, not what's right behind it.
     vec3 edge = mix(min(texture(wide, uv).rgb * edgeGain, vec3(1.0)), vec3(1.0), edgeWhite);
@@ -193,7 +230,8 @@ void main(void)
         float lit = mix(0.12, 1.0, smoothstep(0.25, 0.72, abs(dot(n, vec2(0.7071)))));
         // Half a logical pixel in full, then fading out by one and a half.
         float line = clamp(1.4 - max(-d, 0.0), 0.0, 1.0);
-        color.rgb = mix(color.rgb, vec3(0.85), line * lit * rim);
+        vec3 rimColor = mix(vec3(0.85), clamp(color.rgb * 2.0 + 0.18, 0.0, 1.0), rimTint);
+        color.rgb = mix(color.rgb, rimColor, line * lit * rim);
     } else if (rim > 0.0) {
         // Light falls along the top-left to bottom-right diagonal: the rim is even across those two
         // quadrants and almost gone at the other two corners, measured around Tahoe's buttons.
@@ -208,5 +246,6 @@ void main(void)
         color.rgb = mix(color.rgb, vec3(0.0), band(pixels, 0.0, 1.0) * outerAlpha);
     }
 
+    color.rgb += noise() * grain;
     fragColor = color * coverage * opacity;
 }

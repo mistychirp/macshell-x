@@ -118,6 +118,11 @@ pub fn settings(alert: &Alert) -> IcedXdgWindowSettings {
     }
 }
 
+/// The middle of an alert, which it grows out of.
+pub fn middle(alert: &Alert) -> (i32, i32) {
+    ((WIDTH / 2.0) as i32, (height(alert) / 2.0) as i32)
+}
+
 pub fn material_shapes(alert: &Alert, active: bool) -> Vec<material::Shape> {
     vec![material::Shape {
         rect: (0, 0, WIDTH as i32, height(alert).ceil() as i32),

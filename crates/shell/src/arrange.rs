@@ -195,6 +195,36 @@ pub async fn arrange(window: String, layout: Layout) {
     }
 }
 
+#[zbus::proxy(
+    interface = "org.macshell.Genie",
+    default_service = "org.kde.KWin",
+    default_path = "/org/macshell/Genie"
+)]
+trait Genie {
+    #[zbus(name = "setTarget")]
+    fn set_target(&self, id: &str, x: i32, y: i32, width: i32, height: i32) -> zbus::Result<()>;
+}
+
+/// Tells the genie where things go in the dock, on the screen: each window's id with its place, and
+/// an empty id for where the next one will go.
+pub async fn set_genie_targets(targets: Vec<(String, (i32, i32, i32, i32))>) {
+    let Some(connection) = dbus::session().await else {
+        return;
+    };
+    let result = async {
+        let genie = GenieProxy::new(&connection).await?;
+        for (id, (x, y, width, height)) in &targets {
+            genie.set_target(id, *x, *y, *width, *height).await?;
+        }
+        zbus::Result::Ok(())
+    }
+    .await;
+    // Not an error if the effect isn't there, which is only worth knowing when debugging.
+    if let Err(err) = result {
+        log::debug!("can't tell the genie where things go: {err}");
+    }
+}
+
 pub fn settings(x: i32, y: i32) -> NewLayerShellSettings {
     NewLayerShellSettings {
         anchor: Anchor::Top | Anchor::Left,
@@ -207,6 +237,11 @@ pub fn settings(x: i32, y: i32) -> NewLayerShellSettings {
         namespace: Some(String::from("macshell-arrange")),
         ..Default::default()
     }
+}
+
+/// Where the tail's tip is on the surface, which the menu grows out of.
+pub fn tail_tip() -> (i32, i32) {
+    (TAIL_CENTER as i32, 0)
 }
 
 fn sub_rect() -> (i32, i32, i32, i32) {

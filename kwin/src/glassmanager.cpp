@@ -6,6 +6,8 @@
 
 #include "glassmanager.h"
 
+#include "wayland/clientconnection.h"
+
 #include "wayland/display.h"
 #include "wayland/surface.h"
 
@@ -14,7 +16,7 @@
 namespace Macshell
 {
 
-static constexpr int s_version = 7;
+static constexpr int s_version = 8;
 
 /// Reading pixels back stalls the GPU, so brightness is measured at most this often.
 static constexpr int s_probeIntervalMs = 500;
@@ -30,6 +32,11 @@ GlassManager::GlassManager(KWin::Display *display, QObject *parent)
 GlassSurface *GlassManager::glassFor(KWin::SurfaceInterface *surface) const
 {
     return m_surfaces.value(surface);
+}
+
+bool GlassManager::usesGlass(KWin::SurfaceInterface *surface) const
+{
+    return resourceMap().contains(surface->client()->client());
 }
 
 void GlassManager::macshell_glass_manager_v1_destroy(Resource *resource)
@@ -186,6 +193,12 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect_with_top_tail(Resource *re
         // Negative means on top.
         m_pending.last().tail.setZ(-float(tail_height));
     }
+}
+
+void GlassSurface::macshell_glass_v1_set_appear(Resource *resource, uint32_t kind, int32_t x, int32_t y)
+{
+    Q_UNUSED(resource)
+    m_appear = Appear{.kind = int(kind), .origin = QPointF(x, y)};
 }
 
 void GlassSurface::macshell_glass_v1_add_backdrop(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t fade_left, uint32_t fade_top, uint32_t fade_right, uint32_t fade_bottom)

@@ -533,7 +533,7 @@ impl Widgets {
                 material::Shape {
                     rect: (at.x as i32, at.y as i32, width as i32, height as i32),
                     radius: RADIUS as i32,
-                    style: material::Style::Frosted,
+                    style: material::Style::Card,
                 }
             })
             .collect()
@@ -1241,6 +1241,11 @@ pub fn gallery_settings() -> NewLayerShellSettings {
         namespace: Some(String::from("macshell-widget-gallery")),
         ..Default::default()
     }
+}
+
+/// What the gallery grows out of: the middle of its bottom edge.
+pub fn gallery_origin() -> (i32, i32) {
+    ((GALLERY_WIDTH / 2.0) as i32, GALLERY_HEIGHT as i32)
 }
 
 pub fn gallery_shapes() -> Vec<material::Shape> {

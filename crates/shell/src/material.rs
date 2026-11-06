@@ -72,6 +72,17 @@ pub enum Style {
     Transparent,
 }
 
+/// How a surface comes and goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Appear {
+    /// Springs out of a point, overshooting a little, like Control Center.
+    Spring(i32, i32),
+    /// Grows slightly out of a point, with no overshoot.
+    Gentle(i32, i32),
+    /// Slides in from the right, like Notification Center.
+    Slide,
+}
+
 /// A rounded rectangle of material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {
@@ -161,7 +172,7 @@ impl Material {
             iced_layershell::toplevel::set_seat(seat);
         }
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=7, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=8, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -220,6 +231,21 @@ impl Material {
             surface,
             effect,
             shadow: RefCell::new(None),
+        }
+    }
+
+    /// Asks for an animation for a surface's coming and going. Call it before setting its shapes,
+    /// which is what starts it.
+    pub fn set_appear(&self, target: &MaterialSurface, appear: Appear) {
+        if let Effect::Glass(glass) = &target.effect
+            && glass.version() >= 8
+        {
+            let (kind, x, y) = match appear {
+                Appear::Spring(x, y) => (macshell_glass_v1::Appear::Spring, x, y),
+                Appear::Gentle(x, y) => (macshell_glass_v1::Appear::Gentle, x, y),
+                Appear::Slide => (macshell_glass_v1::Appear::Slide, 0, 0),
+            };
+            glass.set_appear(kind, x, y);
         }
     }
 

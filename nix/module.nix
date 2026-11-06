@@ -25,6 +25,10 @@ let
     # The window decoration. This is KWin's shared configuration, but a session without our plugin
     # falls back to its default.
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library org.kde.macshell
+    # Our genie instead of KWin's minimize animations. Plasma's own sessions share this too, and
+    # without our plugin there they'd have no animation, so these are put back when this one ends.
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key squashEnabled --type bool false
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key magiclampEnabled --type bool false
     ${pkgs.dbus}/bin/dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure
     # Unlocks KWallet with the login password, which PAM kept for this.
     systemctl --user start --no-block plasma-kwallet-pam.service
@@ -37,6 +41,8 @@ let
     kwin_pid=$PPID
     while kill -0 "$kwin_pid" 2>/dev/null; do
       if ${macshell}/bin/macshell; then
+        ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key squashEnabled --delete
+        ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key magiclampEnabled --delete
         systemctl --user stop macshell-session.target
         exit 0
       fi

@@ -199,13 +199,18 @@ fn headroom(max_icon: f32) -> f32 {
     ((max_icon - ICON_SIZE).max(0.0) + LABEL_GAP + LABEL_HEIGHT + 4.0).max(DRAG_HEADROOM)
 }
 
+/// How tall the dock's surface is. `max_icon` is the size of a fully magnified icon.
+pub fn surface_height(max_icon: f32) -> f32 {
+    (headroom(max_icon) + PILL_HEIGHT + MARGIN).ceil()
+}
+
 /// `max_icon` is the size of a fully magnified icon (the plain icon size without magnification).
 pub fn settings(max_icon: f32) -> NewLayerShellSettings {
-    let height = headroom(max_icon) + PILL_HEIGHT + MARGIN;
+    let height = surface_height(max_icon);
     NewLayerShellSettings {
         anchor: Anchor::Bottom | Anchor::Left | Anchor::Right,
         layer: Layer::Top,
-        size: Some((0, height.ceil() as u32)),
+        size: Some((0, height as u32)),
         // Only the pill reserves space; the room above it overlaps windows, and the input
         // region lets clicks there through.
         exclusive_zone: Some(RESERVED_HEIGHT as i32),

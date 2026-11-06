@@ -44,6 +44,20 @@ target_link_libraries(macshell PRIVATE
     Wayland::Server
 )
 
+# The genie, a separate effect since it deforms windows off-screen.
+kcoreaddons_add_plugin(macshell-genie
+    SOURCES
+        src/genie.cpp
+    INSTALL_NAMESPACE "kwin/effects/plugins"
+)
+target_link_libraries(macshell-genie PRIVATE
+    KWin::kwin
+    KF6::ConfigCore
+    Qt6::Core
+    Qt6::DBus
+    Qt6::Gui
+)
+
 # The window decoration: traffic lights and a title bar, loaded by KWin separately from the effect.
 kcoreaddons_add_plugin(macshell-decoration
     SOURCES

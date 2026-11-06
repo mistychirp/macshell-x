@@ -37,7 +37,7 @@
     their glass is, to pick a text color that stays legible over it.
   </description>
 
-  <interface name="macshell_glass_manager_v1" version="7">
+  <interface name="macshell_glass_manager_v1" version="8">
     <description summary="glass factory">
       Creates glass objects for surfaces.
     </description>
@@ -63,7 +63,7 @@
     </request>
   </interface>
 
-  <interface name="macshell_glass_v1" version="7">
+  <interface name="macshell_glass_v1" version="8">
     <description summary="glass shapes behind a surface">
       Holds a list of glass shapes rendered behind the surface. The list is
       double-buffered state, applied on the next wl_surface.commit, and starts
@@ -144,6 +144,23 @@
       <arg name="tail_center" type="int" summary="where the tail's tip is, from the left"/>
       <arg name="tail_width" type="uint"/>
       <arg name="tail_height" type="uint"/>
+    </request>
+
+    <enum name="appear" since="8">
+      <entry name="none" value="0"/>
+      <entry name="spring" value="1" summary="springs out from the point, overshooting a little"/>
+      <entry name="gentle" value="2" summary="grows slightly out of the point, with no overshoot"/>
+      <entry name="slide" value="3" summary="slides in from the right, and back out there"/>
+    </enum>
+
+    <request name="set_appear" since="8">
+      <description summary="say how the surface comes and goes">
+        Asks for an animation for when the surface appears, and for its disappearing.
+        The point is in surface-local logical coordinates.
+      </description>
+      <arg name="kind" type="uint" enum="appear"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
     </request>
 
     <request name="add_rounded_rect_with_top_tail" since="7">

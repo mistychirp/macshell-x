@@ -14,7 +14,9 @@ use iced_layershell::reexport::{
 };
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
-use iced_widget::core::{Color, Event, Point, Size, Theme, event, keyboard, mouse, theme, window};
+use iced_widget::core::{
+    Color, Event, Point, Rectangle, Size, Theme, event, keyboard, mouse, theme, window,
+};
 use iced_widget::renderer::Renderer;
 use iced_widget::{Space, image};
 use wayland_client::backend::ObjectId;
@@ -317,6 +319,8 @@ struct Shell {
     /// until they're ready, and the wallpaper doesn't otherwise redraw to catch up.
     wallpaper_loaded: Option<iced_runtime::image::Allocation>,
     arrange_menu: Option<arrange::Open>,
+    /// What the genie was last told.
+    genie_targets: Vec<(String, (i32, i32, i32, i32))>,
     desktop_id: IcedId,
     desktop: desktop::Desktop,
     desktop_surface: Option<WlSurface>,
@@ -513,6 +517,7 @@ impl Shell {
             surface_contents: HashMap::new(),
             wallpaper_loaded: None,
             arrange_menu: None,
+            genie_targets: Vec::new(),
             desktop_id,
             desktop: desktop::Desktop::load(),
             desktop_surface: None,
@@ -621,10 +626,46 @@ impl Shell {
         self.update_panel_shapes();
         self.update_desktop_shapes();
         self.mark_changed_surfaces();
+        let targets = self.update_genie_targets();
         match self.load_new_icons() {
-            Some(loading) => Task::batch([task, loading]),
-            None => task,
+            Some(loading) => Task::batch([task, targets, loading]),
+            None => Task::batch([task, targets]),
         }
+    }
+
+    /// Tells the genie where things are in the dock, when that's changed. Not while the dock's
+    /// magnified, when they're moving all the time and the pointer isn't minimizing anything.
+    fn update_genie_targets(&mut self) -> Task<Message> {
+        if self.dock_target != 0.0 || self.dock_pointer.amount != 0.0 {
+            return Task::none();
+        }
+        let top = self.screen_height - dock::surface_height(self.dock_max_icon);
+        let on_screen = |rect: &Rectangle| {
+            (
+                rect.x as i32,
+                (top + rect.y) as i32,
+                rect.width as i32,
+                rect.height as i32,
+            )
+        };
+        let layout = &self.dock_layout;
+        let mut targets = Vec::new();
+        // A new tile goes just before the Trash.
+        if let Some(next) = layout.icons.get(dock::place_slot(layout, 1)) {
+            targets.push((String::new(), on_screen(next)));
+        }
+        for (index, minimized) in self.minimized.iter().enumerate() {
+            if let Some(window) = self.windows.iter().find(|window| window.id == minimized.id)
+                && let Some(rect) = layout.icons.get(dock::minimized_slot(layout, index))
+            {
+                targets.push((window.uuid.clone(), on_screen(rect)));
+            }
+        }
+        if targets == self.genie_targets {
+            return Task::none();
+        }
+        self.genie_targets = targets.clone();
+        Task::future(arrange::set_genie_targets(targets)).discard()
     }
 
     /// Images load in the background and draw as nothing until they're ready, and the surfaces
@@ -2051,6 +2092,13 @@ impl Shell {
             return;
         };
         let target = material.attach(surface);
+        // Control Center springs out of its icon in the bar.
+        let control_icon = self
+            .bar()
+            .titles()
+            .into_iter()
+            .find(|(title, _)| *title == menubar::Title::ControlCenter)
+            .map_or(0.0, |(_, rect)| rect.x + rect.width / 2.0);
         match self.surfaces.get(&id) {
             Some(Surface::MenuBar) => {
                 self.bar_tracks_brightness = material.track_brightness(&target);
@@ -2085,6 +2133,25 @@ impl Shell {
                             popup.size.1 as f32,
                         ),
                     };
+                    let (width, height) = (popup.size.0 as i32, popup.size.1 as i32);
+                    let appear = match popup.content {
+                        PopupContent::ControlCenter => Some(material::Appear::Spring(
+                            control_icon as i32 - (self.menubar_width as i32 - width),
+                            0,
+                        )),
+                        PopupContent::NotificationCenter => Some(material::Appear::Slide),
+                        // A dock menu grows out of its tail, and the bar's menus just fade.
+                        PopupContent::Menu(_) => popup
+                            .tail
+                            .map(|tail| material::Appear::Gentle(tail as i32, height)),
+                        PopupContent::Downloads(_) => {
+                            Some(material::Appear::Gentle(width / 2, height))
+                        }
+                        PopupContent::ViewOptions => Some(material::Appear::Gentle(0, 0)),
+                    };
+                    if let Some(appear) = appear {
+                        material.set_appear(&target, appear);
+                    }
                     material.set_shapes(&target, &shapes);
                     popup.shapes = shapes;
                     popup.material = Some(target);
@@ -2093,6 +2160,8 @@ impl Shell {
             },
             Some(Surface::Alert) => match &mut self.alert {
                 Some(open) if open.id == id => {
+                    let (x, y) = alert::middle(&open.alert);
+                    material.set_appear(&target, material::Appear::Gentle(x, y));
                     material.set_window_shadow(&target, alert::RADIUS, open.active);
                     material.set_shapes(&target, &alert::material_shapes(&open.alert, open.active));
                     open.material = Some(target);
@@ -2107,12 +2176,16 @@ impl Shell {
             // Closed before it could be reached, or not a surface with material.
             Some(Surface::ArrangeMenu) => match &mut self.arrange_menu {
                 Some(open) if open.surface == id => {
+                    let (x, y) = arrange::tail_tip();
+                    material.set_appear(&target, material::Appear::Gentle(x, y));
                     material.set_shapes(&target, &arrange::material_shapes(open.submenu));
                     open.material = Some(target);
                 }
                 _ => target.destroy(),
             },
             Some(Surface::WidgetGallery) => {
+                let (x, y) = widgets::gallery_origin();
+                material.set_appear(&target, material::Appear::Gentle(x, y));
                 material.set_shapes(&target, &widgets::gallery_shapes());
                 self.gallery_material = Some(target);
             }

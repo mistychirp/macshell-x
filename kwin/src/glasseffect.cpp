@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 Q_LOGGING_CATEGORY(MACSHELL_GLASS, "macshell_glass", QtWarningMsg)
 
@@ -36,6 +37,9 @@ namespace Macshell
 
 /// The app ID of the shell's dialogs, which the window manager places and keeps on top.
 static constexpr QLatin1StringView s_dialogAppId("macshell-alert");
+
+/// How long a new surface stays out of sight if its glass doesn't come.
+static constexpr int s_awaitGlassMs = 200;
 
 static bool isDialog(Style style)
 {
@@ -92,15 +96,25 @@ GlassEffect::GlassEffect()
 
     // Glass can arrive before its window maps, and windows can go without dropping it.
     connect(effects, &EffectsHandler::windowAdded, this, &GlassEffect::placeDialog);
-    connect(effects, &EffectsHandler::windowAdded, this, &GlassEffect::updateWindow);
+    connect(effects, &EffectsHandler::windowAdded, this, [this](EffectWindow *w) {
+        if (w->surface() && m_manager->usesGlass(w->surface())) {
+            m_awaitingGlass[w].start();
+        }
+        updateWindow(w);
+    });
     connect(effects, &EffectsHandler::windowClosed, this, [this](EffectWindow *w) {
         if (auto it = m_windows.find(w); it != m_windows.end()) {
             it->second.closing = true;
+            if (it->second.appear.kind != 0 && !effects->isScreenLocked()) {
+                it->second.deletedRef.emplace(w);
+                it->second.disappearing.start();
+            }
             w->addRepaintFull();
             effects->addRepaintFull();
         }
     });
     connect(effects, &EffectsHandler::windowDeleted, this, [this](EffectWindow *w) {
+        m_awaitingGlass.erase(w);
         if (auto it = m_windows.find(w); it != m_windows.end()) {
             effects->makeOpenGLContextCurrent();
             m_windows.erase(it);
@@ -154,6 +168,10 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.controlLensRadius = group.readEntry("ControlLensRadius", defaults.controlLensRadius);
     m_settings.controlRim = group.readEntry("ControlRim", defaults.controlRim);
     m_settings.backdropBrightness = group.readEntry("BackdropBrightness", defaults.backdropBrightness);
+    m_settings.dispersion = group.readEntry("Dispersion", defaults.dispersion);
+    m_settings.meniscus = group.readEntry("Meniscus", defaults.meniscus);
+    m_settings.grain = group.readEntry("Grain", defaults.grain);
+    m_settings.rimTint = group.readEntry("RimTint", defaults.rimTint);
     m_settings.inactiveTint = group.readEntry("InactiveTint", defaults.inactiveTint);
     m_settings.chipTint = group.readEntry("ChipTint", defaults.chipTint);
     m_settings.chipRim = group.readEntry("ChipRim", defaults.chipRim);
@@ -195,6 +213,9 @@ void GlassEffect::windowMoved(EffectWindow *w, const RectF &oldGeometry)
 void GlassEffect::updateWindow(EffectWindow *w)
 {
     GlassSurface *glass = w->surface() ? m_manager->glassFor(w->surface()) : nullptr;
+    if (glass && !glass->shapes().isEmpty()) {
+        m_awaitingGlass.erase(w);
+    }
     if (!glass) {
         // A client lets go of its glass as it closes the surface; that glass still has a closing
         // animation to fade out in. If the window turns out to be staying, it goes after all.
@@ -240,6 +261,10 @@ void GlassEffect::updateWindow(EffectWindow *w)
 
     WindowGlass &data = m_windows[w];
     data.shapes = glass->shapes();
+    if (glass->appear().kind != 0 && !data.appearing.isValid() && !w->isDeleted()) {
+        data.appear = glass->appear();
+        data.appearing.start();
+    }
     if (!data.item) {
         data.item = std::make_unique<BackgroundEffectItem>(w->windowItem());
         connect(w, &EffectWindow::windowFrameGeometryChanged, this, &GlassEffect::windowMoved, Qt::UniqueConnection);
@@ -258,14 +283,137 @@ void GlassEffect::updateWindow(EffectWindow *w)
     effects->addRepaint(Rect(touched.x() - s_edgeRepaint, touched.y() - s_edgeRepaint, touched.width() + 2 * s_edgeRepaint, touched.height() + 2 * s_edgeRepaint));
 }
 
+/// How a surface looks at some point of coming or going.
+struct AppearState {
+    float scale = 1;
+    float opacity = 1;
+    float slide = 0;
+    bool done = true;
+};
+
+/// A spring from 0 to 1, in the terms Apple describes them in: how long it takes to get most of the
+/// way there, and how little it overshoots, with 1 being not at all.
+static float spring(float seconds, float response, float damping)
+{
+    const float omega = 2 * std::numbers::pi_v<float> / response;
+    if (damping >= 1) {
+        return 1 - std::exp(-omega * seconds) * (1 + omega * seconds);
+    }
+    const float decay = damping * omega;
+    const float ringing = omega * std::sqrt(1 - damping * damping);
+    return 1 - std::exp(-decay * seconds) * (std::cos(ringing * seconds) + decay / ringing * std::sin(ringing * seconds));
+}
+
+static AppearState appearState(const WindowGlass &glass)
+{
+    AppearState state;
+    if (glass.appear.kind == 0) {
+        return state;
+    }
+    constexpr int spring_ = 1;
+    constexpr int slide = 3;
+    if (glass.disappearing.isValid()) {
+        const float seconds = glass.disappearing.elapsed() / 1000.0f;
+        const float duration = glass.appear.kind == slide ? 0.22f : 0.14f;
+        const float t = std::min(seconds / duration, 1.0f);
+        const float out = t * t;
+        state.opacity = glass.appear.kind == slide ? 1 - out * out : 1 - t;
+        state.scale = glass.appear.kind == slide ? 1 : 1 - 0.06f * out;
+        state.slide = glass.appear.kind == slide ? out : 0;
+        state.done = t >= 1;
+        return state;
+    }
+    const float seconds = glass.appearing.elapsed() / 1000.0f;
+    switch (glass.appear.kind) {
+    case spring_: {
+        // Springs out of the point, overshooting a little.
+        const float value = spring(seconds, 0.36f, 0.78f);
+        state.scale = 0.82f + 0.18f * value;
+        state.opacity = std::min(seconds / 0.1f, 1.0f);
+        state.done = seconds > 0.75f;
+        break;
+    }
+    case slide: {
+        const float value = spring(seconds, 0.32f, 1.0f);
+        state.slide = 1 - value;
+        state.done = seconds > 0.55f;
+        break;
+    }
+    default: {
+        const float value = spring(seconds, 0.2f, 1.0f);
+        state.scale = 0.95f + 0.05f * value;
+        state.opacity = std::min(seconds / 0.09f, 1.0f);
+        state.done = seconds > 0.34f;
+        break;
+    }
+    }
+    return state;
+}
+
 void GlassEffect::prePaintScreen(ScreenPrePaintData &data)
 {
     m_currentView = data.view;
+    for (const auto &[window, glass] : m_windows) {
+        if (!appearState(glass).done) {
+            data.mask |= PAINT_SCREEN_WITH_TRANSFORMED_WINDOWS;
+            break;
+        }
+    }
     effects->prePaintScreen(data);
+}
+
+void GlassEffect::prePaintWindow(RenderView *view, EffectWindow *w, WindowPrePaintData &data)
+{
+    if (m_awaitingGlass.contains(w)) {
+        data.setTranslucent();
+    }
+    if (auto it = m_windows.find(w); it != m_windows.end() && !appearState(it->second).done) {
+        data.setTranslucent();
+        data.setTransformed();
+    }
+    effects->prePaintWindow(view, w, data);
+}
+
+void GlassEffect::paintWindow(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, int mask, const Region &deviceRegion, WindowPaintData &data)
+{
+    if (auto it = m_awaitingGlass.find(w); it != m_awaitingGlass.end()) {
+        if (it->second.elapsed() < s_awaitGlassMs) {
+            data.multiplyOpacity(0);
+        } else {
+            m_awaitingGlass.erase(it);
+        }
+    }
+    if (auto it = m_windows.find(w); it != m_windows.end() && it->second.appear.kind != 0) {
+        const AppearState state = appearState(it->second);
+        if (!state.done || it->second.disappearing.isValid()) {
+            const QPointF origin = it->second.appear.origin;
+            data.multiplyOpacity(state.opacity);
+            data.setXScale(data.xScale() * state.scale);
+            data.setYScale(data.yScale() * state.scale);
+            data.translate(origin.x() * (1 - state.scale) + state.slide * w->width(), origin.y() * (1 - state.scale));
+        }
+    }
+    effects->paintWindow(renderTarget, viewport, w, mask, deviceRegion, data);
 }
 
 void GlassEffect::postPaintScreen()
 {
+    // Letting go of a closed window can delete it, which changes m_windows, so that waits for the
+    // end of the loop.
+    if (!m_awaitingGlass.empty()) {
+        effects->addRepaintFull();
+    }
+    std::vector<EffectWindowDeletedRef> finished;
+    for (auto &[window, glass] : m_windows) {
+        if (!appearState(glass).done) {
+            effects->addRepaintFull();
+        } else if (glass.disappearing.isValid() && glass.deletedRef) {
+            finished.push_back(std::move(*glass.deletedRef));
+            glass.deletedRef.reset();
+            effects->addRepaintFull();
+        }
+    }
+    finished.clear();
     // A closing window only repaints itself, but glass reaches a little past it at a fractional
     // scale. Without this, that row of pixels stays as it was until the window's gone.
     for (const auto &[window, glass] : m_windows) {
@@ -570,6 +718,11 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("rimDirectional", control ? 1.0f : 0.0f);
         m_glassShader->setUniform("rimInner", 1.0f);
         m_glassShader->setUniform("rimSoft", control ? 1.0f : 0.0f);
+        const bool lens = control || liquid || shape.style == Style::Card;
+        m_glassShader->setUniform("dispersion", lens ? m_settings.dispersion : 0.0f);
+        m_glassShader->setUniform("meniscus", lens ? m_settings.meniscus : 0.0f);
+        m_glassShader->setUniform("grain", blurred || control ? m_settings.grain : 0.0f);
+        m_glassShader->setUniform("rimTint", m_settings.rimTint);
         m_glassShader->setUniform("softEdges", shape.softEdges);
         m_glassShader->setUniform("tail", QVector3D(shape.tail.x() * data.xScale(), shape.tail.y() * data.xScale(), shape.tail.z() * data.yScale()));
         m_glassShader->setUniform("edgeFade", frosted ? 0.0f : m_settings.liquidEdgeFade);
@@ -600,7 +753,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
 
 bool GlassEffect::isActive() const
 {
-    return m_valid && !m_windows.empty() && !effects->isScreenLocked();
+    return m_valid && (!m_windows.empty() || !m_awaitingGlass.empty()) && !effects->isScreenLocked();
 }
 
 bool GlassEffect::blocksDirectScanout() const
