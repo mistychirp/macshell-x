@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 use std::f32::consts::PI;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
@@ -626,8 +625,6 @@ pub enum MenuAction {
     Hide(Vec<u64>),
     /// Quits the app with this id: its windows close, and then whatever carries on is told to quit.
     Quit(String),
-    /// Opens a file with its default app.
-    OpenPath(PathBuf),
     /// Opens a place in the file manager.
     OpenPlace(Place),
     /// Asks before emptying the trash.
@@ -769,6 +766,7 @@ pub fn view<'a>(
     badges: &HashMap<String, u32>,
     layout: &'a Layout,
     material: Option<material::Kind>,
+    fan_open: bool,
 ) -> Element<'a> {
     // Glass brings its own rim and highlight; over blur (or nothing) the pill needs a faint
     // fill and border to read as a surface.
@@ -823,7 +821,12 @@ pub fn view<'a>(
         let handle = places.get(offset).and_then(Option::as_ref);
         // Places can't be dragged, so they act right away. On press, not release: a popup's
         // pointer grab needs the press to still be held.
-        let icon = mouse_area(icon_image(handle, place.name(), rect.width))
+        let picture = if fan_open && place == Place::Downloads {
+            fan_tile(rect.width)
+        } else {
+            icon_image(handle, place.name(), rect.width)
+        };
+        let icon = mouse_area(picture)
             .on_press(Message::PlaceClicked(place))
             .on_right_press(Message::PlaceMenuRequested(place));
         layers.push(pin(icon).x(rect.x).y(rect.y).into());
@@ -935,6 +938,26 @@ fn count_badge<'a>(count: u32, icon: &Rectangle, lift: f32) -> Element<'a> {
         .x(icon.x + icon.width - width + BADGE_OVERHANG * scale)
         .y(icon.y - lift - BADGE_OVERHANG * scale)
         .into()
+}
+
+/// The Downloads tile while its fan is open, which closes it.
+fn fan_tile<'a>(size: f32) -> Element<'a> {
+    container(crate::icons::icon(
+        Glyph::ChevronDown,
+        size * 0.45,
+        Color::WHITE,
+    ))
+    .center_x(size)
+    .center_y(size)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(Color::from_rgba(0.12, 0.1, 0.14, 0.72))),
+        border: Border {
+            radius: (size * 0.22).into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 fn dot<'a>() -> Element<'a> {

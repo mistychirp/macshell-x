@@ -63,6 +63,10 @@ struct Shape {
     /// For a shape with a tail: where its tip is from the left, how wide it is and how tall. It's
     /// part of `rect`, whose bottom it takes up.
     QVector3D tail;
+    /// For a shape at an angle: its own size, and how far it's turned clockwise, in radians, about the
+    /// middle of `rect`, which holds it. An empty size means `rect` is the shape.
+    QSize box;
+    float rotation = 0;
 };
 
 class GlassSurface;
@@ -123,6 +127,7 @@ protected:
     void macshell_glass_v1_add_rounded_rect_with_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height) override;
     void macshell_glass_v1_set_appear(Resource *resource, uint32_t kind, int32_t x, int32_t y) override;
     void macshell_glass_v1_add_rounded_rect_with_top_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height) override;
+    void macshell_glass_v1_add_rotated_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, uint32_t box_width, uint32_t box_height, int32_t millidegrees) override;
     void macshell_glass_v1_track_brightness(Resource *resource) override;
 
 private:

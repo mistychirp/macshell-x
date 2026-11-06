@@ -1299,7 +1299,7 @@ fn label_view(name: &str, metrics: Metrics, selected: bool, active: bool) -> Ele
     .into()
 }
 
-fn has_thumbnail(path: &Path) -> bool {
+pub fn has_thumbnail(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {

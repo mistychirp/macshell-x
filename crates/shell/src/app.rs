@@ -33,8 +33,8 @@ use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
     appmenu, arrange, audio, autostart, bluetooth, brightness, clipboard, control, dbusmenu,
-    desktop, dnd, dock, fonts, icons, launcher, media, menu, menubar, network, notification_center,
-    portal, running, spotlight, stack, tray, wallpaper, widgets,
+    desktop, dnd, dock, fan, fonts, icons, launcher, media, menu, menubar, network,
+    notification_center, portal, running, spotlight, tray, wallpaper, widgets,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -80,6 +80,8 @@ enum Surface {
     /// Where to choose widgets from, while editing them.
     WidgetGallery,
     Spotlight,
+    /// The Downloads stack, open.
+    Fan,
     /// The green traffic light's menu.
     ArrangeMenu,
     MenuBar,
@@ -212,6 +214,18 @@ pub enum Message {
     WallpaperChosen(Option<PathBuf>),
     /// "System Settings…" was chosen in the menu.
     OpenSettings,
+    /// The pointer moved over the Downloads fan.
+    FanMoved(Point),
+    FanPressed,
+    FanReleased,
+    /// An animation frame for the fan.
+    FanFrame,
+    /// A picture of a file in the fan.
+    FanThumbnail(PathBuf, Option<image::Handle>),
+    /// A drag out of the fan can start, now that the press's serial is known.
+    FanDragReady,
+    /// Super and a number, which go to Spotlight's panels.
+    SpotlightHotkey(usize),
     /// Spotlight's shortcut, or its icon in the bar.
     SpotlightToggle,
     SpotlightClose,
@@ -331,7 +345,6 @@ struct OpenAlert {
 
 enum PopupContent {
     Menu(Vec<menu::Entry>),
-    Downloads(Vec<stack::Tile>),
     /// How big things are on the desktop.
     ViewOptions,
     /// Shows [`Shell::control`].
@@ -418,6 +431,7 @@ struct Shell {
     dock_drag: Option<dock::Drag>,
     /// Apps launched from the dock that haven't opened a window yet, and when.
     launching: HashMap<String, Instant>,
+    fan: Option<fan::Fan>,
     spotlight: Option<spotlight::Spotlight>,
     /// The apps it lists, as far as they've been read.
     spotlight_apps: Vec<Rc<App>>,
@@ -426,6 +440,8 @@ struct Shell {
     spotlight_file_icons: spotlight::FileIcons,
     /// What's been copied, newest first.
     clips: std::collections::VecDeque<spotlight::Clip>,
+    /// Where the pointer was last over the fan, which a press doesn't say.
+    fan_pointer: Point,
     /// What's running of each app, by the id its windows give, or a pinned app's id.
     running: BTreeMap<String, Vec<running::Process>>,
     /// Shared start time for attention bounces, so they stay in step.
@@ -518,6 +534,8 @@ const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
 /// How big minimized windows' pictures are kept, on their longer side: enough for a magnified dock.
 const THUMBNAIL_SIZE: u32 = 512;
 /// How long the green light's menu waits for the pointer to come back.
+/// How many downloads to look at, for saying how many more there are.
+const FAN_MOST_DOWNLOADS: usize = 5000;
 /// How long Spotlight waits after a keystroke before looking through the files.
 const SPOTLIGHT_TYPING: Duration = Duration::from_millis(180);
 /// How many apps it reads per tick, in the background, since reading one means decoding its icon.
@@ -617,6 +635,8 @@ impl Shell {
             dock_drag: None,
             launching: HashMap::new(),
             running: BTreeMap::new(),
+            fan_pointer: Point::ORIGIN,
+            fan: None,
             spotlight: None,
             spotlight_apps: Vec::new(),
             spotlight_unread,
@@ -681,6 +701,7 @@ impl Shell {
         self.update_panel_shapes();
         self.update_desktop_shapes();
         self.update_spotlight_shapes();
+        self.update_fan_shapes();
         self.mark_changed_surfaces();
         let targets = self.update_genie_targets();
         match self.load_new_icons() {
@@ -771,16 +792,21 @@ impl Shell {
                 Surface::MenuBar => format!("{:?}", self.bar()),
                 Surface::Dock => {
                     format!(
-                        "{:?} {:?} {:?} {:?} {:?}",
+                        "{:?} {:?} {:?} {:?} {:?} {}",
                         self.dock,
                         self.place_icons,
                         self.dock_layout,
                         self.minimized,
-                        self.dock_badges
+                        self.dock_badges,
+                        self.fan_is_open()
                     )
                 }
                 // Short-lived, with live content.
-                Surface::Popup | Surface::Alert | Surface::Banners | Surface::Spotlight => {
+                Surface::Popup
+                | Surface::Alert
+                | Surface::Banners
+                | Surface::Spotlight
+                | Surface::Fan => {
                     iced_layershell::redraw::mark_changed(id);
                     continue;
                 }
@@ -1082,6 +1108,9 @@ impl Shell {
                 let focus =
                     iced_runtime::widget::operation::focus(spotlight::Spotlight::field_id());
                 return Task::batch([self.reach_surface(id), focus]);
+            }
+            Message::SurfaceOpened(id, _) if self.surfaces.get(&id) == Some(&Surface::Fan) => {
+                return self.reach_surface(id);
             }
             Message::SurfaceOpened(id, size) if id == self.dock_id => {
                 self.dock_width = size.width;
@@ -1399,6 +1428,75 @@ impl Shell {
                 return self.toggle_spotlight();
             }
             Message::SpotlightClose => return self.close_spotlight(),
+            Message::SpotlightHotkey(number) => {
+                let mode = match number {
+                    1 => spotlight::Mode::Apps,
+                    2 => spotlight::Mode::Files,
+                    3 => spotlight::Mode::Actions,
+                    _ => spotlight::Mode::Clipboard,
+                };
+                if self.spotlight.is_some() {
+                    return Task::done(Message::SpotlightMode(mode));
+                }
+            }
+            Message::FanMoved(point) => {
+                self.fan_pointer = point;
+                if let Some(open) = &mut self.fan {
+                    if open.is_closing() {
+                        return Task::none();
+                    }
+                    open.hovered = open.row_at(point);
+                    if open.should_drag(point) {
+                        open.dragging = true;
+                        return iced_runtime::window::drag(open.id)
+                            .chain(Task::done(Message::FanDragReady));
+                    }
+                }
+            }
+            Message::FanPressed => {
+                let point = self.fan_pointer;
+                if let Some(open) = &mut self.fan {
+                    match open.row_at(point) {
+                        Some(index) => open.pressed = Some((index, point)),
+                        None => open.close(),
+                    }
+                }
+            }
+            Message::FanReleased => {
+                let Some(open) = &mut self.fan else {
+                    return Task::none();
+                };
+                let pressed = open.pressed.take();
+                if open.dragging {
+                    return Task::none();
+                }
+                let Some((index, _)) = pressed else {
+                    return Task::none();
+                };
+                let path = open.rows.get(index).map(|row| row.path.clone());
+                open.close();
+                match path {
+                    Some(path) => {
+                        apps::spawn(vec![String::from("xdg-open"), path.display().to_string()]);
+                    }
+                    None => self.open_place(Place::Downloads),
+                }
+            }
+            Message::FanFrame => {
+                if let Some(open) = &self.fan
+                    && open.has_closed()
+                {
+                    return iced_runtime::window::close(open.id);
+                }
+            }
+            Message::FanThumbnail(path, picture) => {
+                if let (Some(open), Some(picture)) = (&mut self.fan, picture)
+                    && let Some(row) = open.rows.iter_mut().find(|row| row.path == path)
+                {
+                    row.picture = Some(picture);
+                }
+            }
+            Message::FanDragReady => return self.start_fan_drag(),
             Message::SpotlightTyped(query) => {
                 if let Some(open) = &mut self.spotlight {
                     let was_expanded = open.expanded();
@@ -1551,6 +1649,14 @@ impl Shell {
                     self.dock_width = size.width;
                     return self.relayout_dock();
                 }
+            }
+            Message::SurfaceReached(id, Some(surface))
+                if self.fan.as_ref().is_some_and(|open| open.id == id) =>
+            {
+                if let Some(open) = &mut self.fan {
+                    open.surface = Some(surface.clone());
+                }
+                self.attach_material(id, surface);
             }
             Message::SurfaceReached(id, Some(surface)) if id == self.desktop_id => {
                 self.desktop_surface = Some(surface.clone());
@@ -1796,22 +1902,7 @@ impl Shell {
                 }
             }
             Message::PlaceClicked(place) => match place {
-                Place::Downloads => {
-                    let tiles: Vec<stack::Tile> =
-                        places::recent_downloads(&self.downloads_dir, stack::LIMIT)
-                            .into_iter()
-                            .map(|download| stack::Tile {
-                                icon: self.apps.themed_icon(places::icon_name(&download)),
-                                download,
-                            })
-                            .collect();
-                    let size = stack::size(tiles.len());
-                    return self.open_dock_popup(
-                        place_slot(place),
-                        PopupContent::Downloads(tiles),
-                        size,
-                    );
-                }
+                Place::Downloads => return self.toggle_fan(),
                 Place::Trash => self.open_place(Place::Trash),
             },
             Message::PlaceMenuRequested(place) => {
@@ -1948,6 +2039,11 @@ impl Shell {
             }
             Message::SurfaceClosed(id) => {
                 self.surfaces.remove(&id);
+                if self.fan.as_ref().is_some_and(|open| open.id == id) {
+                    if let Some(material) = self.fan.take().and_then(|open| open.material) {
+                        material.destroy();
+                    }
+                }
                 if self.spotlight.as_ref().is_some_and(|open| open.id == id) {
                     if let Some(material) = self.spotlight.take().and_then(|open| open.material) {
                         material.destroy();
@@ -2382,7 +2478,6 @@ impl Shell {
                         PopupContent::Menu(_) | PopupContent::ViewOptions => {
                             menu::material_shapes(popup.size, popup.tail)
                         }
-                        PopupContent::Downloads(_) => stack::material_shapes(popup.size),
                         PopupContent::ControlCenter => control::material_shapes(&self.control),
                         PopupContent::NotificationCenter => notification_center::material_shapes(
                             &self.notifications,
@@ -2403,9 +2498,6 @@ impl Shell {
                         PopupContent::Menu(_) => popup
                             .tail
                             .map(|tail| material::Appear::Gentle(tail as i32, height)),
-                        PopupContent::Downloads(_) => {
-                            Some(material::Appear::Gentle(width / 2, height))
-                        }
                         PopupContent::ViewOptions => Some(material::Appear::Gentle(0, 0)),
                     };
                     if let Some(appear) = appear {
@@ -2414,6 +2506,14 @@ impl Shell {
                     material.set_shapes(&target, &shapes);
                     popup.shapes = shapes;
                     popup.material = Some(target);
+                }
+                _ => target.destroy(),
+            },
+            Some(Surface::Fan) => match &mut self.fan {
+                Some(open) if open.id == id => {
+                    open.shapes = open.material_shapes();
+                    material.set_shapes(&target, &open.shapes);
+                    open.material = Some(target);
                 }
                 _ => target.destroy(),
             },
@@ -2674,6 +2774,87 @@ impl Shell {
         })
     }
 
+    fn fan_is_open(&self) -> bool {
+        self.fan.as_ref().is_some_and(|open| !open.is_closing())
+    }
+
+    fn toggle_fan(&mut self) -> Task<Message> {
+        if let Some(open) = &mut self.fan {
+            open.close();
+            return Task::none();
+        }
+        // Where the tile will be once the dock's magnification has settled.
+        let resting = dock::layout(
+            self.dock_width,
+            &self.dock,
+            &self.minimized,
+            &dock::Pointer::default(),
+            self.dock_max_icon,
+            Vec::new(),
+            None,
+        );
+        let tile_x = resting
+            .icons
+            .get(dock::place_slot(&resting, 0))
+            .map_or(self.dock_width / 2.0, |tile| tile.center_x());
+        let height = fan::surface_height(self.screen_height);
+        let room = fan::Fan::rows_that_fit(height);
+        let mut downloads = places::recent_downloads(&self.downloads_dir, FAN_MOST_DOWNLOADS);
+        let more = downloads.len().saturating_sub(room);
+        downloads.truncate(room);
+
+        let mut tasks = Vec::new();
+        let rows = downloads
+            .into_iter()
+            .map(|download| {
+                if desktop::has_thumbnail(&download.path) {
+                    let path = download.path.clone();
+                    tasks.push(Task::perform(
+                        desktop::thumbnail(path.clone()),
+                        move |picture| Message::FanThumbnail(path.clone(), picture),
+                    ));
+                }
+                let picture = self.apps.themed_icon(places::icon_name(&download));
+                (download.path, download.name, picture)
+            })
+            .collect();
+
+        let (id, open) = Message::layershell_open(fan::settings(self.screen_height));
+        self.surfaces.insert(id, Surface::Fan);
+        let glass = self
+            .material
+            .as_ref()
+            .is_some_and(|material| material.kind() == material::Kind::Glass);
+        self.fan = Some(fan::Fan::new(id, rows, more, tile_x, height, glass));
+        tasks.push(open);
+        tasks.push(self.close_popup());
+        Task::batch(tasks)
+    }
+
+    /// Starts dragging the pressed file out of the fan, and lets the pointer through its surface, so
+    /// that it can be dropped on whatever's under it.
+    fn start_fan_drag(&mut self) -> Task<Message> {
+        let serial = iced_layershell::toplevel::take_drag_serial();
+        let Some(open) = &mut self.fan else {
+            return Task::none();
+        };
+        let row = open
+            .pressed
+            .take()
+            .and_then(|(index, _)| open.rows.get(index));
+        let (Some(serial), Some(surface), Some(row)) = (serial, &open.surface, row) else {
+            open.dragging = false;
+            return Task::none();
+        };
+        let paths = [row.path.clone()];
+        let icon = dnd::drag_icon(row.picture.as_slice());
+        dnd::start_drag(surface, serial, &dnd::uris_of(&paths), icon);
+        Task::done(Message::SetInputRegion {
+            id: open.id,
+            callback: ActionCallback::new(|_| {}),
+        })
+    }
+
     fn toggle_spotlight(&mut self) -> Task<Message> {
         if self.spotlight.is_some() {
             return self.close_spotlight();
@@ -2707,6 +2888,19 @@ impl Shell {
         match &self.spotlight {
             Some(open) => iced_runtime::window::close(open.id),
             None => Task::none(),
+        }
+    }
+
+    /// Keeps the glass behind the fan's capsules in line with them.
+    fn update_fan_shapes(&mut self) {
+        if let (Some(material), Some(open)) = (&self.material, &mut self.fan) {
+            let shapes = open.material_shapes();
+            if shapes != open.shapes
+                && let Some(target) = &open.material
+            {
+                material.set_shapes(target, &shapes);
+                open.shapes = shapes;
+            }
         }
     }
 
@@ -2913,6 +3107,8 @@ impl Shell {
             } => {
                 let left = self.drag_left();
                 let at = Point::new(x, y);
+                // Out of the fan, it's a new arrival on the desktop, not one of its icons moving.
+                let own = own && !self.fan.as_ref().is_some_and(|open| open.dragging);
                 let dropped = if self.is_desktop(&surface) {
                     self.drop_on_desktop(uris, own, at)
                 } else if self.dock_surface.as_ref() == Some(&surface) {
@@ -2924,6 +3120,11 @@ impl Shell {
             }
             dnd::Event::DragEnded => {
                 self.desktop.drag_ended();
+                if let Some(open) = &mut self.fan
+                    && open.dragging
+                {
+                    open.close();
+                }
                 Task::done(Message::DesktopRefresh)
             }
         }
@@ -3391,9 +3592,6 @@ impl Shell {
                 }
                 self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
             }
-            dock::MenuAction::OpenPath(path) => {
-                apps::spawn(vec![String::from("xdg-open"), path.display().to_string()]);
-            }
             dock::MenuAction::OpenPlace(place) => self.open_place(place),
             dock::MenuAction::ConfirmEmptyTrash => {
                 let items = if self.trash_count == 1 {
@@ -3460,7 +3658,7 @@ impl Shell {
         );
         // Like macOS, an open menu or stack hides the name over the icon. It would show
         // through the popup's clear glass anyway.
-        if self.popup.is_some() {
+        if self.popup.is_some() || self.fan_is_open() {
             layout.label = None;
         }
         if layout == self.dock_layout {
@@ -3517,7 +3715,12 @@ impl Shell {
                 &self.dock_badges,
                 &self.dock_layout,
                 self.material.as_ref().map(|m| m.kind()),
+                self.fan_is_open(),
             ),
+            Some(Surface::Fan) => match &self.fan {
+                Some(open) => open.view(),
+                None => Space::new().into(),
+            },
             Some(Surface::Popup) => {
                 let material = self.material.as_ref().map(|m| m.kind());
                 if let Some(index) = self.submenus.iter().position(|menu| menu.id == id) {
@@ -3539,7 +3742,6 @@ impl Shell {
                             .is_some_and(|popup| popup.tail.is_some());
                         menu::view(entries, material, 0, open_row, has_tail)
                     }
-                    Some(PopupContent::Downloads(tiles)) => stack::view(tiles, material),
                     Some(PopupContent::ViewOptions) => {
                         desktop::view_options(self.desktop.metrics())
                     }
@@ -3630,6 +3832,16 @@ impl Shell {
         } else {
             time::every(Duration::from_millis(30)).map(|_| Message::SpotlightLoadApps)
         };
+        // Closing needs one more frame after the animation, to say it's over.
+        let fan_frames = if self
+            .fan
+            .as_ref()
+            .is_some_and(|open| open.is_animating() || open.is_closing())
+        {
+            time::every(Duration::from_millis(16)).map(|_| Message::FanFrame)
+        } else {
+            Subscription::none()
+        };
         let spotlight_tick = if self.spotlight.is_some() {
             time::every(Duration::from_millis(250)).map(|_| Message::SpotlightTick)
         } else {
@@ -3650,6 +3862,7 @@ impl Shell {
             dnd::events().map(Message::Dnd),
             arrange::events().map(Message::Arrange),
             clipboard::events().map(Message::Copied),
+            fan_frames,
             spotlight_load,
             spotlight_tick,
             time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),
@@ -3685,6 +3898,13 @@ impl Shell {
                 ) =>
                 {
                     Some(Message::ReturnOrEscape(key == keyboard::key::Named::Enter))
+                }
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Character(key),
+                    modifiers,
+                    ..
+                }) if modifiers.logo() && matches!(key.as_str(), "1" | "2" | "3" | "4") => {
+                    key.parse().ok().map(Message::SpotlightHotkey)
                 }
                 Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(key),

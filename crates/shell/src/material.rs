@@ -67,6 +67,10 @@ pub enum Style {
     /// background. It fades in over this many logical pixels from the left, top, right and bottom.
     /// Dropped where that isn't supported.
     Backdrop([u32; 4]),
+    /// Like [`Style::Card`], at an angle: a shape this wide and tall, turned clockwise by this many
+    /// thousandths of a degree about the middle of `rect`, which has to hold it. Dropped where that
+    /// isn't supported.
+    RotatedCard([i32; 3]),
     /// Nothing at all, like macOS's menu bar; the shape only says where to measure brightness
     /// (see [`Material::track_brightness`]). Dropped where that isn't supported.
     Transparent,
@@ -172,7 +176,7 @@ impl Material {
             iced_layershell::toplevel::set_seat(seat);
         }
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=8, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=9, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -315,6 +319,22 @@ impl Material {
                         );
                         continue;
                     }
+                    if let Style::RotatedCard([box_width, box_height, millidegrees]) = shape.style {
+                        if glass.version() >= 9 {
+                            glass.add_rotated_rect(
+                                x,
+                                y,
+                                width,
+                                height,
+                                shape.radius.max(0) as u32,
+                                macshell_glass_v1::Style::Card,
+                                box_width as u32,
+                                box_height as u32,
+                                millidegrees,
+                            );
+                        }
+                        continue;
+                    }
                     let style = match shape.style {
                         Style::Clear => macshell_glass_v1::Style::Clear,
                         Style::Frosted
@@ -340,7 +360,7 @@ impl Material {
                         Style::Transparent if glass.version() >= 2 => {
                             macshell_glass_v1::Style::Transparent
                         }
-                        Style::Transparent | Style::Backdrop(_) => continue,
+                        Style::Transparent | Style::Backdrop(_) | Style::RotatedCard(_) => continue,
                     };
                     glass.add_rounded_rect(x, y, width, height, shape.radius.max(0) as u32, style);
                 }
@@ -348,10 +368,12 @@ impl Material {
             // Blur has no notion of clear glass, so every shape is blurred.
             Effect::Blur(effect) => {
                 let region = self.compositor.create_region(&self.queue, ());
-                for shape in shapes
-                    .iter()
-                    .filter(|shape| !matches!(shape.style, Style::Transparent | Style::Backdrop(_)))
-                {
+                for shape in shapes.iter().filter(|shape| {
+                    !matches!(
+                        shape.style,
+                        Style::Transparent | Style::Backdrop(_) | Style::RotatedCard(_)
+                    )
+                }) {
                     let (x, y, width, height) = shape.rect;
                     for (rx, ry, rw, rh) in rounded_rect(width, height, shape.radius) {
                         region.add(x + rx, y + ry, rw, rh);

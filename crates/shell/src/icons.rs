@@ -66,6 +66,8 @@ pub enum Glyph {
     Drop,
     /// A magnifying glass.
     Search,
+    /// What the Downloads tile shows while its fan is open.
+    ChevronDown,
     Folder,
     Clipboard,
     Keyboard,
@@ -220,6 +222,11 @@ impl Glyph {
                 <rect x="3.5" y="3.5" width="17" height="6" rx="1.6"/>
                 <rect x="3.5" y="13" width="7" height="7.5" rx="1.6"/>
                 <rect x="13.5" y="13" width="7" height="7.5" rx="1.6"/>
+                </svg>"##
+            }
+            Glyph::ChevronDown => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 9l7 7 7-7"/>
                 </svg>"##
             }
             Glyph::Search => {

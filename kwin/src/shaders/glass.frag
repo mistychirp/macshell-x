@@ -14,9 +14,13 @@ uniform sampler2D wide;
 // The same background, not blurred at all.
 uniform sampler2D sharp;
 
-// The shape's size and corner radius, in logical pixels.
+// The size of what's being drawn in, which is what the background is stretched over, and the shape's
+// corner radius, in logical pixels.
 uniform vec2 geoSize;
 uniform float cornerRadius;
+// The shape's own size, and how far it's turned clockwise about the middle of geoSize, in radians.
+uniform vec2 boxSize;
+uniform float rotation;
 // Device pixels per logical pixel. The edge lines are sized in device pixels, to stay crisp.
 uniform float deviceScale;
 
@@ -186,7 +190,12 @@ void main(void)
         return;
     }
 
-    float d = sdShape(p, halfSize, cornerRadius);
+    // In the shape's own coordinates, where it's level.
+    float turnCos = cos(rotation);
+    float turnSin = sin(rotation);
+    vec2 level = vec2(p.x * turnCos + p.y * turnSin, -p.x * turnSin + p.y * turnCos);
+    vec2 boxHalf = boxSize * 0.5;
+    float d = sdShape(level, boxHalf, cornerRadius);
 
     // Antialiased coverage over one device pixel.
     float coverage = clamp(0.5 - d * deviceScale, 0.0, 1.0);
@@ -197,17 +206,19 @@ void main(void)
     // Outward surface normal from the SDF gradient.
     vec2 e = vec2(0.5, 0.0);
     vec2 n = vec2(
-        sdShape(p + e.xy, halfSize, cornerRadius) - sdShape(p - e.xy, halfSize, cornerRadius),
-        sdShape(p + e.yx, halfSize, cornerRadius) - sdShape(p - e.yx, halfSize, cornerRadius));
+        sdShape(level + e.xy, boxHalf, cornerRadius) - sdShape(level - e.xy, boxHalf, cornerRadius),
+        sdShape(level + e.yx, boxHalf, cornerRadius) - sdShape(level - e.yx, boxHalf, cornerRadius));
+    // Back to the screen's coordinates, where the background and the light are.
+    n = vec2(n.x * turnCos - n.y * turnSin, n.x * turnSin + n.y * turnCos);
     n = length(n) > 0.0 ? normalize(n) : vec2(0.0);
 
     vec2 refracted = geo;
     vec3 surface = vec3(0.0, 0.0, 1.0);
     float slabHeight = 0.0;
     if (thickness > 0.0) {
-        float fit = min(1.0, min(geoSize.x, geoSize.y) / 62.0);
+        float fit = min(1.0, min(boxSize.x, boxSize.y) / 62.0);
         // A shoulder wider than the corners would crease along their diagonals.
-        float width = max(min(bezel * fit, min(cornerRadius, min(halfSize.x, halfSize.y))), 1.0);
+        float width = max(min(bezel * fit, min(cornerRadius, min(boxHalf.x, boxHalf.y))), 1.0);
         float across = clamp(1.0 - max(-d, 0.0) / width, 0.0, 1.0);
         float curve = max(1.0 - pow(across, profile), 0.0);
         surface = normalize(vec3(n * shoulder * pow(across, profile - 1.0), pow(curve, (profile - 1.0) / profile)));

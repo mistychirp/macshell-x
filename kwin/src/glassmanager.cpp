@@ -12,11 +12,13 @@
 #include "wayland/surface.h"
 
 #include <algorithm>
+#include <numbers>
+#include <algorithm>
 
 namespace Macshell
 {
 
-static constexpr int s_version = 8;
+static constexpr int s_version = 9;
 
 /// Reading pixels back stalls the GPU, so brightness is measured at most this often.
 static constexpr int s_probeIntervalMs = 500;
@@ -192,6 +194,19 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect_with_top_tail(Resource *re
     if (!m_pending.isEmpty() && tail_height < uint32_t(height)) {
         // Negative means on top.
         m_pending.last().tail.setZ(-float(tail_height));
+    }
+}
+
+void GlassSurface::macshell_glass_v1_add_rotated_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, uint32_t box_width, uint32_t box_height, int32_t millidegrees)
+{
+    const qsizetype before = m_pending.size();
+    macshell_glass_v1_add_rounded_rect(resource, x, y, width, height, radius, style);
+    if (m_pending.size() > before) {
+        Shape &shape = m_pending.last();
+        shape.box = QSize(box_width, box_height);
+        shape.rotation = float(millidegrees) / 1000.0f * std::numbers::pi_v<float> / 180.0f;
+        // The rectangle given is only what holds it.
+        shape.radius = std::min<int>(radius, std::min(box_width, box_height) / 2);
     }
 }
 

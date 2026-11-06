@@ -37,7 +37,7 @@
     their glass is, to pick a text color that stays legible over it.
   </description>
 
-  <interface name="macshell_glass_manager_v1" version="8">
+  <interface name="macshell_glass_manager_v1" version="9">
     <description summary="glass factory">
       Creates glass objects for surfaces.
     </description>
@@ -63,7 +63,7 @@
     </request>
   </interface>
 
-  <interface name="macshell_glass_v1" version="8">
+  <interface name="macshell_glass_v1" version="9">
     <description summary="glass shapes behind a surface">
       Holds a list of glass shapes rendered behind the surface. The list is
       double-buffered state, applied on the next wl_surface.commit, and starts
@@ -161,6 +161,22 @@
       <arg name="kind" type="uint" enum="appear"/>
       <arg name="x" type="int"/>
       <arg name="y" type="int"/>
+    </request>
+
+    <request name="add_rotated_rect" since="9">
+      <description summary="add a rounded rectangle at an angle">
+        A rounded rectangle of box_width by box_height, turned clockwise about its center, which is
+        the center of the given rectangle. That rectangle has to be big enough to hold all of it.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="radius" type="uint"/>
+      <arg name="style" type="uint" enum="style"/>
+      <arg name="box_width" type="uint"/>
+      <arg name="box_height" type="uint"/>
+      <arg name="millidegrees" type="int" summary="how far it's turned"/>
     </request>
 
     <request name="add_rounded_rect_with_top_tail" since="7">

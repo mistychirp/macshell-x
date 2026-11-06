@@ -808,6 +808,8 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         ShaderManager::instance()->pushShader(m_glassShader.get());
         m_glassShader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, projection);
         m_glassShader->setUniform("geoSize", QVector2D(logical.width(), logical.height()));
+        m_glassShader->setUniform("boxSize", shape.box.isEmpty() ? QVector2D(logical.width(), logical.height()) : QVector2D(shape.box.width() * data.xScale(), shape.box.height() * data.yScale()));
+        m_glassShader->setUniform("rotation", shape.rotation);
         m_glassShader->setUniform("cornerRadius", float(shape.radius * scale));
         m_glassShader->setUniform("deviceScale", float(viewport.scale()));
         m_glassShader->setUniform("wide", 1);
