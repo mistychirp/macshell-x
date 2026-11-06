@@ -30,6 +30,7 @@ mod notifications;
 mod places;
 mod plasma_protocol;
 mod portal;
+mod running;
 mod settings;
 mod settings_file;
 mod shadow_protocol;

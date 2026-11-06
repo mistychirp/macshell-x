@@ -15,6 +15,8 @@ use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerSh
 use iced_widget::core::{Background, Border, Color, ContentFit, Length, Point, Rectangle, Vector};
 use iced_widget::{Space, container, image, mouse_area, pin, stack, text};
 
+use std::collections::BTreeMap;
+
 use crate::app::{Element, Message};
 use crate::apps;
 use crate::apps::{App, AppIndex};
@@ -25,6 +27,7 @@ use crate::kwin::{self, WindowInfo};
 use crate::material::{self, Shape};
 use crate::menu;
 use crate::places::Place;
+use crate::running::Process;
 
 pub const ICON_SIZE: f32 = 48.0;
 const DOT_SIZE: f32 = 4.0;
@@ -78,11 +81,21 @@ pub struct Item {
     pub app: Rc<App>,
     /// Open windows of this app, most recently focused first.
     windows: Vec<WindowInfo>,
+    /// Its processes, which may well outlast its windows.
+    processes: Vec<Process>,
 }
 
 impl Item {
     pub fn is_running(&self) -> bool {
+        self.has_windows() || !self.processes.is_empty()
+    }
+
+    pub fn has_windows(&self) -> bool {
         !self.windows.is_empty()
+    }
+
+    pub fn processes(&self) -> &[Process] {
+        &self.processes
     }
 
     pub fn wants_attention(&self) -> bool {
@@ -532,12 +545,18 @@ fn rect_i32(rect: Rectangle) -> material::Rect {
     )
 }
 
-pub fn items(pinned: &[String], windows: &[WindowInfo], apps: &mut AppIndex) -> Vec<Item> {
+pub fn items(
+    pinned: &[String],
+    windows: &[WindowInfo],
+    running: &BTreeMap<String, Vec<Process>>,
+    apps: &mut AppIndex,
+) -> Vec<Item> {
     let mut items: Vec<Item> = pinned
         .iter()
         .map(|id| Item {
             app: apps.resolve(id),
             windows: Vec::new(),
+            processes: Vec::new(),
         })
         .collect();
 
@@ -551,7 +570,23 @@ pub fn items(pinned: &[String], windows: &[WindowInfo], apps: &mut AppIndex) -> 
             None => items.push(Item {
                 app,
                 windows: vec![window.clone()],
+                processes: Vec::new(),
             }),
+        }
+    }
+
+    for (app_id, processes) in running {
+        let app = apps.resolve(app_id);
+        match items.iter_mut().find(|item| item.app.id == app.id) {
+            Some(item) => item.processes.extend(processes),
+            // Services show windows too, like a file dialog or a password prompt, and don't get to
+            // stay in the dock once those have closed.
+            None if app.command.is_some() && !app.unlisted => items.push(Item {
+                app,
+                windows: Vec::new(),
+                processes: processes.clone(),
+            }),
+            None => {}
         }
     }
 
@@ -578,8 +613,8 @@ pub enum MenuAction {
     ShowAll(Vec<String>),
     /// Puts these windows away, without them showing up in the dock as minimized.
     Hide(Vec<u64>),
-    /// Closes these windows.
-    Quit(Vec<u64>),
+    /// Quits the app with this id: its windows close, and then whatever carries on is told to quit.
+    Quit(String),
     /// Opens a file with its default app.
     OpenPath(PathBuf),
     /// Opens a place in the file manager.
@@ -660,6 +695,12 @@ pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
                 Message::DockMenu(MenuAction::Open(app_id.clone())),
             ));
         }
+        if item.is_running() {
+            entries.push(menu::Entry::item(
+                "Quit",
+                Message::DockMenu(MenuAction::Quit(app_id.clone())),
+            ));
+        }
     } else {
         entries.push(menu::Entry::item(
             "Show All Windows",
@@ -676,7 +717,7 @@ pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
         ));
         entries.push(menu::Entry::item(
             "Quit",
-            Message::DockMenu(MenuAction::Quit(item.window_ids())),
+            Message::DockMenu(MenuAction::Quit(app_id.clone())),
         ));
     }
 
@@ -754,7 +795,7 @@ pub fn view<'a>(
             layers.push(count_badge(count, rect, lift));
         }
 
-        if !item.windows.is_empty() {
+        if item.is_running() {
             layers.push(
                 pin(dot())
                     .x(rect.center_x() - DOT_SIZE / 2.0)

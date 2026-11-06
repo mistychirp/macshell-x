@@ -318,7 +318,7 @@ pub fn system_menu() -> Vec<menu::Entry> {
 }
 
 /// The focused app's menu: its desktop actions, then Quit.
-pub fn app_menu(app: &App, windows: Vec<u64>) -> Vec<menu::Entry> {
+pub fn app_menu(app: &App) -> Vec<menu::Entry> {
     let mut entries: Vec<menu::Entry> = app
         .actions
         .iter()
@@ -334,7 +334,7 @@ pub fn app_menu(app: &App, windows: Vec<u64>) -> Vec<menu::Entry> {
     }
     entries.push(menu::Entry::item(
         &format!("Quit {}", app.name),
-        Message::DockMenu(MenuAction::Quit(windows)),
+        Message::DockMenu(MenuAction::Quit(app.id.clone())),
     ));
     entries
 }

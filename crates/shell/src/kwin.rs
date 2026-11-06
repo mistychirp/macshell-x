@@ -44,6 +44,8 @@ pub struct WindowInfo {
     /// What KWin's own interfaces know it by.
     pub uuid: String,
     pub is_minimized: bool,
+    /// The process it belongs to, once KWin has said.
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +313,7 @@ struct Tracked {
     title: Option<String>,
     state: u32,
     focused_at: Option<u64>,
+    pid: Option<u32>,
     /// KWin has sent everything it knows; until then the window is half described.
     ready: bool,
 }
@@ -336,6 +339,7 @@ impl Tracker {
                 menu: w.menu.clone(),
                 uuid: w.uuid.clone(),
                 is_minimized: w.state & STATE_MINIMIZED != 0,
+                pid: w.pid,
             })
             .collect();
         windows.sort_by_key(|w| w.id);
@@ -400,6 +404,9 @@ impl Dispatch<OrgKdePlasmaWindow, u64> for Tracker {
                     tracked.focused_at = Some(state.focus_clock);
                 }
                 tracked.state = flags;
+            }
+            org_kde_plasma_window::Event::PidChanged { pid } => {
+                tracked.pid = (pid != 0).then_some(pid);
             }
             org_kde_plasma_window::Event::InitialState => tracked.ready = true,
             org_kde_plasma_window::Event::Unmapped => {

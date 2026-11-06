@@ -2146,6 +2146,7 @@ dependencies = [
  "iced_runtime",
  "iced_widget",
  "image",
+ "libc",
  "log",
  "raw-window-handle",
  "resvg",

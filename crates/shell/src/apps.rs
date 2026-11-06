@@ -27,6 +27,8 @@ pub struct App {
     pub name: String,
     pub icon: Option<image::Handle>,
     pub command: Option<Vec<String>>,
+    /// Whether its desktop entry says it's not for listing: it's a background service, say.
+    pub unlisted: bool,
     /// Extra actions from the desktop entry, like "New Private Window".
     pub actions: Vec<DesktopAction>,
 }
@@ -83,6 +85,7 @@ impl AppIndex {
                     .and_then(|icon| self.find_icon(icon))
                     .and_then(|path| load_icon(&path)),
                 command: entry.parse_exec().ok(),
+                unlisted: entry.no_display(),
                 actions: entry
                     .actions()
                     .unwrap_or_default()
@@ -100,6 +103,7 @@ impl AppIndex {
                 name: fallback_name(app_id),
                 icon: self.find_icon(app_id).and_then(|path| load_icon(&path)),
                 command: None,
+                unlisted: false,
                 actions: Vec::new(),
             },
         });

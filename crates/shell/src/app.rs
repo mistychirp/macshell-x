@@ -1,6 +1,6 @@
 //! The shell process: owns every layer surface and the state they share.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -34,7 +34,7 @@ use crate::places::{self, Place};
 use crate::{
     appmenu, arrange, audio, autostart, bluetooth, brightness, control, dbusmenu, desktop, dnd,
     dock, fonts, icons, launcher, media, menu, menubar, network, notification_center, portal,
-    stack, tray, wallpaper, widgets,
+    running, stack, tray, wallpaper, widgets,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -211,6 +211,11 @@ pub enum Message {
     WallpaperChosen(Option<PathBuf>),
     /// "System Settings…" was chosen in the menu.
     OpenSettings,
+    /// It's been a moment since an app with this id was asked to close its windows.
+    QuitGraceOver(String),
+    /// Time to see which apps are still running.
+    CheckRunning,
+    RunningChecked(BTreeMap<String, Vec<running::Process>>),
     /// The alert was pressed where there's no button.
     AlertDragged,
     AlertFieldChanged(String),
@@ -390,6 +395,8 @@ struct Shell {
     dock_drag: Option<dock::Drag>,
     /// Apps launched from the dock that haven't opened a window yet, and when.
     launching: HashMap<String, Instant>,
+    /// What's running of each app, by the id its windows give, or a pinned app's id.
+    running: BTreeMap<String, Vec<running::Process>>,
     /// Shared start time for attention bounces, so they stay in step.
     started: Instant,
     popup: Option<Popup>,
@@ -480,6 +487,8 @@ const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
 /// How big minimized windows' pictures are kept, on their longer side: enough for a magnified dock.
 const THUMBNAIL_SIZE: u32 = 512;
 /// How long the green light's menu waits for the pointer to come back.
+/// How long an app has to close its windows when asked to quit, before what's left is told to.
+const QUIT_GRACE: Duration = Duration::from_secs(3);
 const ARRANGE_MENU_GRACE: Duration = Duration::from_millis(350);
 /// How soon to look up the weather again when that didn't work.
 const WEATHER_RETRY: Duration = Duration::from_secs(60);
@@ -491,7 +500,7 @@ impl Shell {
         autostart::run_once();
         let config = Config::load();
         let mut apps = AppIndex::load();
-        let dock = dock::items(&config.dock.pinned, &[], &mut apps);
+        let dock = dock::items(&config.dock.pinned, &[], &BTreeMap::new(), &mut apps);
 
         let (menubar_id, open_menubar) = Message::layershell_open(menubar::settings());
         let dock_max_icon = dock_max_icon(&config.dock);
@@ -570,6 +579,7 @@ impl Shell {
             dock_press: None,
             dock_drag: None,
             launching: HashMap::new(),
+            running: BTreeMap::new(),
             started: Instant::now(),
             popup: None,
             next_bar_menu: None,
@@ -773,14 +783,15 @@ impl Shell {
                     self.app_menu_titles.clear();
                 }
                 self.windows = windows;
-                self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
+                self.note_window_processes();
+                self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
                 let captures = self.sync_minimized();
                 // A window showing up is what ends a launch bounce.
                 let dock = &self.dock;
                 self.launching.retain(|app_id, _| {
                     !dock
                         .iter()
-                        .any(|item| item.app.id == *app_id && item.is_running())
+                        .any(|item| item.app.id == *app_id && item.has_windows())
                 });
                 return Task::batch([self.relayout_dock(), captures]);
             }
@@ -1272,6 +1283,48 @@ impl Shell {
                 }
                 self.wallpaper_path = Some(path.to_string_lossy().into_owned());
                 return self.show_wallpaper(image::Handle::from_path(path));
+            }
+            Message::QuitGraceOver(app_id) => {
+                // A window still open is the app asking something, like whether to save.
+                if let Some(item) = self
+                    .dock
+                    .iter()
+                    .find(|item| item.app.id == app_id && !item.has_windows())
+                {
+                    item.processes()
+                        .iter()
+                        .for_each(|process| process.terminate());
+                }
+            }
+            Message::CheckRunning => {
+                let known = self.running.clone();
+                let programs = self
+                    .pinned
+                    .iter()
+                    .filter_map(|id| {
+                        let app = self.apps.resolve(id);
+                        let program = running::program_of(app.command.as_deref()?)?;
+                        Some((id.clone(), program))
+                    })
+                    .collect();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || running::check(known, programs))
+                            .await
+                            .unwrap_or_default()
+                    },
+                    Message::RunningChecked,
+                );
+            }
+            Message::RunningChecked(running) => {
+                let before = std::mem::replace(&mut self.running, running);
+                // Windows that came up while that was being worked out.
+                self.note_window_processes();
+                if before != self.running {
+                    self.dock =
+                        dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
+                    return self.relayout_dock();
+                }
             }
             Message::OpenSettings => {
                 let close = self.close_popup();
@@ -1833,13 +1886,7 @@ impl Shell {
                 let Some(app) = &self.focused_app else {
                     return Task::none();
                 };
-                let windows = self
-                    .dock
-                    .iter()
-                    .find(|item| item.app.id == app.id)
-                    .map(dock::Item::window_ids)
-                    .unwrap_or_default();
-                menubar::app_menu(app, windows)
+                menubar::app_menu(app)
             }
             menubar::Title::Ethernet => menubar::ethernet_menu(),
             menubar::Title::Input => match &self.keyboard_layouts {
@@ -2411,6 +2458,22 @@ impl Shell {
         })
     }
 
+    /// Remembers the processes behind windows, which an app stays running for after they close.
+    fn note_window_processes(&mut self) {
+        for window in &self.windows {
+            let (Some(app_id), Some(pid)) = (&window.app_id, window.pid) else {
+                continue;
+            };
+            let Some(process) = running::Process::of(pid) else {
+                continue;
+            };
+            let processes = self.running.entry(app_id.clone()).or_default();
+            if !processes.contains(&process) {
+                processes.push(process);
+            }
+        }
+    }
+
     /// Whether widgets are glass: like on macOS, they are while a window is active, and in color
     /// when the desktop is, unless the Settings app says they always are.
     fn widgets_tinted(&self) -> bool {
@@ -2451,7 +2514,7 @@ impl Shell {
         }
         if config.dock.pinned != self.pinned {
             self.pinned = config.dock.pinned.clone();
-            self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
+            self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
             tasks.push(self.relayout_dock());
         }
         let max_icon = dock_max_icon(&config.dock);
@@ -2884,7 +2947,7 @@ impl Shell {
         if let Err(err) = config::save_pinned(&self.pinned) {
             log::error!("can't save pinned apps: {err}");
         }
-        self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
+        self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
     }
 
     /// Keeps the list of minimized windows up to date, and asks for pictures of new ones.
@@ -2933,7 +2996,7 @@ impl Shell {
         let Some(item) = self.dock.iter().find(|item| item.app.id == app_id) else {
             return Task::none();
         };
-        if !item.is_running() && item.app.command.is_some() {
+        if !item.has_windows() && item.app.command.is_some() {
             self.launching.insert(app_id.to_owned(), Instant::now());
         }
         // An app that was hidden comes back with all its windows.
@@ -2971,7 +3034,23 @@ impl Shell {
                     kwin::minimize_window(id);
                 }
             }
-            dock::MenuAction::Quit(ids) => ids.into_iter().for_each(kwin::close_window),
+            dock::MenuAction::Quit(app_id) => {
+                let Some(item) = self.dock.iter().find(|item| item.app.id == app_id) else {
+                    return Task::none();
+                };
+                if !item.has_windows() {
+                    item.processes()
+                        .iter()
+                        .for_each(|process| process.terminate());
+                    return Task::none();
+                }
+                // Asked nicely first, since an app may want to save something, and only what's
+                // left after that is told to quit.
+                item.window_ids().into_iter().for_each(kwin::close_window);
+                return Task::perform(tokio::time::sleep(QUIT_GRACE), move |()| {
+                    Message::QuitGraceOver(app_id.clone())
+                });
+            }
             dock::MenuAction::TogglePin(app_id) => {
                 if let Some(index) = self.pinned.iter().position(|id| *id == app_id) {
                     self.pinned.remove(index);
@@ -2981,7 +3060,7 @@ impl Shell {
                 if let Err(err) = config::save_pinned(&self.pinned) {
                     log::error!("can't save pinned apps: {err}");
                 }
-                self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
+                self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
             }
             dock::MenuAction::OpenPath(path) => {
                 apps::spawn(vec![String::from("xdg-open"), path.display().to_string()]);
@@ -3223,6 +3302,7 @@ impl Shell {
             arrange::events().map(Message::Arrange),
             time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),
             time::every(Duration::from_secs(2)).map(|_| Message::DesktopRefresh),
+            time::every(Duration::from_secs(2)).map(|_| Message::CheckRunning),
             time::every(widgets::WEATHER_INTERVAL).map(|_| Message::FetchWeather),
             tray::items().map(Message::TrayItems),
             launcher::updates().map(Message::LauncherUpdate),
