@@ -75,3 +75,6 @@ target_link_libraries(macshell-decoration PRIVATE
     Qt6::DBus
     Qt6::Gui
 )
+
+# What Alt+Tab shows, which KWin looks for among its data by name.
+install(DIRECTORY tabbox/macshell DESTINATION ${KDE_INSTALL_DATADIR}/kwin-wayland/tabbox)

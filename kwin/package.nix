@@ -30,6 +30,7 @@ stdenv.mkDerivation {
     fileset = lib.fileset.unions [
       ./CMakeLists.txt
       ./src
+      ./tabbox
       ../protocols/macshell-glass-v1.xml
       ../assets/fonts/Inter-SemiBold.ttf
     ];

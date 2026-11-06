@@ -33,6 +33,9 @@ let
     # effect runs for four times what FadeOutTime says, on a curve that's nearly done after a third.
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key scaleEnabled --type bool false
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key fadeEnabled --type bool true
+    # Alt+Tab is one icon for each app, like macOS's, on glass.
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group TabBox --key LayoutName macshell
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group TabBox --key ApplicationsMode 1
     # Menus are there at once, also measured from Tahoe; ours fade out by themselves.
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key fadingpopupsEnabled --type bool false
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeInTime 1
@@ -54,6 +57,8 @@ let
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key scaleEnabled --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key fadeEnabled --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key fadingpopupsEnabled --delete
+        ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group TabBox --key LayoutName --delete
+        ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group TabBox --key ApplicationsMode --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeInTime --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeOutTime --delete
         systemctl --user stop macshell-session.target
@@ -70,6 +75,8 @@ let
     export XDG_SESSION_DESKTOP=KDE
     export KDE_SESSION_VERSION=6
     export QT_PLUGIN_PATH=${kwin-macshell}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}
+    # KWin finds the window switcher among its data.
+    export XDG_DATA_DIRS=${kwin-macshell}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}
     # The cursor, before KWin starts, since that's when it reads it. Apps that draw their own go by
     # the variables.
     export XCURSOR_THEME=macOS XCURSOR_SIZE=24

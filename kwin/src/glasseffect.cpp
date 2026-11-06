@@ -32,6 +32,7 @@
 #include <QMatrix4x4>
 #include <QPointer>
 #include <QTimer>
+#include <QWindow>
 
 #include <algorithm>
 #include <cmath>
@@ -47,6 +48,11 @@ namespace Macshell
 
 /// The app ID of the shell's dialogs, which the window manager places and keeps on top.
 static constexpr QLatin1StringView s_dialogAppId("macshell-alert");
+
+/// The title of the window switcher's window, and its corner radius. It's KWin's own window, so it has
+/// no surface to ask for glass with, and this is how it's told apart.
+static constexpr QLatin1StringView s_switcherTitle("macshell-switcher");
+static constexpr int s_switcherRadius = 30;
 
 /// How long a new surface stays out of sight if its glass doesn't come.
 static constexpr int s_awaitGlassMs = 200;
@@ -113,6 +119,7 @@ GlassEffect::GlassEffect()
             m_awaitingGlass[w].start();
         }
         updateWindow(w);
+        updateSwitcherGlass(w);
     });
     connect(effects, &EffectsHandler::windowClosed, this, [this](EffectWindow *w) {
         if (auto it = m_windows.find(w); it != m_windows.end()) {
@@ -330,8 +337,28 @@ void GlassEffect::placeDialog(EffectWindow *w)
     window->move(area.center() - QPointF(w->width(), w->height()) / 2);
 }
 
+void GlassEffect::updateSwitcherGlass(EffectWindow *w)
+{
+    if (!w->internalWindow() || w->internalWindow()->title() != s_switcherTitle) {
+        return;
+    }
+    const QRect rect(QPoint(), w->frameGeometry().size().toSize());
+    WindowGlass &data = m_windows[w];
+    data.shapes = {Shape{.rect = rect, .radius = s_switcherRadius, .style = Style::Card}};
+    if (!data.item) {
+        data.item = std::make_unique<BackgroundEffectItem>(w->windowItem());
+        connect(w, &EffectWindow::windowFrameGeometryChanged, this, &GlassEffect::windowMoved, Qt::UniqueConnection);
+    }
+    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.glassThickness * 2.4f));
+    data.item->setEffectBoundingRect(RectF(Rect(rect)));
+    data.lastBounds = Rect(rect).translated(w->pos().toPoint());
+    w->addRepaintFull();
+}
+
 void GlassEffect::windowMoved(EffectWindow *w, const RectF &oldGeometry)
 {
+    // It starts out small, and sizes itself to what's in it.
+    updateSwitcherGlass(w);
     auto it = m_windows.find(w);
     if (it == m_windows.end() || it->second.lastBounds.isEmpty()) {
         return;

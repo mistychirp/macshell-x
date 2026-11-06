@@ -1,0 +1,10 @@
+{
+    "KPackageStructure": "KWin/WindowSwitcher",
+    "KPlugin": {
+        "Description": "The running apps' icons in a row on glass",
+        "Id": "macshell",
+        "License": "GPL-3.0-or-later",
+        "Name": "macshell"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

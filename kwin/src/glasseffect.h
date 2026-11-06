@@ -76,7 +76,7 @@ struct GlassSettings {
     float glassShoulder = 1.5;
     float glassGloss = 0.25;
     float glassThickness = 47.5;
-    float glassBezel = 17.0;
+    float glassBezel = 5.5;
 
     /// Backdrops, which set things apart from a busy background, dim it a little as well.
     float backdropBrightness = 0.9;
@@ -163,6 +163,7 @@ public Q_SLOTS:
 
 private:
     void updateWindow(KWin::EffectWindow *w);
+    void updateSwitcherGlass(KWin::EffectWindow *w);
     void windowMoved(KWin::EffectWindow *w, const KWin::RectF &oldGeometry);
     void placeDialog(KWin::EffectWindow *w);
     void paintGlass(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data);
