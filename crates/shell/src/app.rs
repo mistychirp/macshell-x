@@ -33,8 +33,8 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appmenu, arrange, audio, autostart, bluetooth, brightness, clipboard, control, dbusmenu,
-    desktop, dnd, dock, fan, fonts, hud, icons, launcher, media, menu, menubar, network,
+    appearance, appmenu, arrange, audio, autostart, bluetooth, brightness, clipboard, control,
+    dbusmenu, desktop, dnd, dock, fan, fonts, hud, icons, launcher, media, menu, menubar, network,
     notification_center, portal, running, spotlight, tray, wallpaper, widgets,
 };
 
@@ -97,6 +97,8 @@ enum Surface {
 #[to_layer_message(multi)]
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// Other apps are in line with the config file, which comes to this accent.
+    AppearanceApplied(Option<[u8; 3]>),
     WindowsChanged(Vec<WindowInfo>),
     KeyboardLayoutsChanged(KeyboardLayouts),
     /// A layout was chosen in the keyboard layout menu; carries its index.
@@ -786,6 +788,7 @@ impl Shell {
             open_menubar,
             open_dock,
             Task::perform(brightness::level(), Message::BrightnessRead),
+            Task::perform(appearance::refresh(), Message::AppearanceApplied),
         ];
         if shell.wallpaper.is_some() {
             let (id, open) = Message::layershell_open(wallpaper::settings());
@@ -931,6 +934,13 @@ impl Shell {
 
     fn apply(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::AppearanceApplied(accent) => {
+                if let Some(accent) = accent {
+                    appearance::set_accent(accent);
+                    // Whatever's on screen in the old color is redrawn.
+                    self.surface_contents.clear();
+                }
+            }
             Message::WindowsChanged(mut windows) => {
                 // An alert is a window to the compositor, but not to the rest of the shell.
                 let alert_active = windows
@@ -3578,7 +3588,10 @@ impl Shell {
     fn reload_config(&mut self) -> Task<Message> {
         let config = Config::load();
         self.always_glassy_widgets = config.desktop.always_glassy_widgets;
-        let mut tasks = Vec::new();
+        let mut tasks = vec![Task::perform(
+            appearance::refresh(),
+            Message::AppearanceApplied,
+        )];
         if config.desktop.wallpaper != self.wallpaper_path {
             self.wallpaper_path.clone_from(&config.desktop.wallpaper);
             if let Some(handle) = config

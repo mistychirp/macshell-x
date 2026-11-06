@@ -749,7 +749,7 @@ impl Spotlight {
                     icon: Color::WHITE,
                     placeholder: DIM,
                     value: Color::WHITE,
-                    selection: crate::menu::ACCENT,
+                    selection: crate::appearance::accent(),
                 }),
         ]
         .spacing(10)
@@ -814,7 +814,7 @@ impl Spotlight {
                     let hovered =
                         matches!(status, button::Status::Hovered | button::Status::Pressed);
                     let background = if selected {
-                        crate::menu::ACCENT
+                        crate::appearance::accent()
                     } else {
                         Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.18 } else { 0.08 })
                     };

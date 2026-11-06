@@ -1204,7 +1204,7 @@ fn item_view<'a>(
             .style(|_, _| text_input::Style {
                 background: Background::Color(Color::WHITE),
                 border: Border {
-                    color: menu::ACCENT,
+                    color: crate::appearance::accent(),
                     width: 2.0,
                     radius: 4.0.into(),
                 },
@@ -1394,7 +1394,7 @@ pub fn view_options(metrics: Metrics) -> Element<'static> {
             .style(|_, _| slider::Style {
                 rail: slider::Rail {
                     backgrounds: (
-                        Background::Color(menu::ACCENT),
+                        Background::Color(crate::appearance::accent()),
                         Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.2)),
                     ),
                     width: 4.0,

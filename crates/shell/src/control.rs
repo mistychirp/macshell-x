@@ -1031,7 +1031,7 @@ fn switch_for(detail: Detail, panel: &Panel) -> Option<Element<'_>> {
         .padding((SWITCH_HEIGHT - SWITCH_KNOB) / 2.0)
         .style(move |_| container::Style {
             background: Some(Background::Color(if on {
-                menu::ACCENT
+                crate::appearance::accent()
             } else {
                 Color::from_rgba(1.0, 1.0, 1.0, 0.15)
             })),

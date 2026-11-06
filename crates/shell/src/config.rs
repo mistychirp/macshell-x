@@ -8,12 +8,32 @@ use serde::Deserialize;
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub appearance: AppearanceConfig,
     pub desktop: DesktopConfig,
     pub dock: DockConfig,
     pub menubar: MenuBarConfig,
     /// Desktop entry id of the app that opens folders and the trash. Defaults to the system's
     /// default app for folders.
     pub file_manager: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct AppearanceConfig {
+    /// A color's name, like `blue`, or `#rrggbb`, or `wallpaper`, or `wallpaper:1` for the second
+    /// color picked out of it.
+    pub accent: String,
+    /// Give other apps a palette made from the accent.
+    pub match_apps: bool,
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            accent: crate::appearance::DEFAULT_ACCENT.to_owned(),
+            match_apps: false,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -96,6 +116,16 @@ pub fn save_icon_size(size: f32) -> io::Result<()> {
 
 pub fn save_magnified_size(size: f32) -> io::Result<()> {
     save("dock", "magnified_size", toml_edit::value(f64::from(size)))
+}
+
+/// Rewrites `[appearance] accent`, the same way.
+pub fn save_accent(accent: &str) -> io::Result<()> {
+    save("appearance", "accent", toml_edit::value(accent))
+}
+
+/// Rewrites `[appearance] match_apps`, the same way.
+pub fn save_match_apps(on: bool) -> io::Result<()> {
+    save("appearance", "match_apps", toml_edit::value(on))
 }
 
 /// Rewrites `[desktop] always_glassy_widgets`, the same way.

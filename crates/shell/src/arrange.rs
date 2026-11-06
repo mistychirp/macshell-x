@@ -10,7 +10,7 @@ use iced_widget::core::{Alignment, Background, Border, Color, Length, Padding};
 use iced_widget::{Space, button, column, container, mouse_area, pin, row, stack, svg, text};
 
 use crate::app::{Element, Message};
-use crate::{dbus, fonts, material, menu};
+use crate::{dbus, fonts, material};
 
 const SERVICE: &str = "org.macshell.Shell";
 const PATH: &str = "/org/macshell/Windows";
@@ -439,7 +439,7 @@ fn sub_row<'a>(parts: &[(f32, f32, f32, f32, f32)], words: &'a str, layout: Layo
     })
     .style(|_, status| button::Style {
         background: matches!(status, button::Status::Hovered | button::Status::Pressed)
-            .then_some(Background::Color(menu::ACCENT)),
+            .then_some(Background::Color(crate::appearance::accent())),
         text_color: Color::WHITE,
         border: Border {
             radius: 8.0.into(),
@@ -473,7 +473,7 @@ pub fn view<'a>(submenu: bool) -> Element<'a> {
         .height(ROW_HEIGHT)
         .center_y(ROW_HEIGHT)
         .style(move |_| container::Style {
-            background: submenu.then_some(Background::Color(menu::ACCENT)),
+            background: submenu.then_some(Background::Color(crate::appearance::accent())),
             border: Border {
                 radius: 10.0.into(),
                 ..Default::default()

@@ -36,8 +36,6 @@ pub const RADIUS: f32 = 13.0;
 pub const TAIL_HEIGHT: f32 = 10.0;
 const TAIL_WIDTH: f32 = 22.0;
 
-/// The selection color: Tahoe's, with its purple accent.
-pub const ACCENT: Color = Color::from_rgba(0.7, 0.18, 0.69, 0.95);
 const DISABLED_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.4);
 const SHORTCUT_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.45);
 
@@ -318,7 +316,7 @@ pub fn view(
                             )
                         }
                     }
-                    .then_some(Background::Color(ACCENT)),
+                    .then_some(Background::Color(crate::appearance::accent())),
                     text_color: if matches!(status, button::Status::Disabled) {
                         DISABLED_TEXT
                     } else {

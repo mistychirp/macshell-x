@@ -206,7 +206,7 @@ fn field_view(field: &Field) -> Element<'_> {
                 background: Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.08)),
                 border: Border {
                     color: if focused {
-                        menu::ACCENT
+                        crate::appearance::accent()
                     } else {
                         Color::from_rgba(1.0, 1.0, 1.0, 0.18)
                     },
@@ -216,7 +216,7 @@ fn field_view(field: &Field) -> Element<'_> {
                 icon: Color::WHITE,
                 placeholder: Color::from_rgba(1.0, 1.0, 1.0, 0.45),
                 value: Color::WHITE,
-                selection: menu::ACCENT,
+                selection: crate::appearance::accent(),
             }
         });
 
@@ -235,7 +235,7 @@ fn field_view(field: &Field) -> Element<'_> {
         .center_y(BOX_SIZE)
         .style(move |_| container::Style {
             background: Some(Background::Color(if visible {
-                menu::ACCENT
+                crate::appearance::accent()
             } else {
                 Color::from_rgba(1.0, 1.0, 1.0, 0.1)
             })),

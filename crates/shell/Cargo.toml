@@ -22,6 +22,8 @@ iced_wgpu = "0.14"
 # would do.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 log = "0.4"
+# Picking colors out of a wallpaper, and palettes from them, as Material You does.
+material-colors = { version = "0.5", features = ["quantize"] }
 raw-window-handle = "0.6"
 # Same version iced uses, to rasterize SVG icons once.
 resvg = "0.45.1"

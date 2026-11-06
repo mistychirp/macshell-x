@@ -64,6 +64,8 @@ pub enum Glyph {
     Chevron,
     /// A drop of something clear, for the glass settings.
     Drop,
+    /// A circle half filled in, for the appearance settings.
+    Appearance,
     /// A magnifying glass.
     Search,
     /// What the Downloads tile shows while its fan is open.
@@ -249,6 +251,12 @@ impl Glyph {
             Glyph::Drop => {
                 r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000">
                 <path d="M12 2.5c3.6 4.6 7 8.3 7 12.2a7 7 0 0 1-14 0c0-3.9 3.4-7.6 7-12.2z"/>
+                </svg>"##
+            }
+            Glyph::Appearance => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2">
+                <circle cx="12" cy="12" r="8.5"/>
+                <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="#000" stroke="none"/>
                 </svg>"##
             }
             Glyph::Keyboard => {

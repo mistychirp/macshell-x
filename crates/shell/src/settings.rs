@@ -19,16 +19,18 @@ use iced_widget::core::{
 use iced_widget::renderer::Renderer;
 use iced_widget::scrollable::{Direction, Scrollbar};
 use iced_widget::{
-    Space, button, column, container, image, mouse_area, row, scrollable, slider, text, toggler,
+    Space, button, column, container, image, mouse_area, row, scrollable, slider, text, text_input,
+    toggler,
 };
 use wayland_client::Connection;
 use wayland_client::protocol::wl_surface::WlSurface;
 
+use crate::appearance::{self, Choice, Palette};
 use crate::config::{self, Config};
 use crate::icons::{self, Glyph};
 use crate::material::{self, Material, MaterialSurface};
 use crate::settings_file::SettingsFile;
-use crate::{apps, dbus, fonts, menu, portal, wallpaper};
+use crate::{apps, dbus, fonts, portal, wallpaper};
 
 pub const APP_ID: &str = "macshell-settings";
 const BUS_NAME: &str = "org.macshell.Settings";
@@ -102,6 +104,16 @@ const GLASS_SLIDERS: [GlassSlider; 7] = [
         step: 0.001,
     },
 ];
+/// What's shown of the palette apps get: the colors that give it its character, then its grays.
+const PREVIEW_ROLES: [&str; 7] = [
+    "primary",
+    "secondary",
+    "tertiary",
+    "primary_container",
+    "surface_container_high",
+    "surface",
+    "on_surface",
+];
 const GREEN_FULL_SCREEN: &str = "GreenFullScreen";
 /// Where an import keeps the settings it replaces.
 const BACKUP_NAME: &str = "before-import.toml";
@@ -109,6 +121,7 @@ const BACKUP_NAME: &str = "before-import.toml";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Glass,
+    Appearance,
     Desktop,
     Windows,
     About,
@@ -118,6 +131,7 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Page::Glass => "Glass",
+            Page::Appearance => "Appearance",
             Page::Desktop => "Desktop & Dock",
             Page::Windows => "Windows",
             Page::About => "About",
@@ -136,6 +150,10 @@ pub enum Message {
     Minimize,
     LightsHovered(bool),
     ShowPage(Page),
+    AccentChosen(String),
+    AccentTyped(String),
+    MatchAppsToggled(bool),
+    WallpaperColorsRead(Vec<[u8; 3]>),
     /// Opens one of KDE's settings modules, for what we don't do ourselves yet.
     OpenSystemPage(&'static str),
     /// The plugin's current settings, if it's there.
@@ -319,6 +337,13 @@ async fn read_wallpaper_picture(configured: Option<String>) -> Option<image::Han
     .flatten()
 }
 
+/// What's worth using in the wallpaper, on a thread of its own, since it can take a moment.
+async fn read_wallpaper_colors(configured: Option<String>) -> Vec<[u8; 3]> {
+    tokio::task::spawn_blocking(move || appearance::wallpaper_colors(configured.as_deref()))
+        .await
+        .unwrap_or_default()
+}
+
 /// Tells the shell to read the config file again. It's fine if it isn't running.
 async fn tell_shell() {
     let result = async {
@@ -391,6 +416,15 @@ struct SettingsApp {
     always_glassy: bool,
     wallpaper: Option<String>,
     wallpaper_picture: Option<image::Handle>,
+    /// As the config file has it.
+    accent: String,
+    /// What's being typed as the accent, which may not be a color yet.
+    accent_text: String,
+    /// The accent options that come from the wallpaper.
+    wallpaper_colors: Vec<[u8; 3]>,
+    match_apps: bool,
+    /// A few colors of the palette apps would get.
+    palette_preview: Vec<[u8; 3]>,
     about: About,
     /// How the last export or import went.
     transfer_status: Option<String>,
@@ -459,7 +493,11 @@ impl SettingsApp {
             read_wallpaper_picture(config.desktop.wallpaper.clone()),
             Message::WallpaperPictureRead,
         );
-        let settings = Self {
+        let read_colors = Task::perform(
+            read_wallpaper_colors(config.desktop.wallpaper.clone()),
+            Message::WallpaperColorsRead,
+        );
+        let mut settings = Self {
             id,
             material,
             surface: None,
@@ -473,11 +511,41 @@ impl SettingsApp {
             always_glassy: config.desktop.always_glassy_widgets,
             wallpaper: config.desktop.wallpaper,
             wallpaper_picture: None,
+            accent_text: accent_text(&config.appearance.accent),
+            accent: config.appearance.accent,
+            wallpaper_colors: Vec::new(),
+            match_apps: config.appearance.match_apps,
+            palette_preview: Vec::new(),
             about: About::read(),
             transfer_status: None,
         };
+        settings.show_accent();
         let read = Task::perform(read_glass(), Message::GlassRead);
-        (settings, Task::batch([open, read, read_picture]))
+        (
+            settings,
+            Task::batch([open, read, read_picture, read_colors]),
+        )
+    }
+
+    /// Brings this window, and the preview of what apps would get, in line with the accent.
+    fn show_accent(&mut self) {
+        let (accent, seed) =
+            appearance::resolve(Choice::parse(&self.accent), &self.wallpaper_colors);
+        appearance::set_accent(accent);
+        let palette = Palette::from_seed(seed);
+        self.palette_preview = PREVIEW_ROLES
+            .iter()
+            .filter_map(|role| palette.role(role))
+            .collect();
+    }
+
+    fn choose_accent(&mut self, accent: String) -> Task<Message> {
+        if let Err(err) = config::save_accent(&accent) {
+            log::warn!("can't save the accent color: {err}");
+        }
+        self.accent = accent;
+        self.show_accent();
+        Task::future(tell_shell()).discard()
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -564,6 +632,28 @@ impl SettingsApp {
                 }
                 return Task::future(tell_shell()).discard();
             }
+            Message::AccentChosen(accent) => {
+                self.accent_text = accent_text(&accent);
+                return self.choose_accent(accent);
+            }
+            Message::AccentTyped(typed) => {
+                let color = appearance::parse_hex(&typed);
+                self.accent_text = typed;
+                if let Some(color) = color {
+                    return self.choose_accent(appearance::hex(color));
+                }
+            }
+            Message::MatchAppsToggled(on) => {
+                self.match_apps = on;
+                if let Err(err) = config::save_match_apps(on) {
+                    log::warn!("can't save whether apps match the accent: {err}");
+                }
+                return Task::future(tell_shell()).discard();
+            }
+            Message::WallpaperColorsRead(colors) => {
+                self.wallpaper_colors = colors;
+                self.show_accent();
+            }
             Message::ChooseWallpaper => {
                 return Task::perform(portal::choose_image(), Message::WallpaperChosen);
             }
@@ -575,6 +665,10 @@ impl SettingsApp {
                 self.wallpaper = Some(configured.clone());
                 return Task::batch([
                     Task::future(tell_shell()).discard(),
+                    Task::perform(
+                        read_wallpaper_colors(Some(configured.clone())),
+                        Message::WallpaperColorsRead,
+                    ),
                     Task::perform(
                         read_wallpaper_picture(Some(configured)),
                         Message::WallpaperPictureRead,
@@ -618,8 +712,16 @@ impl SettingsApp {
                     self.magnified_size = config.dock.magnified_size;
                     self.always_glassy = config.desktop.always_glassy_widgets;
                     self.wallpaper.clone_from(&config.desktop.wallpaper);
+                    self.accent_text = accent_text(&config.appearance.accent);
+                    self.accent = config.appearance.accent;
+                    self.match_apps = config.appearance.match_apps;
+                    self.show_accent();
                     return Task::batch([
                         Task::perform(read_glass(), Message::GlassRead),
+                        Task::perform(
+                            read_wallpaper_colors(config.desktop.wallpaper.clone()),
+                            Message::WallpaperColorsRead,
+                        ),
                         Task::perform(
                             read_wallpaper_picture(config.desktop.wallpaper),
                             Message::WallpaperPictureRead,
@@ -652,6 +754,12 @@ impl SettingsApp {
                 }),
                 Space::new().height(16),
                 sidebar_item(Page::Glass, self.page, Glyph::Drop, rgb(58, 132, 246)),
+                sidebar_item(
+                    Page::Appearance,
+                    self.page,
+                    Glyph::Appearance,
+                    rgb(70, 70, 78)
+                ),
                 sidebar_item(Page::Desktop, self.page, Glyph::Photo, rgb(160, 92, 214)),
                 sidebar_item(Page::Windows, self.page, Glyph::Window, rgb(112, 112, 122)),
                 Space::new().height(12),
@@ -698,6 +806,7 @@ impl SettingsApp {
 
         let page: Element<'_> = match self.page {
             Page::Glass => self.glass_page(),
+            Page::Appearance => self.appearance_page(),
             Page::Desktop => self.desktop_page(),
             Page::Windows => self.windows_page(),
             Page::About => self.about_page(),
@@ -777,6 +886,102 @@ impl SettingsApp {
             ],
         ]
         .spacing(12)
+        .into()
+    }
+
+    fn appearance_page(&self) -> Element<'_> {
+        let chosen = Choice::parse(&self.accent);
+        let presets = appearance::PRESETS.iter().map(|(name, color)| {
+            // Only by name: a color typed in that's the same as this one is still what was typed.
+            let selected = self.accent == *name;
+            accent_dot(*color, selected, Message::AccentChosen((*name).to_owned()))
+        });
+        let from_wallpaper: Element<'_> = if self.wallpaper_colors.is_empty() {
+            text("None").size(TEXT_SIZE).color(DIM).into()
+        } else {
+            row(self
+                .wallpaper_colors
+                .iter()
+                .enumerate()
+                .map(|(place, color)| {
+                    accent_dot(
+                        appearance::vivid(*color),
+                        chosen == Choice::Wallpaper(place),
+                        Message::AccentChosen(format!("wallpaper:{place}")),
+                    )
+                }))
+            .spacing(6)
+            .into()
+        };
+        let typed: Element<'_> = text_input("#rrggbb", &self.accent_text)
+            .on_input(Message::AccentTyped)
+            .size(TEXT_SIZE)
+            .width(84)
+            .padding([3, 8])
+            .style(|_, status| text_input::Style {
+                background: Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.1)),
+                border: Border {
+                    color: if matches!(status, text_input::Status::Focused { .. }) {
+                        appearance::accent()
+                    } else {
+                        Color::TRANSPARENT
+                    },
+                    width: 1.5,
+                    radius: 7.0.into(),
+                },
+                icon: DIM,
+                placeholder: DIM,
+                value: Color::WHITE,
+                selection: appearance::accent(),
+            })
+            .into();
+
+        let mut apps_rows = vec![setting_row(
+            "Match Apps",
+            settings_toggle(self.match_apps, Message::MatchAppsToggled),
+        )];
+        if self.match_apps {
+            apps_rows.push(setting_row(
+                "Palette",
+                row(self
+                    .palette_preview
+                    .iter()
+                    .map(|color| palette_swatch(*color)))
+                .spacing(4)
+                .into(),
+            ));
+        }
+
+        column![
+            section(
+                "Accent Color",
+                card(vec![
+                    setting_row("Colors", row(presets).spacing(6).into()),
+                    setting_row("From Wallpaper", from_wallpaper),
+                    setting_row("Custom", typed),
+                ]),
+            ),
+            section(
+                "Apps",
+                column![
+                    card(apps_rows),
+                    caption(
+                        "Gives KDE and Qt apps, GTK apps, Alacritty and Telegram a palette made \
+                         from the accent color. What it replaces comes back when it's turned off. \
+                         GTK apps pick it up the next time they start. Telegram needs \
+                         macshell.tdesktop-theme, in its themes folder in your config, chosen \
+                         once in its chat settings, and again when the color changes.",
+                    ),
+                    caption(
+                        "For anything else, put templates in macshell/templates in your config: \
+                         the first line says where the result goes, as in \"output: ~/file\", and \
+                         {{primary}} or {{primary.rgb}} stand for colors.",
+                    ),
+                ]
+                .spacing(6),
+            ),
+        ]
+        .spacing(18)
         .into()
     }
 
@@ -930,7 +1135,7 @@ impl SettingsApp {
                 column![
                     card(vec![
                         row![
-                            text("Dock, desktop, glass and windows")
+                            text("Dock, desktop, colors, glass and windows")
                                 .size(TEXT_SIZE)
                                 .width(Length::Fill),
                             capsule_button("Import…", Message::ImportSettings),
@@ -1025,6 +1230,68 @@ fn lights<'a>(hovered: bool) -> Element<'a> {
     .into()
 }
 
+/// What the field for a typed-in accent shows for what's in the config file.
+fn accent_text(accent: &str) -> String {
+    if accent.starts_with('#') {
+        accent.to_owned()
+    } else {
+        String::new()
+    }
+}
+
+fn accent_dot<'a>(color: [u8; 3], selected: bool, press: Message) -> Element<'a> {
+    const SIZE: f32 = 24.0;
+    const INSET: f32 = 3.0;
+    let [red, green, blue] = color;
+    button(
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(rgb(red, green, blue))),
+                border: Border {
+                    radius: ((SIZE - 2.0 * INSET) / 2.0).into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+    )
+    .width(SIZE)
+    .height(SIZE)
+    .padding(INSET)
+    .on_press(press)
+    .style(move |_, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: None,
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.4 } else { 0.95 }),
+                width: if selected || hovered { 1.5 } else { 0.0 },
+                radius: (SIZE / 2.0).into(),
+            },
+            ..Default::default()
+        }
+    })
+    .into()
+}
+
+fn palette_swatch<'a>(color: [u8; 3]) -> Element<'a> {
+    let [red, green, blue] = color;
+    container(Space::new())
+        .width(26)
+        .height(18)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(rgb(red, green, blue))),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 fn sidebar_tile<'a>(glyph: Glyph, color: Color) -> Element<'a> {
     container(icons::icon(glyph, 15.0, Color::WHITE))
         .center_x(22)
@@ -1057,7 +1324,7 @@ fn sidebar_row<'a>(
     .style(move |_, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let background = if selected {
-            Some(menu::ACCENT)
+            Some(crate::appearance::accent())
         } else if hovered {
             Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1))
         } else {
@@ -1222,7 +1489,7 @@ fn settings_toggle<'a>(value: bool, on_toggle: impl Fn(bool) -> Message + 'a) ->
         .size(20.0)
         .style(move |_, _| toggler::Style {
             background: Background::Color(if value {
-                menu::ACCENT
+                crate::appearance::accent()
             } else {
                 Color::from_rgba(1.0, 1.0, 1.0, 0.18)
             }),
@@ -1270,7 +1537,7 @@ fn choice<'a>(label: &'a str, selected: bool, full_screen: bool) -> Element<'a> 
         .style(move |_, status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             let background = if selected {
-                menu::ACCENT
+                crate::appearance::accent()
             } else {
                 Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.22 } else { 0.1 })
             };

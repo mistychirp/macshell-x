@@ -1,6 +1,7 @@
 mod alert;
 mod anim;
 mod app;
+mod appearance;
 mod appmenu;
 mod apps;
 mod arrange;
@@ -51,6 +52,7 @@ fn main() -> Result<(), iced_layershell::Error> {
     )
     .init();
     fonts::load();
+    appearance::init();
     if std::env::args().nth(1).as_deref() == Some("settings") {
         return settings::run();
     }
