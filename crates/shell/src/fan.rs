@@ -42,28 +42,51 @@ const CLOSE_TIME: Duration = Duration::from_millis(170);
 const STAGGER: f32 = 0.35;
 /// How far the pointer moves with a row pressed before it's a drag.
 const DRAG_DISTANCE: f32 = 4.0;
+/// How far past its place a row goes as it opens: the usual constant for a gentle bounce.
+const OVERSHOOT: f32 = 0.9;
+/// Below this, a capsule has no glass yet.
+const MIN_GLASS: f32 = 4.0;
 
 /// With glass under it, a name needs nothing behind it. Without, it needs a dark capsule.
 const LABEL_ON_GLASS: [u8; 4] = [0, 0, 0, 0];
 const LABEL_COLOR: [u8; 4] = [30, 22, 40, 170];
 const LABEL_HOVER_COLOR: [u8; 4] = [178, 46, 176, 245];
 
-/// A name in a capsule, drawn into a picture.
+/// A name in a capsule, drawn into a picture with room around it for its lean: iced cuts a rotated
+/// image off at its box, and a `pin` shrinks whatever would stick out of the surface, which would pull
+/// a square box off center near the bottom.
 #[derive(Debug, Clone)]
 struct Label {
+    content: String,
     plain: image::Handle,
-    hovered: image::Handle,
+    /// Drawn the first time it's hovered, since most never are.
+    hovered: Option<image::Handle>,
+    /// The capsule's own width, and the size of the picture that holds it at its lean.
     width: f32,
+    holds: (f32, f32),
+    lean: f32,
+    height: f32,
 }
 
 impl Label {
-    fn new(content: &str, plain_color: [u8; 4]) -> Self {
-        let (plain, width) = draw_label(content, plain_color, LABEL_HEIGHT);
-        let (hovered, _) = draw_label(content, LABEL_HOVER_COLOR, LABEL_HEIGHT);
+    fn new(content: &str, plain_color: [u8; 4], lean: f32, height: f32) -> Self {
+        let (plain, width, holds) = draw_label(content, plain_color, height, lean);
         Self {
+            content: content.to_owned(),
             plain,
-            hovered,
+            hovered: None,
             width,
+            holds,
+            lean,
+            height,
+        }
+    }
+
+    fn make_hovered(&mut self) {
+        if self.hovered.is_none() {
+            let (hovered, ..) =
+                draw_label(&self.content, LABEL_HOVER_COLOR, self.height, self.lean);
+            self.hovered = Some(hovered);
         }
     }
 }
@@ -79,9 +102,9 @@ pub struct Row {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Place {
     center: Point,
-    /// Clockwise, in radians.
+    /// Clockwise, in radians, once it's out.
     lean: f32,
-    /// How far along its way out of the tile it is, from 0 to 1.
+    /// How far along its way out of the tile it is, from 0 to 1, which it can go a little past.
     out: f32,
 }
 
@@ -116,11 +139,13 @@ impl Fan {
         glass: bool,
     ) -> Self {
         let plain_color = if glass { LABEL_ON_GLASS } else { LABEL_COLOR };
-        let rows = rows
+        let lean_of = |index: usize| (LEAN_AT_START + ARC_LEAN * index as f32 / 10.0).to_radians();
+        let rows: Vec<Row> = rows
             .into_iter()
-            .map(|(path, name, picture)| Row {
+            .enumerate()
+            .map(|(index, (path, name, picture))| Row {
                 path,
-                label: Label::new(&shorten(&name), plain_color),
+                label: Label::new(&shorten(&name), plain_color, lean_of(index), LABEL_HEIGHT),
                 picture,
             })
             .collect();
@@ -129,20 +154,13 @@ impl Fan {
         } else {
             format!("{more_count} More in Files")
         };
+        let last = lean_of(rows.len());
         Self {
             id,
             surface: None,
             rows,
-            more: Label::new(&more, plain_color),
-            more_button: {
-                let (plain, width) = draw_label("→", plain_color, PICTURE_SIZE);
-                let (hovered, _) = draw_label("→", LABEL_HOVER_COLOR, PICTURE_SIZE);
-                Label {
-                    plain,
-                    hovered,
-                    width,
-                }
-            },
+            more: Label::new(&more, plain_color, last, LABEL_HEIGHT),
+            more_button: Label::new("→", plain_color, 0.0, PICTURE_SIZE),
             tile_x,
             height,
             hovered: None,
@@ -205,50 +223,75 @@ impl Fan {
         }
     }
 
-    /// The middle of a row's capsule now, on whole pixels of the rectangle its glass is drawn in.
+    /// The rectangle its glass is drawn in, which is the same size all the way out so that its
+    /// textures last, and the middle of the capsule, on whole pixels of that.
     fn capsule_rect(&self, index: usize, place: Place) -> (i32, i32, i32, i32, Point) {
-        let width = self.label_width(index);
-        let (sin, cos) = place.lean.sin_cos();
-        let reach = PICTURE_SIZE / 2.0 + LABEL_GAP + width / 2.0;
+        let label = self.label(index);
+        let turn = place.lean * place.out.min(1.0);
+        let (sin, cos) = turn.sin_cos();
+        // It starts from the picture, and spreads out to the left as it goes.
+        let reach = (PICTURE_SIZE / 2.0 + LABEL_GAP + label.width / 2.0) * place.out.min(1.0);
         let center_x = place.center.x - cos * reach;
         let center_y = place.center.y - sin * reach;
-        // Even sizes, so that the middle stays on a whole pixel.
-        let even = |size: f32| ((size / 2.0).ceil() as i32 + 1) * 2;
-        let holds_width = even(width * cos + LABEL_HEIGHT * sin);
-        let holds_height = even(width * sin + LABEL_HEIGHT * cos);
+        let (holds_width, holds_height) = (label.holds.0 as i32, label.holds.1 as i32);
         let x = center_x.round() as i32 - holds_width / 2;
         let y = center_y.round() as i32 - holds_height / 2;
         let center = Point::new((x + holds_width / 2) as f32, (y + holds_height / 2) as f32);
         (x, y, holds_width, holds_height, center)
     }
 
-    /// The glass behind the capsules, and behind the round button to the folder.
+    fn label(&self, index: usize) -> &Label {
+        self.rows.get(index).map_or(&self.more, |row| &row.label)
+    }
+
+    /// Draws the hovered look of a row, the first time it's needed.
+    pub fn prepare_hovered(&mut self, index: usize) {
+        match self.rows.get_mut(index) {
+            Some(row) => row.label.make_hovered(),
+            None => {
+                self.more.make_hovered();
+                self.more_button.make_hovered();
+            }
+        }
+    }
+
+    /// The glass behind the capsules, and behind the round button to the folder. A capsule grows out
+    /// of its picture, so that they don't all pile up over the tile on the way.
     pub fn material_shapes(&self) -> Vec<material::Shape> {
         let mut shapes = Vec::with_capacity(self.rows.len() + 2);
         for index in 0..=self.rows.len() {
             let place = self.place_now(index);
-            let (x, y, width, height, _) = self.capsule_rect(index, place);
+            let grown = place.out.min(1.0);
+            let width = self.label(index).width * grown;
+            let height = LABEL_HEIGHT * grown;
+            if height < MIN_GLASS {
+                continue;
+            }
+            let (x, y, holds_width, holds_height, _) = self.capsule_rect(index, place);
             shapes.push(material::Shape {
-                rect: (x, y, width, height),
-                radius: (LABEL_HEIGHT / 2.0) as i32,
+                rect: (x, y, holds_width, holds_height),
+                radius: (height / 2.0) as i32,
                 style: material::Style::RotatedCard([
-                    self.label_width(index).round() as i32,
-                    LABEL_HEIGHT as i32,
-                    (place.lean.to_degrees() * 1000.0).round() as i32,
+                    width.round() as i32,
+                    height.round() as i32,
+                    ((place.lean * grown).to_degrees() * 1000.0).round() as i32,
                 ]),
             });
         }
         let button = self.place_now(self.rows.len());
-        shapes.push(material::Shape {
-            rect: (
-                (button.center.x - PICTURE_SIZE / 2.0).round() as i32,
-                (button.center.y - PICTURE_SIZE / 2.0).round() as i32,
-                PICTURE_SIZE as i32,
-                PICTURE_SIZE as i32,
-            ),
-            radius: (PICTURE_SIZE / 2.0) as i32,
-            style: material::Style::Card,
-        });
+        let size = PICTURE_SIZE * button.out.min(1.0);
+        if size >= MIN_GLASS {
+            shapes.push(material::Shape {
+                rect: (
+                    (button.center.x - size / 2.0).round() as i32,
+                    (button.center.y - size / 2.0).round() as i32,
+                    size.round() as i32,
+                    size.round() as i32,
+                ),
+                radius: (size / 2.0) as i32,
+                style: material::Style::Card,
+            });
+        }
         shapes
     }
 
@@ -257,17 +300,22 @@ impl Fan {
         let end = self.place_of(index);
         let count = (self.rows.len() + 1) as f32;
         let delay = STAGGER * index as f32 / count;
-        let t = ((self.progress() * (1.0 + STAGGER) - delay) / 1.0).clamp(0.0, 1.0);
-        let out = 1.0 - (1.0 - t).powi(3);
+        let t = (self.progress() * (1.0 + STAGGER) - delay).clamp(0.0, 1.0);
+        // A little past the end and back, except on the way in.
+        let out = if self.closing.is_some() {
+            1.0 - (1.0 - t).powi(3)
+        } else {
+            let back = t - 1.0;
+            1.0 + (OVERSHOOT + 1.0) * back.powi(3) + OVERSHOOT * back.powi(2)
+        };
         let start = Point::new(self.tile_x, self.height + PICTURE_SIZE / 2.0);
         Place {
             center: Point::new(
                 start.x + (end.center.x - start.x) * out,
                 start.y + (end.center.y - start.y) * out,
             ),
-            // Already leaning, so that its glass stays the same size and can be reused all the way.
             lean: end.lean,
-            out,
+            out: out.max(0.0),
         }
     }
 
@@ -325,52 +373,52 @@ impl Fan {
                 continue;
             }
             let hovered = self.hovered == Some(index);
-            let opacity = (place.out * 1.6).min(1.0);
-            let rotation = Rotation::Floating(Radians(place.lean));
-            let (label, picture): (&Label, Option<&image::Handle>) = match self.rows.get(index) {
-                Some(row) => (&row.label, row.picture.as_ref()),
-                None => (&self.more, None),
-            };
+            let grown = place.out.min(1.0);
+            // The name comes last, once there's a capsule for it.
+            let opacity = ((grown - 0.55) / 0.45).clamp(0.0, 1.0);
+            let rotation = Rotation::Floating(Radians(place.lean * grown));
+            let label = self.label(index);
 
             let (.., capsule) = self.capsule_rect(index, place);
-            // In a square, since iced cuts a rotated image off at its box: a label's own would be far
-            // too short for it. It keeps its shape, in the middle of the square.
-            layers.push(
-                pin(image(if hovered {
-                    label.hovered.clone()
-                } else {
-                    label.plain.clone()
-                })
-                .width(label.width)
-                .height(label.width)
-                .content_fit(ContentFit::Contain)
-                .rotation(rotation)
-                .opacity(opacity))
-                .x(capsule.x - label.width / 2.0)
-                .y(capsule.y - label.width / 2.0)
-                .into(),
-            );
-
-            let picture = match (self.rows.get(index), picture) {
-                (Some(_), Some(picture)) => Some(picture.clone()),
-                (Some(_), None) => None,
-                (None, _) => Some(if hovered {
-                    self.more_button.hovered.clone()
-                } else {
-                    self.more_button.plain.clone()
-                }),
+            let plain_or_hovered = |label: &Label| match (&label.hovered, hovered) {
+                (Some(drawn), true) => drawn.clone(),
+                _ => label.plain.clone(),
             };
-            if let Some(picture) = picture {
+            if opacity > 0.0 {
                 layers.push(
-                    pin(image(picture)
-                        .width(PICTURE_SIZE)
-                        .height(PICTURE_SIZE)
+                    pin(image(plain_or_hovered(label))
+                        .width(label.holds.0)
+                        .height(label.holds.1)
                         .content_fit(ContentFit::Contain)
-                        .border_radius(PICTURE_RADIUS)
                         .rotation(rotation)
                         .opacity(opacity))
-                    .x(place.center.x - PICTURE_SIZE / 2.0)
-                    .y(place.center.y - PICTURE_SIZE / 2.0)
+                    .x(capsule.x - label.holds.0 / 2.0)
+                    .y(capsule.y - label.holds.1 / 2.0)
+                    .into(),
+                );
+            }
+
+            let is_file = self.is_file(index);
+            let picture = if is_file {
+                self.rows.get(index).and_then(|row| row.picture.clone())
+            } else {
+                Some(plain_or_hovered(&self.more_button))
+            };
+            if let Some(picture) = picture {
+                let size = if is_file {
+                    PICTURE_SIZE * grown.max(0.3)
+                } else {
+                    self.more_button.holds.0 * grown.max(0.3)
+                };
+                layers.push(
+                    pin(image(picture)
+                        .width(size)
+                        .height(size)
+                        .content_fit(ContentFit::Contain)
+                        .border_radius(if is_file { PICTURE_RADIUS } else { 0.0 })
+                        .rotation(rotation))
+                    .x(place.center.x - size / 2.0)
+                    .y(place.center.y - size / 2.0)
                     .into(),
                 );
             }
@@ -407,8 +455,14 @@ fn shorten(name: &str) -> String {
     menu::fit(name, LABEL_TEXT, fonts::REGULAR, LABEL_MAX_WIDTH)
 }
 
-/// Draws words in a capsule of this color, returning the picture and its width in logical pixels.
-fn draw_label(content: &str, color: [u8; 4], height: f32) -> (image::Handle, f32) {
+/// Draws words in a capsule of this color, in a picture with room for it to lean. Returns the picture,
+/// the capsule's width, and the size of the picture, all in logical pixels.
+fn draw_label(
+    content: &str,
+    color: [u8; 4],
+    height: f32,
+    lean: f32,
+) -> (image::Handle, f32, (f32, f32)) {
     let mut system = font_system().write().expect("text system");
     let fonts = system.raw();
     let size = LABEL_TEXT * LABEL_SCALE;
@@ -428,37 +482,58 @@ fn draw_label(content: &str, color: [u8; 4], height: f32) -> (image::Handle, f32
         .map(|run| run.line_w)
         .fold(0.0_f32, f32::max);
 
-    let single = content.chars().count() == 1;
-    let width = if single {
+    let width = if content.chars().count() == 1 {
         height
     } else {
         (words / LABEL_SCALE + 2.0 * LABEL_PADDING).ceil()
     };
-    let pixel_width = (width * LABEL_SCALE) as u32;
-    let pixel_height = (height * LABEL_SCALE) as u32;
-    let mut pixels = capsule(pixel_width, pixel_height, color);
+    let (sin, cos) = lean.sin_cos();
+    // Even, so that its middle stays on a whole pixel, and a little over, to hold the antialiasing.
+    let even = |size: f32| ((size / 2.0).ceil() + 1.0) * 2.0;
+    // Big enough for it both level, which is how it's drawn, and leaning, which is how it's shown. A
+    // long one takes up less room across once it leans.
+    let holds = (
+        even((width * cos + height * sin).max(width)),
+        even((width * sin + height * cos).max(height)),
+    );
 
-    let x = ((pixel_width as f32 - words) / 2.0) as i32;
-    let y = ((pixel_height as f32 - line) / 2.0) as i32;
+    let canvas_width = (holds.0 * LABEL_SCALE) as u32;
+    let canvas_height = (holds.1 * LABEL_SCALE) as u32;
+    let capsule_width = (width * LABEL_SCALE) as u32;
+    let capsule_height = (height * LABEL_SCALE) as u32;
+    let left = (canvas_width - capsule_width) / 2;
+    let top = (canvas_height - capsule_height) / 2;
+    let mut pixels = vec![0_u8; (canvas_width * canvas_height * 4) as usize];
+    let body = capsule(capsule_width, capsule_height, color);
+    for row in 0..capsule_height {
+        let from = (row * capsule_width * 4) as usize;
+        let to = (((row + top) * canvas_width + left) * 4) as usize;
+        let length = (capsule_width * 4) as usize;
+        pixels[to..to + length].copy_from_slice(&body[from..from + length]);
+    }
+
+    let x = (canvas_width as f32 / 2.0 - words / 2.0) as i32;
+    let y = ((canvas_height as f32 - line) / 2.0) as i32;
     let mut swash = cosmic_text::SwashCache::new();
     let ink = cosmic_text::Color::rgb(255, 255, 255);
-    buffer.draw(fonts, &mut swash, ink, |left, top, w, h, glyph| {
+    buffer.draw(fonts, &mut swash, ink, |glyph_x, glyph_y, w, h, glyph| {
         for gy in 0..h as i32 {
             for gx in 0..w as i32 {
                 blend(
                     &mut pixels,
-                    pixel_width,
-                    pixel_height,
-                    x + left + gx,
-                    y + top + gy,
+                    canvas_width,
+                    canvas_height,
+                    x + glyph_x + gx,
+                    y + glyph_y + gy,
                     glyph.a(),
                 );
             }
         }
     });
     (
-        image::Handle::from_rgba(pixel_width, pixel_height, pixels),
+        image::Handle::from_rgba(canvas_width, canvas_height, pixels),
         width,
+        holds,
     )
 }
 
@@ -551,6 +626,34 @@ mod tests {
     }
 
     #[test]
+    fn a_labels_picture_keeps_its_capsule_in_the_middle_whatever_its_lean() {
+        // Both are even, which is what keeps the middle on a whole pixel.
+        let long = "a very long name of a file, the kind that gets downloaded all the time.png";
+        for content in ["a name", long, "→"] {
+            for lean in [0.0_f32, 0.02, 0.1, 0.25] {
+                let (_, width, holds) = draw_label(content, LABEL_COLOR, LABEL_HEIGHT, lean);
+                assert_eq!(holds.0 % 2.0, 0.0);
+                assert_eq!(holds.1 % 2.0, 0.0);
+                let (sin, cos) = lean.sin_cos();
+                assert!(holds.0 >= width && holds.0 >= width * cos + LABEL_HEIGHT * sin);
+                assert!(holds.1 >= LABEL_HEIGHT && holds.1 >= width * sin + LABEL_HEIGHT * cos);
+            }
+        }
+    }
+
+    #[test]
+    fn rows_start_small_and_end_in_place() {
+        let mut fan = fan(5);
+        fan.opened = Instant::now() - OPEN_TIME * 3;
+        let done = fan.place_now(2);
+        assert!((done.out - 1.0).abs() < 0.001);
+        assert_eq!(done.center, fan.place_of(2).center);
+        fan.closing = Some(Instant::now() - CLOSE_TIME * 3);
+        assert_eq!(fan.place_now(2).out, 0.0);
+        assert!(fan.material_shapes().is_empty());
+    }
+
+    #[test]
     fn finds_a_row_along_its_lean() {
         let fan = fan(10);
         let top = fan.place_of(9);
@@ -569,7 +672,8 @@ mod tests {
 
     #[test]
     fn its_glass_holds_each_capsule_and_stays_one_size_on_the_way_out() {
-        let fan = fan(10);
+        let mut fan = fan(10);
+        fan.opened = Instant::now() - OPEN_TIME * 3;
         let shapes = fan.material_shapes();
         assert_eq!(shapes.len(), 12);
         for (index, shape) in shapes.iter().take(11).enumerate() {

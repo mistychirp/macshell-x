@@ -9,6 +9,7 @@
 #include "window.h"
 #include "glassmanager.h"
 
+#include "core/output.h"
 #include "core/rendertarget.h"
 #include "core/renderviewport.h"
 #include "effect/effecthandler.h"
@@ -25,6 +26,7 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
+#include <QKeySequence>
 
 #include <QLoggingCategory>
 #include <QMatrix4x4>
@@ -151,6 +153,42 @@ GlassEffect::GlassEffect()
     spotlight->setText(QStringLiteral("Spotlight Search"));
     KGlobalAccel::self()->setDefaultShortcut(spotlight, {Qt::META | Qt::Key_Space});
     KGlobalAccel::self()->setShortcut(spotlight, {Qt::META | Qt::Key_Space});
+    // The media keys. Plasma's own volume and brightness controls aren't running here, so these take
+    // their place under the same names, and keep whatever keys were set for them.
+    struct MediaKey {
+        const char *component;
+        const char *name;
+        QKeySequence key;
+    };
+    const MediaKey mediaKeys[] = {
+        {"kmix", "increase_volume", Qt::Key_VolumeUp},
+        {"kmix", "decrease_volume", Qt::Key_VolumeDown},
+        {"kmix", "increase_volume_small", Qt::SHIFT | Qt::Key_VolumeUp},
+        {"kmix", "decrease_volume_small", Qt::SHIFT | Qt::Key_VolumeDown},
+        {"kmix", "mute", Qt::Key_VolumeMute},
+        {"org_kde_powerdevil", "Increase Screen Brightness", Qt::Key_MonBrightnessUp},
+        {"org_kde_powerdevil", "Decrease Screen Brightness", Qt::Key_MonBrightnessDown},
+        {"org_kde_powerdevil", "Increase Screen Brightness Small", Qt::SHIFT | Qt::Key_MonBrightnessUp},
+        {"org_kde_powerdevil", "Decrease Screen Brightness Small", Qt::SHIFT | Qt::Key_MonBrightnessDown},
+    };
+    for (const MediaKey &mediaKey : mediaKeys) {
+        auto *action = new QAction(this);
+        const QString name = QString::fromLatin1(mediaKey.name);
+        action->setObjectName(name);
+        action->setText(name);
+        action->setProperty("componentName", QString::fromLatin1(mediaKey.component));
+        KGlobalAccel::self()->setDefaultShortcut(action, {mediaKey.key});
+        KGlobalAccel::self()->setShortcut(action, {mediaKey.key});
+        connect(action, &QAction::triggered, this, [name] {
+            auto message = QDBusMessage::createMethodCall(QStringLiteral("org.macshell.Shell"),
+                                                          QStringLiteral("/org/macshell/Windows"),
+                                                          QStringLiteral("org.macshell.Windows"),
+                                                          QStringLiteral("MediaKey"));
+            message << name;
+            QDBusConnection::sessionBus().asyncCall(message);
+        });
+    }
+
     connect(spotlight, &QAction::triggered, this, [] {
         const auto message = QDBusMessage::createMethodCall(QStringLiteral("org.macshell.Shell"),
                                                             QStringLiteral("/org/macshell/Windows"),
@@ -706,6 +744,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         // Beyond the blur's own levels: four more halvings for the wide blur.
         const int wideLevel = passes + 1;
         const int levels = blurred ? wideLevel + 4 : 1;
+        const Rect logicalBounds = logical.roundedOut();
         // Nothing behind it here to read, so it keeps what it has, which may be a different size.
         const bool offscreen = &renderTarget != m_screenTarget;
         if (offscreen && render.textures.empty()) {
@@ -717,17 +756,27 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         }
 
         // Copy the part of the background that was just repainted; the rest is cached from
-        // earlier frames. Copying more would pick up last frame's glass.
-        const Rect logicalBounds = logical.roundedOut();
-        const Region logicalDirty = offscreen ? Region()
+        // earlier frames. Copying more would pick up last frame's glass, and copying less, which
+        // going through logical coordinates does at a fractional scale, leaves lines behind wherever
+        // the repainted area is split: rows that are never copied, and stay black in new textures.
+        const Region repainted = offscreen ? Region()
             : deviceRegion == Region::infinite()
-            ? Region(logicalBounds)
-            : viewport.mapFromDeviceCoordinatesContained(deviceRegion) & logicalBounds;
-        for (const Rect &dirty : logicalDirty.rects()) {
-            const Rect destination = viewport.mapToDeviceCoordinatesAligned(dirty).translated(-deviceRect.topLeft());
-            render.framebuffers[0]->blitFromRenderTarget(renderTarget, viewport, dirty, destination);
+            ? Region(deviceRect)
+            : deviceRegion & deviceRect;
+        const OutputTransform transform = renderTarget.texture() ? renderTarget.texture()->contentTransform() : OutputTransform();
+        if (transform == OutputTransform::Normal) {
+            for (const Rect &dirty : repainted.rects()) {
+                render.framebuffers[0]->blitFromFramebuffer(dirty, dirty.translated(-deviceRect.topLeft()));
+            }
+        } else {
+            // A turned screen can only be copied by way of logical coordinates.
+            const Region logicalDirty = viewport.mapFromDeviceCoordinatesContained(repainted) & logicalBounds;
+            for (const Rect &dirty : logicalDirty.rects()) {
+                const Rect destination = viewport.mapToDeviceCoordinatesAligned(dirty).translated(-deviceRect.topLeft());
+                render.framebuffers[0]->blitFromRenderTarget(renderTarget, viewport, dirty, destination);
+            }
         }
-        if (!offscreen && fresh && logicalDirty.boundingRect() != logicalBounds) {
+        if (!offscreen && fresh && repainted.boundingRect() != deviceRect) {
             // New textures start out empty; fill them in on the next frame.
             effects->addRepaint(logicalBounds);
         }

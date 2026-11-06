@@ -767,6 +767,7 @@ pub fn view<'a>(
     layout: &'a Layout,
     material: Option<material::Kind>,
     fan_open: bool,
+    downloads: &'a [image::Handle],
 ) -> Element<'a> {
     // Glass brings its own rim and highlight; over blur (or nothing) the pill needs a faint
     // fill and border to read as a surface.
@@ -823,6 +824,8 @@ pub fn view<'a>(
         // pointer grab needs the press to still be held.
         let picture = if fan_open && place == Place::Downloads {
             fan_tile(rect.width)
+        } else if place == Place::Downloads && !downloads.is_empty() {
+            downloads_pile(downloads, rect.width)
         } else {
             icon_image(handle, place.name(), rect.width)
         };
@@ -937,6 +940,33 @@ fn count_badge<'a>(count: u32, icon: &Rectangle, lift: f32) -> Element<'a> {
     pin(badge)
         .x(icon.x + icon.width - width + BADGE_OVERHANG * scale)
         .y(icon.y - lift - BADGE_OVERHANG * scale)
+        .into()
+}
+
+/// The Downloads tile: its newest files in a pile, the newest on top.
+fn downloads_pile<'a>(files: &'a [image::Handle], size: f32) -> Element<'a> {
+    const TILTS: [f32; 3] = [0.0, 7.0, -7.0];
+    let mut layers: Vec<Element<'a>> = vec![Space::new().width(size).height(size).into()];
+    for (index, file) in files.iter().enumerate().take(TILTS.len()).rev() {
+        let picture = size * 0.86;
+        let inset = (size - picture) / 2.0;
+        layers.push(
+            pin(image(file.clone())
+                .width(picture)
+                .height(picture)
+                .content_fit(iced_widget::core::ContentFit::Contain)
+                .border_radius(3.0)
+                .rotation(iced_widget::core::Rotation::Floating(
+                    iced_widget::core::Radians(TILTS[index].to_radians()),
+                )))
+            .x(inset)
+            .y(inset)
+            .into(),
+        );
+    }
+    iced_widget::Stack::with_children(layers)
+        .width(size)
+        .height(size)
         .into()
 }
 

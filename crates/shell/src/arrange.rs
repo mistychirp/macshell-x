@@ -86,7 +86,7 @@ impl Layout {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// The pointer has rested on a green light: where its middle and bottom are in its window.
     Hovered(i32, i32),
@@ -96,6 +96,8 @@ pub enum Event {
     ConfigChanged,
     /// Spotlight's shortcut was pressed.
     ToggleSpotlight,
+    /// A volume or brightness key was pressed, by its name in KDE's shortcuts.
+    MediaKey(String),
 }
 
 /// An open menu.
@@ -131,6 +133,12 @@ impl Windows {
     #[zbus(name = "ToggleSpotlight")]
     fn toggle_spotlight(&self) {
         let _ = self.events.unbounded_send(Event::ToggleSpotlight);
+    }
+
+    /// A volume or brightness key was pressed, which our KWin plugin listens for.
+    #[zbus(name = "MediaKey")]
+    fn media_key(&self, name: String) {
+        let _ = self.events.unbounded_send(Event::MediaKey(name));
     }
 
     /// The Settings app changed the config file.

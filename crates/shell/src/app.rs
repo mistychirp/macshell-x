@@ -33,7 +33,7 @@ use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
     appmenu, arrange, audio, autostart, bluetooth, brightness, clipboard, control, dbusmenu,
-    desktop, dnd, dock, fan, fonts, icons, launcher, media, menu, menubar, network,
+    desktop, dnd, dock, fan, fonts, hud, icons, launcher, media, menu, menubar, network,
     notification_center, portal, running, spotlight, tray, wallpaper, widgets,
 };
 
@@ -82,6 +82,8 @@ enum Surface {
     Spotlight,
     /// The Downloads stack, open.
     Fan,
+    /// The volume or brightness, for a moment.
+    Hud,
     /// The green traffic light's menu.
     ArrangeMenu,
     MenuBar,
@@ -214,6 +216,12 @@ pub enum Message {
     WallpaperChosen(Option<PathBuf>),
     /// "System Settings…" was chosen in the menu.
     OpenSettings,
+    /// An animation frame for the volume and brightness capsule.
+    HudFrame,
+    /// The brightness, read to change it with a key, by this much.
+    BrightnessStep(Option<f32>, f32),
+    /// A picture of one of the newest downloads, for the Downloads tile.
+    PileThumbnail(PathBuf, Option<image::Handle>),
     /// The pointer moved over the Downloads fan.
     FanMoved(Point),
     FanPressed,
@@ -432,6 +440,10 @@ struct Shell {
     /// Apps launched from the dock that haven't opened a window yet, and when.
     launching: HashMap<String, Instant>,
     fan: Option<fan::Fan>,
+    hud: Option<hud::Hud>,
+    /// The newest downloads, newest first, which the Downloads tile shows.
+    pile: Vec<PathBuf>,
+    pile_pictures: Vec<image::Handle>,
     spotlight: Option<spotlight::Spotlight>,
     /// The apps it lists, as far as they've been read.
     spotlight_apps: Vec<Rc<App>>,
@@ -534,6 +546,12 @@ const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
 /// How big minimized windows' pictures are kept, on their longer side: enough for a magnified dock.
 const THUMBNAIL_SIZE: u32 = 512;
 /// How long the green light's menu waits for the pointer to come back.
+/// How many files the Downloads tile shows.
+const PILE_SIZE: usize = 3;
+const VOLUME_STEP: f32 = 0.05;
+const VOLUME_STEP_SMALL: f32 = 0.01;
+const BRIGHTNESS_STEP: f32 = 0.05;
+const BRIGHTNESS_STEP_SMALL: f32 = 0.01;
 /// How many downloads to look at, for saying how many more there are.
 const FAN_MOST_DOWNLOADS: usize = 5000;
 /// How long Spotlight waits after a keystroke before looking through the files.
@@ -637,6 +655,9 @@ impl Shell {
             running: BTreeMap::new(),
             fan_pointer: Point::ORIGIN,
             fan: None,
+            hud: None,
+            pile: Vec::new(),
+            pile_pictures: Vec::new(),
             spotlight: None,
             spotlight_apps: Vec::new(),
             spotlight_unread,
@@ -753,6 +774,7 @@ impl Shell {
             .iter()
             .filter_map(|item| item.app.icon.as_ref())
             .chain(self.place_icons.iter().flatten())
+            .chain(self.pile_pictures.iter())
             .chain(self.desktop.icons())
             .chain(self.widgets.photo_handles())
             .filter(|handle| !self.loaded_icons.contains_key(&handle.id()))
@@ -792,13 +814,14 @@ impl Shell {
                 Surface::MenuBar => format!("{:?}", self.bar()),
                 Surface::Dock => {
                     format!(
-                        "{:?} {:?} {:?} {:?} {:?} {}",
+                        "{:?} {:?} {:?} {:?} {:?} {} {:?}",
                         self.dock,
                         self.place_icons,
                         self.dock_layout,
                         self.minimized,
                         self.dock_badges,
-                        self.fan_is_open()
+                        self.fan_is_open(),
+                        self.pile_pictures
                     )
                 }
                 // Short-lived, with live content.
@@ -806,6 +829,7 @@ impl Shell {
                 | Surface::Alert
                 | Surface::Banners
                 | Surface::Spotlight
+                | Surface::Hud
                 | Surface::Fan => {
                     iced_layershell::redraw::mark_changed(id);
                     continue;
@@ -1112,6 +1136,14 @@ impl Shell {
             Message::SurfaceOpened(id, _) if self.surfaces.get(&id) == Some(&Surface::Fan) => {
                 return self.reach_surface(id);
             }
+            Message::SurfaceOpened(id, _) if self.surfaces.get(&id) == Some(&Surface::Hud) => {
+                // It's only to look at.
+                let input = Task::done(Message::SetInputRegion {
+                    id,
+                    callback: ActionCallback::new(|_| {}),
+                });
+                return Task::batch([self.reach_surface(id), input]);
+            }
             Message::SurfaceOpened(id, size) if id == self.dock_id => {
                 self.dock_width = size.width;
                 let relayout = self.relayout_dock();
@@ -1140,8 +1172,19 @@ impl Shell {
                 ]);
             }
             Message::DesktopRefresh => {
-                return Task::perform(desktop::list(self.desktop.folder()), Message::DesktopListed);
+                let pile = self.refresh_pile();
+                let listed =
+                    Task::perform(desktop::list(self.desktop.folder()), Message::DesktopListed);
+                return Task::batch([pile, listed]);
             }
+            Message::PileThumbnail(path, Some(picture)) => {
+                if let Some(index) = self.pile.iter().position(|known| *known == path)
+                    && let Some(slot) = self.pile_pictures.get_mut(index)
+                {
+                    *slot = picture;
+                }
+            }
+            Message::PileThumbnail(_, None) => {}
             Message::DesktopListed(entries) => {
                 let apps = &mut self.apps;
                 let wanted = self.desktop.merge(entries, |entry| {
@@ -1424,6 +1467,18 @@ impl Shell {
                 return close;
             }
             Message::Arrange(arrange::Event::ConfigChanged) => return self.reload_config(),
+            Message::Arrange(arrange::Event::MediaKey(key)) => return self.media_key(&key),
+            Message::BrightnessStep(level, step) => {
+                self.control.brightness = level;
+                return self.step_brightness(step);
+            }
+            Message::HudFrame => {
+                if let Some(open) = &mut self.hud
+                    && open.frame()
+                {
+                    return iced_runtime::window::close(open.id);
+                }
+            }
             Message::Arrange(arrange::Event::ToggleSpotlight) | Message::SpotlightToggle => {
                 return self.toggle_spotlight();
             }
@@ -1446,6 +1501,9 @@ impl Shell {
                         return Task::none();
                     }
                     open.hovered = open.row_at(point);
+                    if let Some(index) = open.hovered {
+                        open.prepare_hovered(index);
+                    }
                     if open.should_drag(point) {
                         open.dragging = true;
                         return iced_runtime::window::drag(open.id)
@@ -2039,6 +2097,11 @@ impl Shell {
             }
             Message::SurfaceClosed(id) => {
                 self.surfaces.remove(&id);
+                if self.hud.as_ref().is_some_and(|open| open.id == id) {
+                    if let Some(material) = self.hud.take().and_then(|open| open.material) {
+                        material.destroy();
+                    }
+                }
                 if self.fan.as_ref().is_some_and(|open| open.id == id) {
                     if let Some(material) = self.fan.take().and_then(|open| open.material) {
                         material.destroy();
@@ -2509,6 +2572,15 @@ impl Shell {
                 }
                 _ => target.destroy(),
             },
+            Some(Surface::Hud) => match &mut self.hud {
+                Some(open) if open.id == id => {
+                    let (x, y) = hud::origin();
+                    material.set_appear(&target, material::Appear::Gentle(x, y));
+                    material.set_shapes(&target, &hud::material_shapes());
+                    open.material = Some(target);
+                }
+                _ => target.destroy(),
+            },
             Some(Surface::Fan) => match &mut self.fan {
                 Some(open) if open.id == id => {
                     open.shapes = open.material_shapes();
@@ -2772,6 +2844,108 @@ impl Shell {
                 min_length: request.min_length,
             }),
         })
+    }
+
+    /// Keeps up with the newest downloads, for the Downloads tile.
+    fn refresh_pile(&mut self) -> Task<Message> {
+        let newest = places::recent_downloads(&self.downloads_dir, PILE_SIZE);
+        let paths: Vec<PathBuf> = newest
+            .iter()
+            .map(|download| download.path.clone())
+            .collect();
+        if paths == self.pile {
+            return Task::none();
+        }
+        self.pile.clear();
+        self.pile_pictures.clear();
+        let mut thumbnails = Vec::new();
+        for download in &newest {
+            // A blank in the pile would throw off which picture is whose.
+            let Some(icon) = self.apps.themed_icon(places::icon_name(download)) else {
+                continue;
+            };
+            self.pile.push(download.path.clone());
+            self.pile_pictures.push(icon);
+            if desktop::has_thumbnail(&download.path) {
+                let path = download.path.clone();
+                thumbnails.push(Task::perform(
+                    desktop::thumbnail(path.clone()),
+                    move |picture| Message::PileThumbnail(path.clone(), picture),
+                ));
+            }
+        }
+        Task::batch(thumbnails)
+    }
+
+    /// Does what a volume or brightness key is for.
+    fn media_key(&mut self, key: &str) -> Task<Message> {
+        match key {
+            "increase_volume" => self.step_volume(VOLUME_STEP),
+            "decrease_volume" => self.step_volume(-VOLUME_STEP),
+            "increase_volume_small" => self.step_volume(VOLUME_STEP_SMALL),
+            "decrease_volume_small" => self.step_volume(-VOLUME_STEP_SMALL),
+            "mute" => {
+                let Some(volume) = audio::volume() else {
+                    return Task::none();
+                };
+                audio::set_muted(!volume.muted);
+                self.control.volume = Some(audio::Volume {
+                    muted: !volume.muted,
+                    ..volume
+                });
+                self.show_hud(hud::Kind::Sound, volume.level, !volume.muted)
+            }
+            "Increase Screen Brightness" => self.step_brightness(BRIGHTNESS_STEP),
+            "Decrease Screen Brightness" => self.step_brightness(-BRIGHTNESS_STEP),
+            "Increase Screen Brightness Small" => self.step_brightness(BRIGHTNESS_STEP_SMALL),
+            "Decrease Screen Brightness Small" => self.step_brightness(-BRIGHTNESS_STEP_SMALL),
+            other => {
+                log::warn!("don't know the key {other}");
+                Task::none()
+            }
+        }
+    }
+
+    fn step_volume(&mut self, step: f32) -> Task<Message> {
+        let Some(volume) = audio::volume() else {
+            return Task::none();
+        };
+        let level = (volume.level + step).clamp(0.0, 1.0);
+        audio::set_level(level);
+        // Changing the volume is what you'd want after muting, like on macOS.
+        if volume.muted {
+            audio::set_muted(false);
+        }
+        self.control.volume = Some(audio::Volume {
+            level,
+            muted: false,
+        });
+        self.show_hud(hud::Kind::Sound, level, false)
+    }
+
+    fn step_brightness(&mut self, step: f32) -> Task<Message> {
+        // It takes most of a second to read, so it's kept from then on.
+        let Some(current) = self.control.brightness else {
+            return Task::perform(brightness::level(), move |level| match level {
+                Some(level) => Message::BrightnessStep(Some(level), step),
+                None => Message::Nothing,
+            });
+        };
+        let level = (current + step).clamp(0.0, 1.0);
+        self.control.brightness = Some(level);
+        brightness::set_level(level);
+        self.show_hud(hud::Kind::Display, level, false)
+    }
+
+    fn show_hud(&mut self, kind: hud::Kind, level: f32, muted: bool) -> Task<Message> {
+        if let Some(open) = &mut self.hud {
+            open.update(kind, level, muted);
+            return Task::none();
+        }
+        let (id, open) = Message::layershell_open(hud::settings());
+        self.surfaces.insert(id, Surface::Hud);
+        self.hud = Some(hud::Hud::new(id, kind, level, muted));
+        open
     }
 
     fn fan_is_open(&self) -> bool {
@@ -3716,7 +3890,12 @@ impl Shell {
                 &self.dock_layout,
                 self.material.as_ref().map(|m| m.kind()),
                 self.fan_is_open(),
+                &self.pile_pictures,
             ),
+            Some(Surface::Hud) => match &self.hud {
+                Some(open) => open.view(),
+                None => Space::new().into(),
+            },
             Some(Surface::Fan) => match &self.fan {
                 Some(open) => open.view(),
                 None => Space::new().into(),
@@ -3842,6 +4021,11 @@ impl Shell {
         } else {
             Subscription::none()
         };
+        let hud_frames = if self.hud.is_some() {
+            time::every(Duration::from_millis(16)).map(|_| Message::HudFrame)
+        } else {
+            Subscription::none()
+        };
         let spotlight_tick = if self.spotlight.is_some() {
             time::every(Duration::from_millis(250)).map(|_| Message::SpotlightTick)
         } else {
@@ -3863,6 +4047,7 @@ impl Shell {
             arrange::events().map(Message::Arrange),
             clipboard::events().map(Message::Copied),
             fan_frames,
+            hud_frames,
             spotlight_load,
             spotlight_tick,
             time::every(Duration::from_secs(3)).map(|_| Message::CheckEthernet),
