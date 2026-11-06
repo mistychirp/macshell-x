@@ -172,6 +172,16 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.meniscus = group.readEntry("Meniscus", defaults.meniscus);
     m_settings.grain = group.readEntry("Grain", defaults.grain);
     m_settings.rimTint = group.readEntry("RimTint", defaults.rimTint);
+    m_settings.glassModel = group.readEntry("GlassModel", defaults.glassModel);
+    m_settings.glassIor = group.readEntry("GlassIor", defaults.glassIor);
+    m_settings.glassIorSpread = group.readEntry("GlassIorSpread", defaults.glassIorSpread);
+    m_settings.glassProfile = group.readEntry("GlassProfile", defaults.glassProfile);
+    m_settings.glassShoulder = group.readEntry("GlassShoulder", defaults.glassShoulder);
+    m_settings.glassGloss = group.readEntry("GlassGloss", defaults.glassGloss);
+    m_settings.controlThickness = group.readEntry("ControlThickness", defaults.controlThickness);
+    m_settings.controlBezel = group.readEntry("ControlBezel", defaults.controlBezel);
+    m_settings.liquidThickness = group.readEntry("LiquidThickness", defaults.liquidThickness);
+    m_settings.liquidBezel = group.readEntry("LiquidBezel", defaults.liquidBezel);
     m_settings.inactiveTint = group.readEntry("InactiveTint", defaults.inactiveTint);
     m_settings.chipTint = group.readEntry("ChipTint", defaults.chipTint);
     m_settings.chipRim = group.readEntry("ChipRim", defaults.chipRim);
@@ -272,7 +282,7 @@ void GlassEffect::updateWindow(EffectWindow *w)
     // The lens and the blur read the background well away from each pixel, so repaints under the
     // glass have to reach that far.
     const int blurReach = blurOffset * (1 << passes) * 2;
-    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.lensStrength * 2) + blurReach);
+    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(std::max({m_settings.lensStrength, m_settings.controlLensStrength, m_settings.controlThickness * 1.2f, m_settings.liquidThickness * 1.2f}) * 2) + blurReach);
     data.item->setEffectBoundingRect(bounds);
     w->addRepaintFull();
 
@@ -719,8 +729,16 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("rimInner", 1.0f);
         m_glassShader->setUniform("rimSoft", control ? 1.0f : 0.0f);
         const bool lens = control || liquid || shape.style == Style::Card;
+        const bool physical = m_settings.glassModel != 0 && (lens || bubble);
+        m_glassShader->setUniform("thickness", !physical ? 0.0f : control ? m_settings.controlThickness : m_settings.liquidThickness);
+        m_glassShader->setUniform("bezel", control ? m_settings.controlBezel : m_settings.liquidBezel);
+        m_glassShader->setUniform("shoulder", m_settings.glassShoulder);
+        m_glassShader->setUniform("profile", m_settings.glassProfile);
+        m_glassShader->setUniform("ior", m_settings.glassIor);
+        m_glassShader->setUniform("iorSpread", m_settings.glassIorSpread);
+        m_glassShader->setUniform("gloss", m_settings.glassGloss);
         m_glassShader->setUniform("dispersion", lens ? m_settings.dispersion : 0.0f);
-        m_glassShader->setUniform("meniscus", lens ? m_settings.meniscus : 0.0f);
+        m_glassShader->setUniform("meniscus", lens && !physical ? m_settings.meniscus : 0.0f);
         m_glassShader->setUniform("grain", blurred || control ? m_settings.grain : 0.0f);
         m_glassShader->setUniform("rimTint", m_settings.rimTint);
         m_glassShader->setUniform("softEdges", shape.softEdges);

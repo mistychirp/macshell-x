@@ -78,6 +78,21 @@ struct GlassSettings {
     float grain = 0.006;
     float rimTint = 0.4;
 
+    /// Glass as a physical slab: its edge curves down, and the background is refracted through that
+    /// curve. 0 for glassModel uses the fitted curves above instead. These values reproduce the bend
+    /// measured from Tahoe's capsules to within a pixel and a half, mirrored edge included.
+    int glassModel = 1;
+    float glassIor = 1.5;
+    float glassIorSpread = 0.02;
+    float glassProfile = 2.5;
+    float glassShoulder = 1.5;
+    float glassGloss = 0.25;
+    float controlThickness = 47.5;
+    float controlBezel = 17.0;
+    /// For everything else with a lens: the dock, cards and bubbles.
+    float liquidThickness = 47.5;
+    float liquidBezel = 17.0;
+
     /// Backdrops, which set things apart from a busy background, dim it a little as well.
     float backdropBrightness = 0.9;
 

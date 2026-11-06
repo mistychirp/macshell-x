@@ -24,6 +24,24 @@ uniform float deviceScale;
 // edge, and how far in it reaches. A strength of 0 means no lens.
 uniform float lensStrength;
 uniform float lensRadius;
+// A physical lens instead, when thickness isn't 0: a slab of glass whose edge curves down in a
+// rounded shoulder. Each ray looks straight down, refracts where it enters the curved surface, and
+// lands on the background below, so the whole bend follows from the shape and the material. Sizes
+// are for a shape at least 62 logical pixels across; smaller ones are the same lens, scaled down.
+// Refracting through a bezel's normal is MacShell's idea (see below).
+// thickness: how tall the slab is at its very edge, in logical pixels.
+uniform float thickness;
+// How wide the shoulder is, in logical pixels, and how tall as a share of that.
+uniform float bezel;
+uniform float shoulder;
+// Its curve, as a superellipse: 2 is a circle's arc, and higher stays flat for longer.
+uniform float profile;
+// The refractive index of green light, and how much higher it is for red and lower for blue.
+uniform float ior;
+uniform float iorSpread;
+// How bright a light looks reflected in the shoulder, from the top left, with a dimmer glint across
+// from it where that light leaves the glass again.
+uniform float gloss;
 // A lens that takes what's far in, right past the middle of a capsule, and mirrors it at the edge:
 // measured from Tahoe, it bends by lensStrength * (1 - depth / lensRadius)^2.
 uniform float lensMirrors;
@@ -138,6 +156,13 @@ float noise()
     return first + fract((p.x + p.y) * p.z) - 1.0;
 }
 
+// Where a ray looking straight down lands on the background, relative to where it entered the glass.
+vec2 throughGlass(vec3 surface, float height, float index)
+{
+    vec3 ray = refract(vec3(0.0, 0.0, -1.0), surface, 1.0 / index);
+    return ray.xy / -ray.z * height;
+}
+
 // 1 between two distances from the edge, in device pixels, antialiased.
 float band(float depth, float from, float to)
 {
@@ -192,7 +217,18 @@ void main(void)
     // The lens bends the background toward the center, most at the edge. Thin shapes get a
     // proportionally smaller one.
     vec2 refracted = geo;
-    if (lensMirrors > 0.0) {
+    vec3 surface = vec3(0.0, 0.0, 1.0);
+    float slabHeight = 0.0;
+    if (thickness > 0.0) {
+        float fit = min(1.0, min(geoSize.x, geoSize.y) / 62.0);
+        // A shoulder wider than the corners would crease along their diagonals.
+        float width = max(min(bezel * fit, min(cornerRadius, min(halfSize.x, halfSize.y))), 1.0);
+        float across = clamp(1.0 - max(-d, 0.0) / width, 0.0, 1.0);
+        float curve = max(1.0 - pow(across, profile), 0.0);
+        surface = normalize(vec3(n * shoulder * pow(across, profile - 1.0), pow(curve, (profile - 1.0) / profile)));
+        slabHeight = thickness * fit + shoulder * width * pow(curve, 1.0 / profile);
+        refracted = geo + throughGlass(surface, slabHeight, ior) / geoSize;
+    } else if (lensMirrors > 0.0) {
         // Measured on capsules 62 pixels tall; smaller shapes get a smaller one.
         float fit = min(1.0, min(geoSize.x, geoSize.y) / 62.0);
         float falloff = max(1.0 - max(-d, 0.0) / (lensRadius * fit), 0.0);
@@ -205,7 +241,10 @@ void main(void)
     }
 
     vec4 sampled = sampleGeo(refracted);
-    if (dispersion > 0.0) {
+    if (thickness > 0.0) {
+        sampled.r = sampleGeo(geo + throughGlass(surface, slabHeight, ior + iorSpread) / geoSize).r;
+        sampled.b = sampleGeo(geo + throughGlass(surface, slabHeight, ior - iorSpread) / geoSize).b;
+    } else if (dispersion > 0.0) {
         vec2 bent = refracted - geo;
         sampled.r = sampleGeo(geo + bent * (1.0 + dispersion)).r;
         sampled.b = sampleGeo(geo + bent * (1.0 - dispersion)).b;
@@ -221,6 +260,19 @@ void main(void)
         float facing = dot(n, normalize(vec2(-0.55, -0.83)));
         float light = pow(max(facing, 0.0), 1.6) + 0.55 * pow(max(-facing, 0.0), 2.2);
         color.rgb += exp(-along * along) * meniscus * (0.35 + light);
+    }
+
+    if (thickness > 0.0) {
+        // Glass reflects more the more glancing the view is (Schlick's approximation): here, the
+        // blurred surroundings.
+        float straightOn = pow((ior - 1.0) / (ior + 1.0), 2.0);
+        float fresnel = straightOn + (1.0 - straightOn) * pow(1.0 - surface.z, 5.0);
+        color.rgb = mix(color.rgb, min(texture(wide, uv).rgb * edgeGain, vec3(1.0)), fresnel);
+        vec3 mirrored = reflect(vec3(0.0, 0.0, -1.0), surface);
+        const vec3 light = normalize(vec3(-0.45, -0.68, 0.58));
+        float key = pow(max(dot(mirrored, light), 0.0), 24.0);
+        float glint = pow(max(dot(mirrored, vec3(-light.xy, light.z)), 0.0), 24.0);
+        color.rgb += gloss * (key + 0.55 * glint);
     }
 
     // The edge, with no dimming: it shows the surroundings, not what's right behind it.
