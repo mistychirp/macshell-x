@@ -44,6 +44,9 @@ pub enum Glyph {
     Bolt,
     /// A picture of mountains.
     Photo,
+    /// Piles of things, for stacks.
+    Stacks,
+    Gear,
     /// A folder with a plus, for making one.
     NewFolder,
     /// An i in a circle.
@@ -205,6 +208,20 @@ impl Glyph {
                 <rect x="3" y="4.5" width="18" height="15" rx="2.6"/>
                 <circle cx="8.3" cy="9.5" r="1.7" fill="#000" stroke="none"/>
                 <path d="M3.5 17.5l5.2-4.6 3.3 2.7 3.7-4 5 5"/>
+                </svg>"##
+            }
+            Glyph::Stacks => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round">
+                <rect x="3.5" y="3.5" width="17" height="6" rx="1.6"/>
+                <rect x="3.5" y="13" width="7" height="7.5" rx="1.6"/>
+                <rect x="13.5" y="13" width="7" height="7.5" rx="1.6"/>
+                </svg>"##
+            }
+            Glyph::Gear => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M12 3v2.6M12 18.4V21M3 12h2.6M18.4 12H21M5.6 5.6l1.9 1.9M16.5 16.5l1.9 1.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9" stroke-linecap="round" stroke-width="2.2"/>
+                <circle cx="12" cy="12" r="6.6"/>
                 </svg>"##
             }
             Glyph::NewFolder => {

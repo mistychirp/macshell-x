@@ -176,6 +176,7 @@ pub enum Message {
     Desktop(desktop::Action),
     /// News about drags over the shell's surfaces, or from them.
     Dnd(dnd::Event),
+    DesktopMetrics(desktop::Metrics),
     /// The press's serial is ready for dragging the selection.
     DesktopDragReady,
     /// Files were moved to the desktop: their names, and where they were dropped.
@@ -288,6 +289,8 @@ struct OpenAlert {
 enum PopupContent {
     Menu(Vec<menu::Entry>),
     Downloads(Vec<stack::Tile>),
+    /// How big things are on the desktop.
+    ViewOptions,
     /// Shows [`Shell::control`].
     ControlCenter,
     /// Shows [`Shell::notifications`].
@@ -305,6 +308,8 @@ struct Shell {
     desktop_id: IcedId,
     desktop: desktop::Desktop,
     desktop_surface: Option<WlSurface>,
+    /// View Options are waiting for the menu they were chosen from to go.
+    next_view_options: Option<IcedNewPopupSettings>,
     dock_surface: Option<ObjectId>,
     /// Which of the shell's surfaces a drag is over.
     drag_over: Option<ObjectId>,
@@ -492,6 +497,7 @@ impl Shell {
             desktop_id,
             desktop: desktop::Desktop::load(),
             desktop_surface: None,
+            next_view_options: None,
             dock_surface: None,
             drag_over: None,
             widgets: widgets::Widgets::load(),
@@ -979,6 +985,11 @@ impl Shell {
             Message::DesktopListed(entries) => {
                 let apps = &mut self.apps;
                 let wanted = self.desktop.merge(entries, |entry| {
+                    if entry.drive.is_some() {
+                        return apps
+                            .themed_icon("drive-removable-media")
+                            .or_else(|| apps.themed_icon("drive-harddisk"));
+                    }
                     apps.themed_icon(places::icon_name(&places::Download {
                         path: entry.path.clone(),
                         name: entry.name.clone(),
@@ -1023,6 +1034,7 @@ impl Shell {
                 }
             }
             Message::Dnd(event) => return self.handle_drag(event),
+            Message::DesktopMetrics(metrics) => self.desktop.set_metrics(metrics),
             Message::DesktopReceived(names, at) => {
                 self.desktop.place_dropped(&names, at);
                 return Task::done(Message::DesktopRefresh);
@@ -1550,6 +1562,11 @@ impl Shell {
                     self.menu_hover = None;
                     self.next_submenu = None;
                     let relayout = self.relayout_dock();
+                    if let Some(settings) = self.next_view_options.take() {
+                        let open =
+                            self.open_popup(None, settings, PopupContent::ViewOptions, 0.0, None);
+                        return Task::batch([relayout, open]);
+                    }
                     return match self.next_bar_menu.take() {
                         Some(title) => Task::batch([relayout, self.open_bar_menu(title)]),
                         None => relayout,
@@ -1938,7 +1955,9 @@ impl Shell {
             Some(Surface::Popup) => match &mut self.popup {
                 Some(popup) if popup.id == id => {
                     let shapes = match popup.content {
-                        PopupContent::Menu(_) => menu::material_shapes(popup.size, popup.tail),
+                        PopupContent::Menu(_) | PopupContent::ViewOptions => {
+                            menu::material_shapes(popup.size, popup.tail)
+                        }
                         PopupContent::Downloads(_) => stack::material_shapes(popup.size),
                         PopupContent::ControlCenter => control::material_shapes(&self.control),
                         PopupContent::NotificationCenter => notification_center::material_shapes(
@@ -2286,7 +2305,10 @@ impl Shell {
         match place {
             Some(Place::Trash) => {
                 for path in &paths {
-                    if let Err(err) = places::move_to_trash(path) {
+                    // A drive in the trash means eject it, as it's long meant on macOS.
+                    if let Some(device) = self.desktop.drive_device(path) {
+                        desktop::eject(&device);
+                    } else if let Err(err) = places::move_to_trash(path) {
                         log::warn!("can't move {} to the trash: {err}", path.display());
                     }
                 }
@@ -2361,6 +2383,26 @@ impl Shell {
                 return Task::perform(portal::choose_image(), Message::WallpaperChosen);
             }
             Action::EditWidgets => return self.run_widget_action(widgets::Action::Edit),
+            Action::UseStacks => self.desktop.toggle_stacks(),
+            Action::Eject => {
+                for path in self.desktop.selection() {
+                    if let Some(device) = self.desktop.drive_device(&path) {
+                        desktop::eject(&device);
+                    }
+                }
+            }
+            Action::ViewOptions => {
+                let (x, y) = self.desktop.pointer();
+                let settings = IcedNewPopupSettings::new(
+                    self.desktop_id,
+                    desktop::VIEW_OPTIONS_SIZE,
+                    (x, y, 1, 1),
+                )
+                .anchor(PopupAnchor::BottomRight)
+                .gravity(PopupGravity::BottomRight);
+                self.next_view_options = Some(settings);
+                return Task::none();
+            }
             Action::SortBy(sort) => self.desktop.set_sort(sort),
             Action::CleanUp => self.desktop.clean_up_action(None),
             Action::CleanUpBy(sort) => self.desktop.clean_up_action(Some(sort)),
@@ -2778,6 +2820,9 @@ impl Shell {
                         menu::view(entries, material, 0, open_row, has_tail)
                     }
                     Some(PopupContent::Downloads(tiles)) => stack::view(tiles, material),
+                    Some(PopupContent::ViewOptions) => {
+                        desktop::view_options(self.desktop.metrics())
+                    }
                     Some(PopupContent::ControlCenter) => control::view(&self.control, material),
                     Some(PopupContent::NotificationCenter) => notification_center::view(
                         &self.notifications,

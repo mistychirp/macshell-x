@@ -10,7 +10,9 @@ use std::{env, fs, io};
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
 use iced_widget::core::{Alignment, Background, Border, Color, Length, Point, Rectangle, Size};
-use iced_widget::{Space, column, container, image, mouse_area, pin, stack, text, text_input};
+use iced_widget::{
+    Space, column, container, image, mouse_area, pin, slider, stack, text, text_input,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::app::{Element, Message};
@@ -18,19 +20,14 @@ use crate::icons::Glyph;
 use crate::{dbus, fonts, menu, menubar, places};
 
 // Measured from Tahoe's desktop.
-const GRID_WIDTH: f32 = 92.0;
-const GRID_HEIGHT: f32 = 108.0;
 const MARGIN_RIGHT: f32 = 18.0;
 const MARGIN_TOP: f32 = 10.0;
 /// Icons stop short of the bottom of the screen, where the dock is.
 const DOCK_CLEARANCE: f32 = 90.0;
-const ICON_SIZE: f32 = 52.0;
-const BOX_SIZE: f32 = 68.0;
 const BOX_RADIUS: f32 = 8.0;
-const LABEL_SIZE: f32 = 12.0;
-const LABEL_LINE: f32 = 15.0;
 const LABEL_GAP: f32 = 4.0;
-const LABEL_WIDTH: f32 = GRID_WIDTH - 4.0;
+/// How far apart the icons of a stack's pile are.
+const STACK_OFFSET: f32 = 5.0;
 const THUMBNAIL_SIZE: u32 = 128;
 /// Files bigger than this keep their generic icon rather than being read for a thumbnail.
 const MAX_THUMBNAIL_BYTES: u64 = 64 * 1024 * 1024;
@@ -51,6 +48,110 @@ pub fn settings() -> NewLayerShellSettings {
     }
 }
 
+/// How big things are on the desktop, which View Options can change.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Metrics {
+    pub icon: f32,
+    pub spacing: f32,
+    pub text: f32,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            icon: 52.0,
+            spacing: 0.0,
+            text: 12.0,
+        }
+    }
+}
+
+impl Metrics {
+    fn box_size(self) -> f32 {
+        self.icon + 16.0
+    }
+
+    fn line(self) -> f32 {
+        self.text + 3.0
+    }
+
+    fn width(self) -> f32 {
+        self.icon + 40.0 + self.spacing
+    }
+
+    fn label_width(self) -> f32 {
+        self.width() - 4.0 - self.spacing
+    }
+
+    fn height(self) -> f32 {
+        self.box_size() + LABEL_GAP + 2.0 * self.line() + 6.0 + self.spacing
+    }
+}
+
+/// What a group of files is, when they're being kept in stacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StackKind {
+    Documents,
+    Images,
+    Movies,
+    Music,
+    PdfDocuments,
+    Presentations,
+    Screenshots,
+    Spreadsheets,
+    Other,
+}
+
+impl StackKind {
+    fn of(entry: &Entry) -> Self {
+        let extension = entry
+            .path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        match extension.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "avif" | "heic" | "tiff" => {
+                if entry.name.to_lowercase().starts_with("screenshot") {
+                    Self::Screenshots
+                } else {
+                    Self::Images
+                }
+            }
+            "mp4" | "mkv" | "webm" | "mov" | "avi" => Self::Movies,
+            "mp3" | "flac" | "ogg" | "opus" | "wav" | "m4a" => Self::Music,
+            "pdf" => Self::PdfDocuments,
+            "odp" | "ppt" | "pptx" | "key" => Self::Presentations,
+            "ods" | "xls" | "xlsx" | "csv" | "numbers" => Self::Spreadsheets,
+            "txt" | "md" | "odt" | "doc" | "docx" | "rtf" | "pages" | "log" => Self::Documents,
+            _ => Self::Other,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Documents => "Documents",
+            Self::Images => "Images",
+            Self::Movies => "Movies",
+            Self::Music => "Music",
+            Self::PdfDocuments => "PDF Documents",
+            Self::Presentations => "Presentations",
+            Self::Screenshots => "Screenshots",
+            Self::Spreadsheets => "Spreadsheets",
+            Self::Other => "Other",
+        }
+    }
+}
+
+/// A pile of files of a kind, when they're being kept in stacks.
+struct Stack {
+    kind: StackKind,
+    position: Point,
+    /// A few of the files' icons, for the pile.
+    icons: Vec<image::Handle>,
+}
+
 /// What the menus on the desktop can do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -64,6 +165,9 @@ pub enum Action {
     SortBy(Sort),
     CleanUp,
     CleanUpBy(Sort),
+    UseStacks,
+    Eject,
+    ViewOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -98,6 +202,8 @@ pub struct Entry {
     pub is_dir: bool,
     pub modified: Option<SystemTime>,
     pub len: u64,
+    /// The device, if this is a mounted drive rather than a file in the Desktop folder.
+    pub drive: Option<String>,
 }
 
 struct Item {
@@ -105,6 +211,8 @@ struct Item {
     /// The top left of its cell.
     position: Point,
     icon: Option<image::Handle>,
+    /// It's in a stack that isn't open.
+    hidden: bool,
 }
 
 enum Gesture {
@@ -130,6 +238,8 @@ struct Saved {
     /// By file name, in distance from the right and the top, so that they survive a change of
     /// screen.
     positions: BTreeMap<String, (f32, f32)>,
+    use_stacks: bool,
+    metrics: Metrics,
 }
 
 pub struct Rename {
@@ -155,6 +265,12 @@ pub struct Desktop {
     pub adding: bool,
     /// The folder a drag would go in, if dropped now.
     drop_folder: Option<PathBuf>,
+    metrics: Metrics,
+    use_stacks: bool,
+    stacks: Vec<Stack>,
+    open_stack: Option<StackKind>,
+    /// The grid changed size while stacks were deciding where things go.
+    grid_changed: bool,
 }
 
 /// What a press on the desktop turned out to be about.
@@ -174,6 +290,8 @@ impl Desktop {
             folder: desktop_dir(),
             positions: saved.positions,
             sort: saved.sort,
+            use_stacks: saved.use_stacks,
+            metrics: saved.metrics,
             ..Default::default()
         }
     }
@@ -236,6 +354,7 @@ impl Desktop {
                         icon: icon(&entry),
                         entry,
                         position: Point::ORIGIN,
+                        hidden: false,
                     }
                 }
             })
@@ -259,6 +378,14 @@ impl Desktop {
     fn arrange(&mut self) {
         if self.size.width <= 0.0 {
             return;
+        }
+        if self.use_stacks {
+            self.arrange_in_stacks();
+            return;
+        }
+        self.stacks.clear();
+        for item in &mut self.items {
+            item.hidden = false;
         }
         if self.sort != Sort::None {
             self.sort_into_cells(self.sort);
@@ -284,12 +411,122 @@ impl Desktop {
         }
     }
 
+    /// Drives, then a stack for each kind of file there's more than one of, with an open stack's
+    /// files right after it, then everything else. Where icons were left is kept for when stacks
+    /// are turned off.
+    fn arrange_in_stacks(&mut self) {
+        let mut by_kind: BTreeMap<StackKind, Vec<usize>> = BTreeMap::new();
+        for (index, item) in self.items.iter().enumerate() {
+            if !item.entry.is_dir && item.entry.drive.is_none() {
+                by_kind
+                    .entry(StackKind::of(&item.entry))
+                    .or_default()
+                    .push(index);
+            }
+        }
+        by_kind.retain(|_, members| members.len() > 1);
+        let name = |index: &usize, items: &[Item]| items[*index].entry.name.to_lowercase();
+        let stacked: HashSet<usize> = by_kind.values().flatten().copied().collect();
+
+        let mut cell = 0;
+        let mut drives: Vec<usize> = (0..self.items.len())
+            .filter(|index| self.items[*index].entry.drive.is_some())
+            .collect();
+        drives.sort_by_key(|index| name(index, &self.items));
+        for index in drives {
+            self.items[index].position = self.cell(cell);
+            self.items[index].hidden = false;
+            cell += 1;
+        }
+
+        let mut stacks = Vec::new();
+        for (kind, mut members) in by_kind {
+            members.sort_by_key(|index| name(index, &self.items));
+            stacks.push(Stack {
+                kind,
+                position: self.cell(cell),
+                icons: members
+                    .iter()
+                    .take(3)
+                    .filter_map(|index| self.items[*index].icon.clone())
+                    .collect(),
+            });
+            cell += 1;
+            let open = self.open_stack == Some(kind);
+            for index in members {
+                self.items[index].hidden = !open;
+                if open {
+                    self.items[index].position = self.cell(cell);
+                    cell += 1;
+                }
+            }
+        }
+        self.stacks = stacks;
+
+        let mut rest: Vec<usize> = (0..self.items.len())
+            .filter(|index| !stacked.contains(index) && self.items[*index].entry.drive.is_none())
+            .collect();
+        rest.sort_by_key(|index| name(index, &self.items));
+        for index in rest {
+            self.items[index].position = self.cell(cell);
+            self.items[index].hidden = false;
+            cell += 1;
+        }
+    }
+
+    fn stack_at(&self, point: Point) -> Option<StackKind> {
+        self.stacks
+            .iter()
+            .find(|stack| {
+                self.hit_rects(stack.position)
+                    .iter()
+                    .any(|rect| rect.contains(point))
+            })
+            .map(|stack| stack.kind)
+    }
+
+    pub fn toggle_stacks(&mut self) {
+        self.use_stacks = !self.use_stacks;
+        self.open_stack = None;
+        self.arrange();
+        // Where icons were left was on a grid of another size.
+        if !self.use_stacks && std::mem::take(&mut self.grid_changed) && self.sort == Sort::None {
+            self.clean_up();
+        }
+        self.save();
+    }
+
+    pub fn metrics(&self) -> Metrics {
+        self.metrics
+    }
+
+    /// Icons keep their cells, as near as they can, when the grid changes size.
+    pub fn set_metrics(&mut self, metrics: Metrics) {
+        self.metrics = metrics;
+        if self.use_stacks {
+            self.grid_changed = true;
+        } else if self.sort == Sort::None {
+            self.clean_up();
+        }
+        self.arrange();
+        self.save();
+    }
+
+    /// The device behind a mounted drive's icon.
+    pub fn drive_device(&self, path: &Path) -> Option<String> {
+        self.items
+            .iter()
+            .find(|item| item.entry.path == path)
+            .and_then(|item| item.entry.drive.clone())
+    }
+
     fn cell(&self, index: usize) -> Point {
         let top = menubar::HEIGHT as f32 + MARGIN_TOP;
-        let rows = (((self.size.height - top - DOCK_CLEARANCE) / GRID_HEIGHT) as usize).max(1);
+        let (width, height) = (self.metrics.width(), self.metrics.height());
+        let rows = (((self.size.height - top - DOCK_CLEARANCE) / height) as usize).max(1);
         Point::new(
-            self.size.width - MARGIN_RIGHT - ((index / rows) + 1) as f32 * GRID_WIDTH,
-            top + (index % rows) as f32 * GRID_HEIGHT,
+            self.size.width - MARGIN_RIGHT - ((index / rows) + 1) as f32 * width,
+            top + (index % rows) as f32 * height,
         )
     }
 
@@ -297,8 +534,8 @@ impl Desktop {
         let width = self.size.width;
         let taken = |cell: Point| {
             self.positions.values().any(|&(from_right, y)| {
-                ((width - from_right) - cell.x).abs() < GRID_WIDTH / 2.0
-                    && (y - cell.y).abs() < GRID_HEIGHT / 2.0
+                ((width - from_right) - cell.x).abs() < self.metrics.width() / 2.0
+                    && (y - cell.y).abs() < self.metrics.height() / 2.0
             })
         };
         (0..)
@@ -396,6 +633,8 @@ impl Desktop {
         let saved = Saved {
             sort: self.sort,
             positions: self.positions.clone(),
+            use_stacks: self.use_stacks,
+            metrics: self.metrics,
         };
         let path = saved_path();
         let result = toml::to_string(&saved)
@@ -411,21 +650,22 @@ impl Desktop {
         }
     }
 
-    /// The icon's box and its label, in surface coordinates.
-    fn hit_rects(item: &Item) -> [Rectangle; 2] {
-        let center = item.position.x + GRID_WIDTH / 2.0;
+    /// An icon's box and its label, in surface coordinates, for its cell's top left.
+    fn hit_rects(&self, position: Point) -> [Rectangle; 2] {
+        let metrics = self.metrics;
+        let center = position.x + metrics.width() / 2.0;
         [
             Rectangle {
-                x: center - BOX_SIZE / 2.0,
-                y: item.position.y,
-                width: BOX_SIZE,
-                height: BOX_SIZE,
+                x: center - metrics.box_size() / 2.0,
+                y: position.y,
+                width: metrics.box_size(),
+                height: metrics.box_size(),
             },
             Rectangle {
-                x: center - LABEL_WIDTH / 2.0,
-                y: item.position.y + BOX_SIZE + LABEL_GAP,
-                width: LABEL_WIDTH,
-                height: 2.0 * LABEL_LINE,
+                x: center - metrics.label_width() / 2.0,
+                y: position.y + metrics.box_size() + LABEL_GAP,
+                width: metrics.label_width(),
+                height: 2.0 * metrics.line(),
             },
         ]
     }
@@ -433,9 +673,11 @@ impl Desktop {
     fn item_at(&self, point: Point) -> Option<usize> {
         // Topmost first, which is the last one drawn.
         self.items.iter().rposition(|item| {
-            Self::hit_rects(item)
-                .iter()
-                .any(|rect| rect.contains(point))
+            !item.hidden
+                && self
+                    .hit_rects(item.position)
+                    .iter()
+                    .any(|rect| rect.contains(point))
         })
     }
 
@@ -451,8 +693,9 @@ impl Desktop {
                 } else {
                     HashSet::new()
                 };
-                for item in &self.items {
-                    if Self::hit_rects(item)
+                for item in self.items.iter().filter(|item| !item.hidden) {
+                    if self
+                        .hit_rects(item.position)
                         .iter()
                         .any(|rect| rect.intersects(&band))
                     {
@@ -498,6 +741,10 @@ impl Desktop {
         let Some(Gesture::Dragging { start, from }) = self.gesture.take() else {
             return;
         };
+        // Stacks decide where everything goes.
+        if self.use_stacks {
+            return;
+        }
         let delta = point - start;
         for (path, origin) in from {
             if let Some(index) = self.items.iter().position(|item| item.entry.path == path) {
@@ -526,8 +773,10 @@ impl Desktop {
     pub fn place_dropped(&mut self, names: &[String], point: Point) {
         let columns = 4;
         for (index, name) in names.iter().enumerate() {
-            let x = point.x - GRID_WIDTH / 2.0 - (index % columns) as f32 * GRID_WIDTH;
-            let y = point.y - BOX_SIZE / 2.0 + (index / columns) as f32 * GRID_HEIGHT;
+            let metrics = self.metrics;
+            let x = point.x - metrics.width() / 2.0 - (index % columns) as f32 * metrics.width();
+            let y =
+                point.y - metrics.box_size() / 2.0 + (index / columns) as f32 * metrics.height();
             self.positions
                 .insert(name.clone(), (self.size.width - x, y));
         }
@@ -537,6 +786,16 @@ impl Desktop {
     /// The left button went down at the pointer.
     pub fn pressed(&mut self) -> Pressed {
         let point = self.pointer;
+        if let Some(kind) = self.stack_at(point) {
+            self.open_stack = if self.open_stack == Some(kind) {
+                None
+            } else {
+                Some(kind)
+            };
+            self.selected.clear();
+            self.arrange();
+            return Pressed::Nothing;
+        }
         let Some(index) = self.item_at(point) else {
             if !self.adding {
                 self.selected.clear();
@@ -599,15 +858,23 @@ impl Desktop {
                 if !self.selected.contains(&path) {
                     self.selected = HashSet::from([path]);
                 }
-                let mut entries = vec![
-                    desktop_item("Open", Action::Open),
-                    menu::Entry::Separator,
-                    desktop_item("Move to Trash", Action::MoveToTrash)
-                        .icon(menu::Icon::Glyph(Glyph::Trash)),
-                    menu::Entry::Separator,
+                let any_drive = self.items.iter().any(|item| {
+                    item.entry.drive.is_some() && self.selected.contains(&item.entry.path)
+                });
+                let mut entries = vec![desktop_item("Open", Action::Open), menu::Entry::Separator];
+                if any_drive {
+                    entries.push(desktop_item("Eject", Action::Eject));
+                } else {
+                    entries.push(
+                        desktop_item("Move to Trash", Action::MoveToTrash)
+                            .icon(menu::Icon::Glyph(Glyph::Trash)),
+                    );
+                }
+                entries.push(menu::Entry::Separator);
+                entries.push(
                     desktop_item("Get Info", Action::GetInfo).icon(menu::Icon::Glyph(Glyph::Info)),
-                ];
-                if self.selected.len() == 1 {
+                );
+                if self.selected.len() == 1 && !any_drive {
                     entries.push(desktop_item("Rename", Action::Rename));
                 }
                 entries
@@ -637,17 +904,27 @@ impl Desktop {
                     desktop_item("Change Wallpaper…", Action::ChangeWallpaper),
                     desktop_item("Edit Widgets…", Action::EditWidgets),
                     menu::Entry::Separator,
+                    desktop_item(
+                        if self.use_stacks {
+                            "Stop Using Stacks"
+                        } else {
+                            "Use Stacks"
+                        },
+                        Action::UseStacks,
+                    )
+                    .icon(menu::Icon::Glyph(Glyph::Stacks)),
                     desktop_item("Sort By", Action::SortBy(self.sort))
                         .icon(menu::Icon::Glyph(Glyph::Sort))
+                        .enabled(!self.use_stacks)
                         .submenu(sorts(Some(self.sort), Action::SortBy, true)),
                     desktop_item("Clean Up", Action::CleanUp)
                         .icon(menu::Icon::Glyph(Glyph::Grid))
-                        .enabled(self.sort == Sort::None),
-                    desktop_item("Clean Up By", Action::CleanUp).submenu(sorts(
-                        None,
-                        Action::CleanUpBy,
-                        false,
-                    )),
+                        .enabled(self.sort == Sort::None && !self.use_stacks),
+                    desktop_item("Clean Up By", Action::CleanUp)
+                        .enabled(!self.use_stacks)
+                        .submenu(sorts(None, Action::CleanUpBy, false)),
+                    desktop_item("Show View Options", Action::ViewOptions)
+                        .icon(menu::Icon::Glyph(Glyph::Gear)),
                 ]
             }
         }
@@ -721,16 +998,22 @@ impl Desktop {
         let items: Vec<_> = self
             .items
             .iter()
+            .filter(|item| !item.hidden)
             .map(|item| (&item.entry.name, item.position, item.icon.is_some()))
             .collect();
         let mut selected: Vec<_> = self.selected.iter().collect();
         selected.sort();
         format!(
-            "{items:?} {selected:?} {:?} {:?} {active} {:?} {}",
+            "{items:?} {selected:?} {:?} {:?} {active} {:?} {} {:?} {:?}",
             self.rubber_band(),
             self.rename.as_ref().map(|rename| &rename.value),
             self.drop_folder,
             self.is_dragging(),
+            self.stacks
+                .iter()
+                .map(|stack| (stack.kind, stack.position, stack.icons.len()))
+                .collect::<Vec<_>>(),
+            self.metrics,
         )
     }
 
@@ -770,7 +1053,19 @@ pub fn rename_field() -> iced_widget::Id {
 /// accent color then, and in grey otherwise.
 pub fn view<'a>(desktop: &'a Desktop, active: bool, below: Vec<Element<'a>>) -> Element<'a> {
     let mut layers = below;
-    for item in &desktop.items {
+    for stack in &desktop.stacks {
+        layers.push(
+            pin(stack_view(
+                stack,
+                desktop.metrics,
+                desktop.open_stack == Some(stack.kind),
+            ))
+            .x(stack.position.x)
+            .y(stack.position.y)
+            .into(),
+        );
+    }
+    for item in desktop.items.iter().filter(|item| !item.hidden) {
         let in_selection = desktop.selected.contains(&item.entry.path);
         // A folder that would take what's being dragged lights up like it's selected.
         let selected = in_selection || desktop.drop_folder.as_ref() == Some(&item.entry.path);
@@ -780,10 +1075,17 @@ pub fn view<'a>(desktop: &'a Desktop, active: bool, below: Vec<Element<'a>>) -> 
             .as_ref()
             .filter(|rename| rename.path == item.entry.path);
         layers.push(
-            pin(item_view(item, selected, dimmed, active, renaming))
-                .x(item.position.x)
-                .y(item.position.y)
-                .into(),
+            pin(item_view(
+                item,
+                desktop.metrics,
+                selected,
+                dimmed,
+                active,
+                renaming,
+            ))
+            .x(item.position.x)
+            .y(item.position.y)
+            .into(),
         );
     }
     if let Some(band) = desktop.rubber_band() {
@@ -816,8 +1118,51 @@ pub fn view<'a>(desktop: &'a Desktop, active: bool, below: Vec<Element<'a>>) -> 
     .into()
 }
 
+/// A pile of the icons of a stack's files.
+fn stack_view(stack: &Stack, metrics: Metrics, open: bool) -> Element<'_> {
+    let size = metrics.icon - 2.0 * STACK_OFFSET;
+    let mut pile = Vec::new();
+    for (index, icon) in stack.icons.iter().enumerate().rev() {
+        let inset = 8.0 + index as f32 * STACK_OFFSET;
+        pile.push(
+            pin(image(icon.clone()).width(size).height(size))
+                .x(inset)
+                .y(inset)
+                .into(),
+        );
+    }
+    let tile = container(iced_widget::Stack::with_children(pile))
+        .width(metrics.box_size())
+        .height(metrics.box_size())
+        .style(move |_| {
+            if open {
+                container::Style {
+                    background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.12))),
+                    border: Border {
+                        radius: BOX_RADIUS.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            } else {
+                container::Style::default()
+            }
+        });
+    container(
+        column![
+            tile,
+            Space::new().height(LABEL_GAP),
+            label_view(stack.kind.label(), metrics, false, false),
+        ]
+        .align_x(Alignment::Center)
+        .width(metrics.width()),
+    )
+    .into()
+}
+
 fn item_view<'a>(
     item: &'a Item,
+    metrics: Metrics,
     selected: bool,
     dimmed: bool,
     active: bool,
@@ -825,15 +1170,15 @@ fn item_view<'a>(
 ) -> Element<'a> {
     let icon: Element<'a> = match &item.icon {
         Some(handle) => image(handle.clone())
-            .width(ICON_SIZE)
-            .height(ICON_SIZE)
+            .width(metrics.icon)
+            .height(metrics.icon)
             .opacity(if dimmed { 0.4_f32 } else { 1.0_f32 })
             .into(),
-        None => Space::new().width(ICON_SIZE).height(ICON_SIZE).into(),
+        None => Space::new().width(metrics.icon).height(metrics.icon).into(),
     };
     let tile = container(icon)
-        .center_x(BOX_SIZE)
-        .center_y(BOX_SIZE)
+        .center_x(metrics.box_size())
+        .center_y(metrics.box_size())
         .style(move |_| {
             if selected {
                 container::Style {
@@ -854,7 +1199,7 @@ fn item_view<'a>(
         Some(rename) => text_input("", &rename.value)
             .id(rename_field())
             .on_input(Message::DesktopRenameChanged)
-            .size(LABEL_SIZE)
+            .size(metrics.text)
             .padding([1, 4])
             .style(|_, _| text_input::Style {
                 background: Background::Color(Color::WHITE),
@@ -869,21 +1214,21 @@ fn item_view<'a>(
                 selection: Color::from_rgba(0.7, 0.18, 0.69, 0.35),
             })
             .into(),
-        None => label_view(&item.entry.name, selected, active),
+        None => label_view(&item.entry.name, metrics, selected, active),
     };
 
     container(
         column![tile, Space::new().height(LABEL_GAP), label]
             .align_x(Alignment::Center)
-            .width(GRID_WIDTH),
+            .width(metrics.width()),
     )
     .into()
 }
 
 /// A name broken over at most two lines, and shortened on the second if it's still too long.
-fn two_lines(name: &str) -> String {
-    let width = LABEL_WIDTH - 12.0;
-    let fits = |words: &str| menu::text_width(words, LABEL_SIZE, fonts::BOLD) <= width;
+fn two_lines(name: &str, metrics: Metrics) -> String {
+    let width = metrics.label_width() - 12.0;
+    let fits = |words: &str| menu::text_width(words, metrics.text, fonts::BOLD) <= width;
     if fits(name) {
         return name.to_owned();
     }
@@ -905,17 +1250,18 @@ fn two_lines(name: &str) -> String {
     };
     format!(
         "{first}\n{}",
-        menu::fit(rest, LABEL_SIZE, fonts::BOLD, width)
+        menu::fit(rest, metrics.text, fonts::BOLD, width)
     )
 }
 
-fn label_view(name: &str, selected: bool, active: bool) -> Element<'_> {
-    let shown = two_lines(name);
+fn label_view(name: &str, metrics: Metrics, selected: bool, active: bool) -> Element<'_> {
+    let shown = two_lines(name, metrics);
+    let label_width = metrics.label_width();
     let words = |color: Color| {
         text(shown.clone())
-            .size(LABEL_SIZE)
+            .size(metrics.text)
             .line_height(iced_widget::core::text::LineHeight::Absolute(
-                LABEL_LINE.into(),
+                metrics.line().into(),
             ))
             .font(fonts::BOLD)
             .align_x(iced_widget::core::alignment::Horizontal::Center)
@@ -933,7 +1279,7 @@ fn label_view(name: &str, selected: bool, active: bool) -> Element<'_> {
         };
         return container(words(ink))
             .padding([1, 6])
-            .max_width(LABEL_WIDTH)
+            .max_width(label_width)
             .style(move |_| container::Style {
                 background: Some(Background::Color(background)),
                 border: Border {
@@ -946,10 +1292,10 @@ fn label_view(name: &str, selected: bool, active: bool) -> Element<'_> {
     }
     // A shadow, so that names stay legible on a bright wallpaper.
     container(stack![
-        pin(words(Color::from_rgba(0.0, 0.0, 0.0, 0.6)).width(LABEL_WIDTH)).y(1.0),
-        words(Color::WHITE).width(LABEL_WIDTH),
+        pin(words(Color::from_rgba(0.0, 0.0, 0.0, 0.6)).width(label_width)).y(1.0),
+        words(Color::WHITE).width(label_width),
     ])
-    .width(LABEL_WIDTH)
+    .width(label_width)
     .into()
 }
 
@@ -964,10 +1310,153 @@ fn has_thumbnail(path: &Path) -> bool {
         })
 }
 
-/// What's in the Desktop folder, without what's hidden.
-pub async fn list(folder: PathBuf) -> Vec<Entry> {
-    let Ok(entries) = fs::read_dir(&folder) else {
+/// Drives mounted for the user, from the kernel's list of mounts.
+fn mounted_drives() -> Vec<Entry> {
+    let (Ok(mounts), Some(user)) = (
+        fs::read_to_string("/proc/self/mounts"),
+        env::var_os("USER").map(|user| user.to_string_lossy().into_owned()),
+    ) else {
         return Vec::new();
+    };
+    parse_drives(&mounts, &user)
+}
+
+fn parse_drives(mounts: &str, user: &str) -> Vec<Entry> {
+    let prefix = format!("/run/media/{user}/");
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(' ');
+            let device = fields.next()?;
+            let mount = unescape_mount(fields.next()?);
+            let name = mount.strip_prefix(&prefix)?;
+            (!name.is_empty() && !name.contains('/')).then(|| Entry {
+                path: PathBuf::from(&mount),
+                name: name.to_owned(),
+                is_dir: true,
+                modified: None,
+                len: 0,
+                drive: Some(device.to_owned()),
+            })
+        })
+        .collect()
+}
+
+/// The kernel's mount list writes spaces and such as octal, like `\\040`.
+fn unescape_mount(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut unescaped = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let octal = (bytes[index] == b'\\')
+            .then(|| bytes.get(index + 1..index + 4))
+            .flatten()
+            .and_then(|digits| std::str::from_utf8(digits).ok())
+            .and_then(|digits| u8::from_str_radix(digits, 8).ok());
+        match octal {
+            Some(byte) => {
+                unescaped.push(byte);
+                index += 4;
+            }
+            None => {
+                unescaped.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&unescaped).into_owned()
+}
+
+/// Unmounts a drive, so that it's safe to pull out.
+pub fn eject(device: &str) {
+    crate::apps::spawn(vec![
+        String::from("udisksctl"),
+        String::from("unmount"),
+        String::from("-b"),
+        device.to_owned(),
+    ]);
+}
+
+/// The panel for changing how big things are on the desktop.
+pub fn view_options(metrics: Metrics) -> Element<'static> {
+    let row_of = |label: &'static str,
+                  range: std::ops::RangeInclusive<f32>,
+                  value: f32,
+                  step: f32,
+                  change: fn(Metrics, f32) -> Metrics| {
+        column![
+            text(label).size(12.0),
+            slider(range, value, move |value| Message::DesktopMetrics(change(
+                metrics, value
+            )))
+            .step(step)
+            .height(18.0)
+            .style(|_, _| slider::Style {
+                rail: slider::Rail {
+                    backgrounds: (
+                        Background::Color(menu::ACCENT),
+                        Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.2)),
+                    ),
+                    width: 4.0,
+                    border: Border {
+                        radius: 2.0.into(),
+                        ..Default::default()
+                    },
+                },
+                handle: slider::Handle {
+                    shape: slider::HandleShape::Circle { radius: 7.0 },
+                    background: Background::Color(Color::WHITE),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                },
+            }),
+        ]
+        .spacing(4)
+    };
+    container(
+        column![
+            text("Desktop").size(13.0).font(fonts::BOLD),
+            row_of(
+                "Icon size",
+                32.0..=128.0,
+                metrics.icon,
+                4.0,
+                |metrics, icon| { Metrics { icon, ..metrics } }
+            ),
+            row_of(
+                "Grid spacing",
+                0.0..=60.0,
+                metrics.spacing,
+                4.0,
+                |metrics, spacing| { Metrics { spacing, ..metrics } }
+            ),
+            row_of(
+                "Text size",
+                10.0..=16.0,
+                metrics.text,
+                1.0,
+                |metrics, text| { Metrics { text, ..metrics } }
+            ),
+        ]
+        .spacing(10),
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(|_| container::Style {
+        text_color: Some(Color::WHITE),
+        ..Default::default()
+    })
+    .into()
+}
+
+pub const VIEW_OPTIONS_SIZE: (u32, u32) = (260, 206);
+
+/// What's in the Desktop folder, without what's hidden, and the mounted drives.
+pub async fn list(folder: PathBuf) -> Vec<Entry> {
+    let drives = mounted_drives();
+    let Ok(entries) = fs::read_dir(&folder) else {
+        return drives;
     };
     entries
         .flatten()
@@ -983,8 +1472,10 @@ pub async fn list(folder: PathBuf) -> Vec<Entry> {
                 is_dir: metadata.is_dir(),
                 modified: metadata.modified().ok(),
                 len: metadata.len(),
+                drive: None,
             })
         })
+        .chain(drives)
         .collect()
 }
 
@@ -1126,4 +1617,42 @@ fn saved_path() -> PathBuf {
         .filter(|path| path.is_absolute())
         .unwrap_or_else(|| places::home().join(".local/state"))
         .join("macshell/desktop.toml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_drives_mounted_for_the_user() {
+        let mounts = "/dev/nvme0n1p2 / btrfs rw 0 0\n\
+            /dev/sda1 /run/media/misty/MACOS hfsplus rw 0 0\n\
+            /dev/sdb1 /run/media/misty/My\\040Disk vfat rw 0 0\n\
+            /dev/sdc1 /run/media/someone/Theirs vfat rw 0 0\n\
+            tmpfs /run/user/1000 tmpfs rw 0 0\n";
+        let drives = parse_drives(mounts, "misty");
+        let names: Vec<_> = drives.iter().map(|drive| drive.name.as_str()).collect();
+        assert_eq!(names, ["MACOS", "My Disk"]);
+        assert_eq!(drives[1].path, PathBuf::from("/run/media/misty/My Disk"));
+        assert_eq!(drives[0].drive.as_deref(), Some("/dev/sda1"));
+    }
+
+    #[test]
+    fn groups_files_by_what_they_are() {
+        let entry = |name: &str| Entry {
+            path: PathBuf::from(name),
+            name: name.to_owned(),
+            is_dir: false,
+            modified: None,
+            len: 0,
+            drive: None,
+        };
+        assert_eq!(StackKind::of(&entry("cat.PNG")), StackKind::Images);
+        assert_eq!(
+            StackKind::of(&entry("Screenshot from 2026.png")),
+            StackKind::Screenshots
+        );
+        assert_eq!(StackKind::of(&entry("a.pdf")), StackKind::PdfDocuments);
+        assert_eq!(StackKind::of(&entry("archive.zip")), StackKind::Other);
+    }
 }
