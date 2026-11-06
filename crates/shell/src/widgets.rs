@@ -32,6 +32,8 @@ const MARGIN: f32 = 16.0;
 const MINUS_SIZE: f32 = 20.0;
 /// How wide a photo's picture is kept.
 const PHOTO_PIXELS: u32 = 1200;
+/// How many hours a medium weather widget shows.
+const HOURS: usize = 6;
 /// How often the weather's looked up.
 pub const WEATHER_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
@@ -50,20 +52,13 @@ pub enum Kind {
     Photo { path: Option<PathBuf>, wide: bool },
 }
 
-impl Kind {
-    fn columns(&self) -> i32 {
-        match self {
-            Kind::Photo { wide: true, .. } => 2,
-            _ => 1,
-        }
-    }
-}
-
 /// What the gallery and the widgets' menus can do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Add(Kind),
     Remove(u64),
+    /// Medium if true, and small otherwise.
+    SetWide(u64, bool),
     ChoosePhoto(u64),
     ChangeCity,
     Edit,
@@ -76,6 +71,19 @@ struct Placed {
     kind: Kind,
     column: i32,
     row: i32,
+    /// Medium: two places wide.
+    #[serde(default)]
+    wide: bool,
+}
+
+impl Placed {
+    fn is_wide(&self) -> bool {
+        self.wide || matches!(self.kind, Kind::Photo { wide: true, .. })
+    }
+
+    fn columns(&self) -> i32 {
+        if self.is_wide() { 2 } else { 1 }
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -94,6 +102,17 @@ pub struct Weather {
     pub low: f32,
     pub code: u32,
     pub is_day: bool,
+    /// The next few hours.
+    pub hours: Vec<Hour>,
+}
+
+/// The forecast for an hour.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Hour {
+    /// Like "14".
+    pub hour: String,
+    pub temperature: f32,
+    pub code: u32,
 }
 
 struct Drag {
@@ -129,6 +148,7 @@ impl Widgets {
                     kind: Kind::Calendar,
                     column: 0,
                     row: 0,
+                    wide: false,
                 }],
                 None,
             ),
@@ -211,19 +231,53 @@ impl Widgets {
     pub fn add(&mut self, kind: Kind) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        let columns = kind.columns();
-        let (column, row) = (0..64)
-            .flat_map(|row| (0..4).map(move |column| (column, row)))
-            .find(|&(column, row)| self.is_free(None, column, row, columns))
-            .unwrap_or((0, 0));
+        let columns = if matches!(kind, Kind::Photo { wide: true, .. }) {
+            2
+        } else {
+            1
+        };
+        let (column, row) = self.first_free(None, columns);
         self.placed.push(Placed {
             id,
             kind,
             column,
             row,
+            wide: false,
         });
         self.save();
         id
+    }
+
+    fn first_free(&self, except: Option<u64>, columns: i32) -> (i32, i32) {
+        (0..64)
+            .flat_map(|row| (0..4).map(move |column| (column, row)))
+            .find(|&(column, row)| self.is_free(except, column, row, columns))
+            .unwrap_or((0, 0))
+    }
+
+    /// Makes a widget medium or small. If there's no room where it is, it goes to the first place
+    /// there is.
+    pub fn set_wide(&mut self, id: u64, wide: bool) {
+        let Some(index) = self.placed.iter().position(|widget| widget.id == id) else {
+            return;
+        };
+        let columns = if wide { 2 } else { 1 };
+        let (column, row) = (self.placed[index].column, self.placed[index].row);
+        let place = if self.is_free(Some(id), column, row, columns) {
+            (column, row)
+        } else {
+            self.first_free(Some(id), columns)
+        };
+        let widget = &mut self.placed[index];
+        widget.wide = wide;
+        if let Kind::Photo {
+            wide: photo_wide, ..
+        } = &mut widget.kind
+        {
+            *photo_wide = wide;
+        }
+        (widget.column, widget.row) = place;
+        self.save();
     }
 
     pub fn remove(&mut self, id: u64) {
@@ -237,7 +291,7 @@ impl Widgets {
             .filter(|widget| Some(widget.id) != except)
             .all(|widget| {
                 widget.row != row
-                    || widget.column + widget.kind.columns() <= column
+                    || widget.column + widget.columns() <= column
                     || column + columns <= widget.column
             })
     }
@@ -263,7 +317,7 @@ impl Widgets {
     fn at(&self, point: Point) -> Option<&Placed> {
         self.placed.iter().rev().find(|widget| {
             let at = Self::top_left(widget);
-            let width = widget.kind.columns() as f32 * STEP - GAP;
+            let width = widget.columns() as f32 * STEP - GAP;
             point.x >= at.x && point.x < at.x + width && point.y >= at.y && point.y < at.y + SMALL
         })
     }
@@ -320,7 +374,7 @@ impl Widgets {
             .placed
             .iter()
             .find(|widget| widget.id == drag.id)
-            .map(|widget| widget.kind.columns())
+            .map(Placed::columns)
         else {
             return;
         };
@@ -362,6 +416,11 @@ impl Widgets {
             Kind::Weather => entries.push(widget_item("Change City…", Action::ChangeCity)),
             _ => {}
         }
+        let wide = widget.is_wide();
+        entries.push(menu::Entry::item("Size", Message::Nothing).submenu(vec![
+            widget_item("Small", Action::SetWide(widget.id, false)).checked(!wide),
+            widget_item("Medium", Action::SetWide(widget.id, true)).checked(wide),
+        ]));
         entries.push(widget_item("Remove Widget", Action::Remove(widget.id)));
         entries.push(menu::Entry::Separator);
         entries.push(widget_item("Edit Widgets…", Action::Edit));
@@ -391,7 +450,7 @@ impl Widgets {
         let mut layers = Vec::new();
         for widget in &self.placed {
             let at = self.drawn_at(widget);
-            layers.push(pin(self.widget_view(&widget.kind)).x(at.x).y(at.y).into());
+            layers.push(pin(self.widget_view(widget)).x(at.x).y(at.y).into());
             if self.editing {
                 layers.push(
                     pin(minus_badge())
@@ -404,14 +463,18 @@ impl Widgets {
         layers
     }
 
-    fn widget_view(&self, kind: &Kind) -> Element<'_> {
-        match kind {
+    fn widget_view(&self, widget: &Placed) -> Element<'_> {
+        let wide = widget.is_wide();
+        match &widget.kind {
+            Kind::Calendar if wide => calendar_medium(),
             Kind::Calendar => calendar(),
+            Kind::Clock if wide => clock_medium(),
             Kind::Clock => clock(),
+            Kind::Weather if wide => weather_medium(self.weather.as_ref(), self.city.as_deref()),
             Kind::Weather => weather_view(self.weather.as_ref(), self.city.as_deref()),
-            Kind::Photo { path, wide } => {
+            Kind::Photo { path, .. } => {
                 let picture = path.as_ref().and_then(|path| self.photos.get(path));
-                photo(picture, *wide)
+                photo(picture, wide)
             }
         }
     }
@@ -479,13 +542,55 @@ fn minus_badge<'a>() -> Element<'a> {
     .into()
 }
 
+const CALENDAR_TOP: Color = Color::from_rgb8(62, 62, 62);
+const CALENDAR_BOTTOM: Color = Color::from_rgb8(40, 40, 40);
+const RED: Color = Color::from_rgb(1.0, 0.27, 0.27);
+
 fn calendar<'a>() -> Element<'a> {
+    tile(month(), SMALL, CALENDAR_TOP, CALENDAR_BOTTOM, 0.0)
+}
+
+/// Today in big, beside the month.
+fn calendar_medium<'a>() -> Element<'a> {
+    let today = Local::now().date_naive();
+    let big = column![
+        text(today.format("%A").to_string().to_uppercase())
+            .size(11.0)
+            .font(fonts::BOLD)
+            .color(RED),
+        text(today.day().to_string())
+            .size(58.0)
+            .line_height(LineHeight::Absolute(64.0.into())),
+        text(today.format("%B %Y").to_string())
+            .size(11.0)
+            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
+    ]
+    .spacing(2);
+    tile(
+        row![
+            container(big)
+                .padding(iced_widget::core::Padding {
+                    top: 15.0,
+                    left: 16.0,
+                    ..Default::default()
+                })
+                .width(WIDE - SMALL),
+            month(),
+        ],
+        WIDE,
+        CALENDAR_TOP,
+        CALENDAR_BOTTOM,
+        0.0,
+    )
+}
+
+/// The month, with today picked out.
+fn month<'a>() -> Element<'a> {
     // Measured from Tahoe's.
     const COLUMN: f32 = 19.0;
     const ROW: f32 = 16.0;
     const SIZE: f32 = 10.5;
     const LEFT: f32 = 11.5;
-    const RED: Color = Color::from_rgb(1.0, 0.27, 0.27);
     let today = Local::now().date_naive();
     let first = today.with_day(1).unwrap_or(today);
     let days_in_month = first
@@ -578,20 +683,51 @@ fn calendar<'a>() -> Element<'a> {
         );
     }
 
-    tile(
-        container(iced_widget::Column::with_children(lines)).padding(iced_widget::core::Padding {
+    container(iced_widget::Column::with_children(lines))
+        .padding(iced_widget::core::Padding {
             top: 15.0,
             left: LEFT,
             ..Default::default()
-        }),
-        SMALL,
-        Color::from_rgb8(62, 62, 62),
-        Color::from_rgb8(40, 40, 40),
+        })
+        .into()
+}
+
+const CLOCK_TOP: Color = Color::from_rgb8(50, 50, 52);
+const CLOCK_BOTTOM: Color = Color::from_rgb8(26, 26, 28);
+
+fn clock<'a>() -> Element<'a> {
+    tile(clock_face(), SMALL, CLOCK_TOP, CLOCK_BOTTOM, 0.0)
+}
+
+/// The time in hands and in numbers, with the date.
+fn clock_medium<'a>() -> Element<'a> {
+    let now = Local::now();
+    tile(
+        row![
+            clock_face(),
+            container(
+                column![
+                    text(now.format("%H:%M").to_string())
+                        .size(38.0)
+                        .font(fonts::BOLD),
+                    text(now.format("%A").to_string()).size(13.0),
+                    text(now.format("%B %-d").to_string())
+                        .size(13.0)
+                        .color(Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
+                ]
+                .spacing(2),
+            )
+            .center_y(Length::Fill),
+        ],
+        WIDE,
+        CLOCK_TOP,
+        CLOCK_BOTTOM,
         0.0,
     )
 }
 
-fn clock<'a>() -> Element<'a> {
+/// An analog clock, as big as a small widget.
+fn clock_face<'a>() -> Element<'a> {
     const NUMBER_RADIUS: f32 = 60.0;
     const NUMBER_BOX: f32 = 24.0;
     let center = SMALL / 2.0;
@@ -633,13 +769,10 @@ fn clock<'a>() -> Element<'a> {
             .into(),
         );
     }
-    tile(
-        iced_widget::Stack::with_children(layers),
-        SMALL,
-        Color::from_rgb8(50, 50, 52),
-        Color::from_rgb8(26, 26, 28),
-        0.0,
-    )
+    iced_widget::Stack::with_children(layers)
+        .width(SMALL)
+        .height(SMALL)
+        .into()
 }
 
 fn weather_view<'a>(weather: Option<&Weather>, city: Option<&str>) -> Element<'a> {
@@ -683,6 +816,76 @@ fn weather_view<'a>(weather: Option<&Weather>, city: Option<&str>) -> Element<'a
             line(range, 12.5),
         ],
         SMALL,
+        top,
+        bottom,
+        14.0,
+    )
+}
+
+/// The weather now along the top, and the next few hours under it.
+fn weather_medium<'a>(weather: Option<&Weather>, city: Option<&str>) -> Element<'a> {
+    let Some(weather) = weather else {
+        let (top, bottom) = sky(3, true);
+        let words = city.map_or("Choose a city", |_| "Looking it up…");
+        return tile(
+            column![
+                text(city.unwrap_or("Weather").to_owned())
+                    .size(14.0)
+                    .font(fonts::BOLD),
+                text(words).size(12.5),
+            ]
+            .spacing(4),
+            WIDE,
+            top,
+            bottom,
+            14.0,
+        );
+    };
+    let (top, bottom) = sky(weather.code, weather.is_day);
+    let now = row![
+        column![
+            text(weather.city.clone()).size(14.0).font(fonts::BOLD),
+            text(format!("{:.0}°", weather.temperature))
+                .size(38.0)
+                .line_height(LineHeight::Absolute(44.0.into())),
+        ],
+        Space::new().width(Length::Fill),
+        column![
+            icons::icon(
+                condition_glyph(weather.code, weather.is_day),
+                18.0,
+                Color::WHITE
+            ),
+            text(condition(weather.code).to_owned())
+                .size(12.5)
+                .font(fonts::BOLD),
+            text(format!("H:{:.0}° L:{:.0}°", weather.high, weather.low))
+                .size(12.5)
+                .font(fonts::BOLD),
+        ]
+        .spacing(2)
+        .align_x(iced_widget::core::Alignment::End),
+    ];
+    let hours = iced_widget::Row::with_children(weather.hours.iter().map(|hour| {
+        container(
+            column![
+                text(hour.hour.clone())
+                    .size(11.0)
+                    .color(Color::from_rgba(1.0, 1.0, 1.0, 0.75)),
+                icons::icon(condition_glyph(hour.code, true), 16.0, Color::WHITE),
+                text(format!("{:.0}°", hour.temperature))
+                    .size(12.0)
+                    .font(fonts::BOLD),
+            ]
+            .spacing(4)
+            .align_x(iced_widget::core::Alignment::Center),
+        )
+        .center_x(Length::FillPortion(1))
+        .into()
+    }));
+    tile(
+        column![now, Space::new().height(Length::Fill), hours],
+        WIDE,
         top,
         bottom,
         14.0,
@@ -891,6 +1094,15 @@ struct GeocodingResult {
 struct ForecastAnswer {
     current: ForecastCurrent,
     daily: ForecastDaily,
+    hourly: ForecastHourly,
+}
+
+#[derive(Deserialize)]
+struct ForecastHourly {
+    /// Like "2026-11-06T14:00".
+    time: Vec<String>,
+    temperature_2m: Vec<f32>,
+    weather_code: Vec<u32>,
 }
 
 #[derive(Deserialize)]
@@ -914,6 +1126,25 @@ pub async fn fetch_weather(city: String) -> Option<Weather> {
         .flatten()
 }
 
+fn hours_of(hourly: &ForecastHourly) -> Vec<Hour> {
+    hourly
+        .time
+        .iter()
+        .zip(&hourly.temperature_2m)
+        .zip(&hourly.weather_code)
+        .map(|((time, temperature), code)| Hour {
+            hour: time
+                .split_once('T')
+                .map_or(time.as_str(), |(_, hour)| {
+                    hour.split_once(':').map_or(hour, |(hour, _)| hour)
+                })
+                .to_owned(),
+            temperature: *temperature,
+            code: *code,
+        })
+        .collect()
+}
+
 fn read_weather(city: &str) -> Option<Weather> {
     let result = (|| -> Result<Option<Weather>, ureq::Error> {
         let places: GeocodingAnswer = ureq::get("https://geocoding-api.open-meteo.com/v1/search")
@@ -931,6 +1162,8 @@ fn read_weather(city: &str) -> Option<Weather> {
             .query("longitude", place.longitude.to_string())
             .query("current", "temperature_2m,weather_code,is_day")
             .query("daily", "temperature_2m_max,temperature_2m_min")
+            .query("hourly", "temperature_2m,weather_code")
+            .query("forecast_hours", HOURS.to_string())
             .query("timezone", "auto")
             .query("forecast_days", "1")
             .call()?
@@ -943,6 +1176,7 @@ fn read_weather(city: &str) -> Option<Weather> {
             low: *forecast.daily.temperature_2m_min.first().unwrap_or(&0.0),
             code: forecast.current.weather_code,
             is_day: forecast.current.is_day != 0,
+            hours: hours_of(&forecast.hourly),
         }))
     })();
     result
@@ -957,4 +1191,33 @@ fn saved_path() -> PathBuf {
         .filter(|path| path.is_absolute())
         .unwrap_or_else(|| places::home().join(".local/state"))
         .join("macshell/widgets.toml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_widgets_from_before_sizes_still_load() {
+        let saved: Saved = toml::from_str(
+            "city = \"london\"\n\
+             [[widgets]]\nid = 0\nkind = \"calendar\"\ncolumn = 0\nrow = 0\n\
+             [[widgets]]\nid = 3\ncolumn = 0\nrow = 2\n\
+             [widgets.kind.photo]\npath = \"/a.jpg\"\nwide = true\n",
+        )
+        .expect("old layouts have to keep working");
+        assert_eq!(saved.widgets.len(), 2);
+        assert!(!saved.widgets[0].is_wide());
+        assert!(saved.widgets[1].is_wide());
+    }
+
+    #[test]
+    fn hours_read_as_just_the_hour() {
+        let hours = hours_of(&ForecastHourly {
+            time: vec![String::from("2026-11-06T14:00")],
+            temperature_2m: vec![9.5],
+            weather_code: vec![3],
+        });
+        assert_eq!(hours[0].hour, "14");
+    }
 }

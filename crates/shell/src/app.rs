@@ -2444,6 +2444,7 @@ impl Shell {
                 }
             }
             Action::Remove(id) => self.widgets.remove(id),
+            Action::SetWide(id, wide) => self.widgets.set_wide(id, wide),
             Action::ChoosePhoto(id) => return self.choose_widget_photo(id),
             Action::ChangeCity => return self.ask_for_city(),
             Action::Edit => {
