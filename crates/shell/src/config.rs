@@ -115,6 +115,29 @@ fn edit(change: impl FnOnce(&mut toml_edit::DocumentMut)) -> io::Result<()> {
     fs::write(&path, doc.to_string())
 }
 
+/// The config file as it is, or nothing if there isn't one.
+pub fn read_text() -> io::Result<String> {
+    let path = config_path().ok_or_else(|| io::Error::other("no config directory"))?;
+    match fs::read_to_string(&path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        result => result,
+    }
+}
+
+/// Replaces the config file.
+pub fn write_text(text: &str) -> io::Result<()> {
+    let path = config_path().ok_or_else(|| io::Error::other("no config directory"))?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(&path, text)
+}
+
+/// A file next to the config file.
+pub fn sibling(name: &str) -> Option<PathBuf> {
+    Some(config_path()?.parent()?.join(name))
+}
+
 impl Config {
     pub fn load() -> Self {
         let Some(path) = config_path() else {

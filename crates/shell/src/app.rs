@@ -2449,6 +2449,11 @@ impl Shell {
                 tasks.push(self.show_wallpaper(handle));
             }
         }
+        if config.dock.pinned != self.pinned {
+            self.pinned = config.dock.pinned.clone();
+            self.dock = dock::items(&self.pinned, &self.windows, &mut self.apps);
+            tasks.push(self.relayout_dock());
+        }
         let max_icon = dock_max_icon(&config.dock);
         if max_icon != self.dock_max_icon {
             self.dock_max_icon = max_icon;

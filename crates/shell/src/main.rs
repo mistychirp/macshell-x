@@ -31,6 +31,7 @@ mod places;
 mod plasma_protocol;
 mod portal;
 mod settings;
+mod settings_file;
 mod shadow_protocol;
 mod stack;
 mod tray;

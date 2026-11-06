@@ -2,9 +2,9 @@
 //! comes and goes like any other app. The glass settings go to our KWin plugin over D-Bus, which
 //! applies them right away. The rest go to the config file, and the shell is told to read it again.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use iced_futures::Subscription;
@@ -27,6 +27,7 @@ use wayland_client::protocol::wl_surface::WlSurface;
 use crate::config::{self, Config};
 use crate::icons::{self, Glyph};
 use crate::material::{self, Material, MaterialSurface};
+use crate::settings_file::SettingsFile;
 use crate::{apps, dbus, fonts, menu, portal, wallpaper};
 
 pub const APP_ID: &str = "macshell-settings";
@@ -102,6 +103,8 @@ const GLASS_SLIDERS: [GlassSlider; 7] = [
     },
 ];
 const GREEN_FULL_SCREEN: &str = "GreenFullScreen";
+/// Where an import keeps the settings it replaces.
+const BACKUP_NAME: &str = "before-import.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -148,6 +151,14 @@ pub enum Message {
     WallpaperChosen(Option<PathBuf>),
     WallpaperPictureRead(Option<image::Handle>),
     GreenFullScreenChosen(bool),
+    ExportSettings,
+    ExportTo(Option<PathBuf>),
+    ImportSettings,
+    ImportFrom(Option<PathBuf>),
+    /// How an export went, for the page to say.
+    Exported(Result<String, String>),
+    /// How an import went, for the page to say.
+    Imported(Result<String, String>),
     Nothing,
 }
 
@@ -202,7 +213,8 @@ async fn write_glass(key: &'static str, value: f32) {
         let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
         GlassProxy::new(&connection)
             .await?
-            .set_setting(key, f64::from(value))
+            // By way of text, or 0.02 would be saved as 0.019999999552965164.
+            .set_setting(key, value.to_string().parse().unwrap_or(f64::from(value)))
             .await
     }
     .await;
@@ -220,6 +232,70 @@ async fn reset_glass() {
     if let Err(err) = result {
         log::warn!("can't reset the glass: {err}");
     }
+}
+
+/// The settings as they are now, ready to be written to a file.
+async fn current_settings() -> Result<SettingsFile, String> {
+    let glass: BTreeMap<String, f32> = read_glass()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect();
+    let config = config::read_text().map_err(|err| format!("Can't read your settings: {err}"))?;
+    SettingsFile::new(glass, &config)
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+}
+
+async fn export_settings(path: PathBuf) -> Result<String, String> {
+    let text = current_settings().await?.to_text()?;
+    fs::write(&path, text).map_err(|err| format!("Can't save {}: {err}", file_name(&path)))?;
+    Ok(format!("Exported to {}.", file_name(&path)))
+}
+
+/// Applies a settings file, keeping what it replaces. Nothing changes unless the file's good and
+/// what it replaces is safe.
+async fn import_settings(path: PathBuf) -> Result<String, String> {
+    let text = fs::read_to_string(&path)
+        .map_err(|err| format!("Can't read {}: {err}", file_name(&path)))?;
+    let file = SettingsFile::parse(&text)?;
+    let config = file.config_text()?;
+
+    let backup = config::sibling(BACKUP_NAME)
+        .ok_or_else(|| String::from("Can't find where to keep your current settings."))?;
+    let current = current_settings().await?.to_text()?;
+    if let Some(dir) = backup.parent() {
+        fs::create_dir_all(dir)
+            .map_err(|err| format!("Can't keep your current settings: {err}"))?;
+    }
+    fs::write(&backup, current)
+        .map_err(|err| format!("Can't keep your current settings: {err}"))?;
+
+    config::write_text(&config).map_err(|err| format!("Can't save the settings: {err}"))?;
+    reset_glass().await;
+    for setting in &GLASS_SLIDERS {
+        if let Some(value) = file
+            .glass
+            .get(setting.key)
+            .filter(|value| value.is_finite())
+        {
+            write_glass(setting.key, value.clamp(setting.range.0, setting.range.1)).await;
+        }
+    }
+    let full_screen = file
+        .glass
+        .get(GREEN_FULL_SCREEN)
+        .is_some_and(|value| *value != 0.0);
+    write_glass(GREEN_FULL_SCREEN, if full_screen { 1.0 } else { 0.0 }).await;
+    tell_shell().await;
+    Ok(format!(
+        "Imported {}. To undo it, import {BACKUP_NAME} from macshell's config folder.",
+        file_name(&path)
+    ))
 }
 
 /// A small picture of the wallpaper, on a thread of its own. A wallpaper can be huge, and only needs
@@ -311,6 +387,8 @@ struct SettingsApp {
     wallpaper: Option<String>,
     wallpaper_picture: Option<image::Handle>,
     about: About,
+    /// How the last export or import went.
+    transfer_status: Option<String>,
 }
 
 pub fn run() -> Result<(), iced_layershell::Error> {
@@ -389,6 +467,7 @@ impl SettingsApp {
             wallpaper: config.desktop.wallpaper,
             wallpaper_picture: None,
             about: About::read(),
+            transfer_status: None,
         };
         let read = Task::perform(read_glass(), Message::GlassRead);
         (settings, Task::batch([open, read, read_picture]))
@@ -492,6 +571,42 @@ impl SettingsApp {
                     glass.insert(GREEN_FULL_SCREEN, value);
                 }
                 return Task::future(write_glass(GREEN_FULL_SCREEN, value)).discard();
+            }
+            Message::ExportSettings => {
+                return Task::perform(
+                    portal::choose_settings_destination("macshell-settings.toml"),
+                    Message::ExportTo,
+                );
+            }
+            Message::ExportTo(Some(path)) => {
+                return Task::perform(export_settings(path), Message::Exported);
+            }
+            Message::ImportSettings => {
+                return Task::perform(portal::choose_settings_file(), Message::ImportFrom);
+            }
+            Message::ImportFrom(Some(path)) => {
+                return Task::perform(import_settings(path), Message::Imported);
+            }
+            Message::Exported(result) => {
+                self.transfer_status = Some(result.unwrap_or_else(|err| err));
+            }
+            Message::Imported(result) => {
+                let imported = result.is_ok();
+                self.transfer_status = Some(result.unwrap_or_else(|err| err));
+                if imported {
+                    let config = Config::load();
+                    self.magnification = config.dock.magnification;
+                    self.magnified_size = config.dock.magnified_size;
+                    self.always_glassy = config.desktop.always_glassy_widgets;
+                    self.wallpaper.clone_from(&config.desktop.wallpaper);
+                    return Task::batch([
+                        Task::perform(read_glass(), Message::GlassRead),
+                        Task::perform(
+                            read_wallpaper_picture(config.desktop.wallpaper),
+                            Message::WallpaperPictureRead,
+                        ),
+                    ]);
+                }
             }
             _ => {}
         }
@@ -774,6 +889,30 @@ impl SettingsApp {
                 info_row("Memory", &about.memory),
             ]),
             card(vec![info_row("macshell", env!("CARGO_PKG_VERSION"))]),
+            section(
+                "Settings File",
+                column![
+                    card(vec![
+                        row![
+                            text("Dock, desktop, glass and windows")
+                                .size(TEXT_SIZE)
+                                .width(Length::Fill),
+                            capsule_button("Import…", Message::ImportSettings),
+                            capsule_button("Export…", Message::ExportSettings),
+                        ]
+                        .spacing(8)
+                        .padding([0, 12])
+                        .height(44)
+                        .align_y(Alignment::Center)
+                        .into(),
+                    ]),
+                    caption(self.transfer_status.as_deref().unwrap_or(
+                        "Importing replaces your current settings, and keeps them in a file so \
+                             you can go back. Where widgets and icons sit isn't included.",
+                    ),),
+                ]
+                .spacing(6),
+            ),
         ]
         .spacing(12)
         .into()
