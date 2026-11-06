@@ -139,7 +139,17 @@ impl SystemAction {
                 log::error!("can't log out: XDG_SESSION_ID isn't set");
                 return;
             }
-            SystemAction::LogOut => &["loginctl", "terminate-session", &session],
+            // The portals are services that outlive the session, and without a display KDE's aborts.
+            // Its crash reporter then does the same, over and over, since each crash starts another:
+            // dozens of crashes, and a Notification Center full of them at the next login.
+            SystemAction::LogOut => &[
+                "sh",
+                "-c",
+                "systemctl --user stop plasma-xdg-desktop-portal-kde.service xdg-desktop-portal.service; \
+                 exec loginctl terminate-session \"$1\"",
+                "sh",
+                &session,
+            ],
         };
         apps::spawn(command.iter().map(|arg| arg.to_string()).collect());
     }

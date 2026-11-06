@@ -144,6 +144,7 @@ pub enum Message {
     GlassReleased(&'static str),
     GlassReset,
     MagnificationToggled(bool),
+    ShowRecentsToggled(bool),
     IconSizeChanged(f32),
     IconSizeReleased,
     MagnifiedSizeChanged(f32),
@@ -384,6 +385,7 @@ struct SettingsApp {
     lights_hovered: bool,
     glass: Option<HashMap<&'static str, f32>>,
     icon_size: f32,
+    show_recents: bool,
     magnification: bool,
     magnified_size: f32,
     always_glassy: bool,
@@ -465,6 +467,7 @@ impl SettingsApp {
             lights_hovered: false,
             glass: None,
             icon_size: config.dock.icon_size,
+            show_recents: config.dock.show_recents,
             magnification: config.dock.magnification,
             magnified_size: config.dock.magnified_size,
             always_glassy: config.desktop.always_glassy_widgets,
@@ -530,6 +533,13 @@ impl SettingsApp {
                 self.magnification = on;
                 if let Err(err) = config::save_magnification(on) {
                     log::warn!("can't save the dock's magnification: {err}");
+                }
+                return Task::future(tell_shell()).discard();
+            }
+            Message::ShowRecentsToggled(on) => {
+                self.show_recents = on;
+                if let Err(err) = config::save_show_recents(on) {
+                    log::warn!("can't save whether the dock shows recent apps: {err}");
                 }
                 return Task::future(tell_shell()).discard();
             }
@@ -603,6 +613,7 @@ impl SettingsApp {
                 if imported {
                     let config = Config::load();
                     self.icon_size = config.dock.icon_size;
+                    self.show_recents = config.dock.show_recents;
                     self.magnification = config.dock.magnification;
                     self.magnified_size = config.dock.magnified_size;
                     self.always_glassy = config.desktop.always_glassy_widgets;
@@ -824,6 +835,11 @@ impl SettingsApp {
                 ),
             ));
         }
+
+        dock.push(setting_row(
+            "Show Recent Apps",
+            settings_toggle(self.show_recents, Message::ShowRecentsToggled),
+        ));
 
         column![
             section(

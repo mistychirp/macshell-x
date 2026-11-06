@@ -33,6 +33,8 @@ pub struct DockConfig {
     pub pinned: Vec<String>,
     /// How big its icons are, in logical pixels.
     pub icon_size: f32,
+    /// Keep the last few apps that aren't kept in it, in a section of their own.
+    pub show_recents: bool,
     /// Grow icons near the pointer.
     pub magnification: bool,
     /// Size of the icon right under the pointer, in logical pixels (icons are 48).
@@ -44,6 +46,7 @@ impl Default for DockConfig {
         Self {
             pinned: Vec::new(),
             icon_size: crate::dock::DEFAULT_ICON,
+            show_recents: true,
             magnification: true,
             magnified_size: 80.0,
         }
@@ -83,6 +86,10 @@ pub fn save_magnification(magnification: bool) -> io::Result<()> {
 }
 
 /// Rewrites `[dock] magnified_size`, the same way.
+pub fn save_show_recents(show: bool) -> io::Result<()> {
+    save("dock", "show_recents", toml_edit::value(show))
+}
+
 pub fn save_icon_size(size: f32) -> io::Result<()> {
     save("dock", "icon_size", toml_edit::value(f64::from(size)))
 }

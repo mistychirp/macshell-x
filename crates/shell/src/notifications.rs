@@ -10,13 +10,13 @@ use iced_futures::Subscription;
 use iced_futures::futures::channel::mpsc;
 use iced_futures::futures::{SinkExt as _, Stream, future};
 use iced_widget::core::text::{LineHeight, Shaping};
-use iced_widget::core::{Alignment, Background, Color, Length, Rectangle, Size};
+use iced_widget::core::{Alignment, Background, Color, ContentFit, Length, Rectangle, Size};
 use iced_widget::{Space, column, container, image, mouse_area, pin, row, stack, text};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Value};
 
-use crate::anim;
+use crate::anim::{self, Motion, Spring};
 use crate::app::{Element, Message};
 use crate::apps::AppIndex;
 use crate::group::group;
@@ -52,6 +52,20 @@ const MAX_BODY_LINES: f32 = 4.0;
 const TIME_ROOM: f32 = 76.0;
 const TIME_SIZE: f32 = 11.0;
 const TIME_INK: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.55);
+/// How a card with a picture opens up to show it, measured from Tahoe's: the picture fits in a square
+/// this big, with its action in a row under it, and it moves like the rows around it.
+const PICTURE_SIDE: f32 = 306.0;
+const PICTURE_GAP: f32 = 2.0;
+const FOOTER_HEIGHT: f32 = 44.0;
+const EXPAND_SPRING: Spring = Spring::new(0.285, 0.9);
+/// A picture this small isn't worth opening.
+const MIN_PICTURE: f32 = 96.0;
+/// The largest picture kept from a file.
+const MAX_PICTURE: u32 = 1000;
+/// Where the arrow that opens it goes, from the card's top right corner.
+const ARROW_INSET_X: f32 = 12.0;
+const ARROW_INSET_Y: f32 = 8.0;
+const ARROW_SIZE: f32 = 20.0;
 const ATTACHMENT_SIZE: f32 = 32.0;
 const ATTACHMENT_RADIUS: f32 = 7.0;
 const ATTACHMENT_GAP: f32 = 10.0;
@@ -94,6 +108,8 @@ pub struct Incoming {
     /// The icon the app named for itself.
     app_icon: String,
     icon: IncomingIcon,
+    /// A picture in the text, the way browsers send them.
+    picture: Option<Picture>,
     summary: String,
     body: String,
     actions: Vec<(String, String)>,
@@ -103,8 +119,37 @@ pub struct Incoming {
 
 #[derive(Debug, Clone)]
 enum IncomingIcon {
-    Pixels(image::Handle),
+    Pixels(Picture),
     Named(String),
+}
+
+/// A picture, with its size in pixels.
+#[derive(Debug, Clone)]
+struct Picture {
+    handle: image::Handle,
+    size: (f32, f32),
+}
+
+impl Picture {
+    fn of(width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        Self {
+            handle: image::Handle::from_rgba(width, height, rgba),
+            size: (width as f32, height as f32),
+        }
+    }
+
+    /// One from a file, or a file's URL, if it's one.
+    fn from_file(path: &str) -> Option<Self> {
+        let picture = ::image::open(file_path(path)).ok()?;
+        let small = if picture.width().max(picture.height()) > MAX_PICTURE {
+            picture.thumbnail(MAX_PICTURE, MAX_PICTURE)
+        } else {
+            picture
+        }
+        .to_rgba8();
+        let (width, height) = small.dimensions();
+        Some(Self::of(width, height, small.into_raw()))
+    }
 }
 
 /// A notification, ready to show.
@@ -116,7 +161,9 @@ pub struct Notification {
     pub app: String,
     icon: Option<image::Handle>,
     /// A picture of its own, like who a message is from, beside the text.
-    attachment: Option<image::Handle>,
+    attachment: Option<Picture>,
+    /// How far it's opened up to show that picture, from 0 to 1.
+    expansion: Motion,
     received: DateTime<Local>,
     title: String,
     body: String,
@@ -147,13 +194,14 @@ impl Notification {
         let (icon, attachment) = match incoming.icon {
             // Pixels are usually something particular to this notification, like who a message
             // is from. The app's icon goes first if it has one, like on macOS.
-            IncomingIcon::Pixels(handle) => match own_icon {
-                Some(icon) => (Some(icon), Some(handle)),
-                None => (Some(handle), None),
+            IncomingIcon::Pixels(picture) => match own_icon {
+                Some(icon) => (Some(icon), Some(picture)),
+                None => (Some(picture.handle), None),
             },
             IncomingIcon::Named(name) => (apps.themed_icon(file_path(&name)).or(own_icon), None),
         };
         let icon = icon.or_else(|| apps.themed_icon("dialog-information"));
+        let attachment = incoming.picture.or(attachment);
 
         let title = menu::fit(
             &incoming.summary,
@@ -175,6 +223,7 @@ impl Notification {
             app: name,
             icon,
             attachment,
+            expansion: Motion::at(0.0, EXPAND_SPRING, 0.002),
             received: Local::now(),
             title,
             body,
@@ -222,7 +271,7 @@ impl Notification {
         .ceil();
         Some(Rectangle {
             x: CARD_WIDTH - CAPSULE_INSET_X - width,
-            y: self.height() - CAPSULE_INSET_BOTTOM - CAPSULE_HEIGHT,
+            y: self.closed_height() - CAPSULE_INSET_BOTTOM - CAPSULE_HEIGHT,
             width,
             height: CAPSULE_HEIGHT,
         })
@@ -240,7 +289,56 @@ impl Notification {
 
     /// How tall its card is, without the close button's overhang.
     pub fn height(&self) -> f32 {
+        self.closed_height() + self.expansion.value().max(0.0) * self.open_room()
+    }
+
+    /// How tall it's going to be, which is what those around it go by.
+    pub fn target_height(&self) -> f32 {
+        self.closed_height() + self.expansion.target() * self.open_room()
+    }
+
+    fn closed_height(&self) -> f32 {
         (LINE_HEIGHT + self.body_height).max(ICON_SIZE) + 2.0 * PADDING_Y
+    }
+
+    /// How big its picture is when it's open, if it has one worth opening.
+    fn open_picture(&self) -> Option<Size> {
+        let (width, height) = self.attachment.as_ref()?.size;
+        if width.min(height) < MIN_PICTURE {
+            return None;
+        }
+        let scale = (PICTURE_SIDE / width).min(PICTURE_SIDE / height);
+        Some(Size::new((width * scale).round(), (height * scale).round()))
+    }
+
+    fn open_room(&self) -> f32 {
+        self.open_picture()
+            .map_or(0.0, |picture| picture.height + PICTURE_GAP + FOOTER_HEIGHT)
+    }
+
+    /// Opens it up to show its picture, or closes it again.
+    pub fn toggle_expanded(&mut self) {
+        if self.open_picture().is_some() {
+            self.expansion.go_to(if self.expansion.target() > 0.5 {
+                0.0
+            } else {
+                1.0
+            });
+        }
+    }
+
+    pub fn is_expanding(&self) -> bool {
+        self.expansion.is_moving()
+    }
+
+    pub fn is_expanded(&self) -> bool {
+        self.expansion.target() > 0.5
+    }
+
+    /// How much of its capsule shows, for this much of the pointer over it: none when it's open,
+    /// where what the capsule's for has a row of its own.
+    pub fn capsule_shows(&self, hover: f32) -> f32 {
+        hover * (1.0 - self.expansion.value().clamp(0.0, 1.0))
     }
 }
 
@@ -413,7 +511,7 @@ fn face<'a>(
     capsule: f32,
     material: Option<material::Kind>,
 ) -> Element<'a> {
-    let height = notification.height();
+    let height = notification.closed_height();
     let icon: Element<'a> = match &notification.icon {
         Some(handle) => image(handle.clone())
             .width(ICON_SIZE)
@@ -434,10 +532,19 @@ fn face<'a>(
         Space::new().width(Length::Fill),
     ]
     .push(time.map(|time| {
+        // The arrow takes its place.
+        let shows = if notification.open_picture().is_some() {
+            1.0 - capsule
+        } else {
+            1.0
+        };
         text(time)
             .size(TIME_SIZE)
             .line_height(line_height)
-            .color(TIME_INK)
+            .color(Color {
+                a: TIME_INK.a * shows,
+                ..TIME_INK
+            })
     }))
     .width(width);
 
@@ -486,24 +593,26 @@ fn face<'a>(
     let mut content = row![icon, column![heading, under]]
         .spacing(ICON_GAP)
         .align_y(Alignment::Center);
-    if let Some(handle) = &notification.attachment {
-        // The capsule takes its place.
-        let shows = if notification.capsule().is_some() {
-            1.0 - capsule
+    let opened = notification.expansion.value().clamp(0.0, 1.0);
+    if let Some(picture) = &notification.attachment {
+        // The capsule takes its place, or it opens up to something bigger.
+        let shows = if notification.capsule().is_some() || notification.open_picture().is_some() {
+            (1.0 - capsule) * (1.0 - opened)
         } else {
             1.0
         };
         content = content
             .push(Space::new().width(ATTACHMENT_GAP - ICON_GAP))
             .push(
-                image(handle.clone())
+                image(picture.handle.clone())
                     .width(ATTACHMENT_SIZE)
                     .height(ATTACHMENT_SIZE)
+                    .content_fit(ContentFit::Cover)
                     .border_radius(ATTACHMENT_RADIUS)
                     .opacity(shows),
             );
     }
-    container(content)
+    let top = container(content)
         .padding(iced_widget::core::Padding {
             top: PADDING_Y,
             bottom: PADDING_Y,
@@ -512,7 +621,46 @@ fn face<'a>(
         })
         .width(CARD_WIDTH)
         .height(height)
-        .align_y(Alignment::Center)
+        .align_y(Alignment::Center);
+    let inside: Element<'a> = match (notification.open_picture(), &notification.attachment) {
+        (Some(size), Some(picture)) if opened > 0.0 => {
+            let shows = ((opened - 0.15) / 0.6).clamp(0.0, 1.0);
+            let shown = container(
+                image(picture.handle.clone())
+                    .width(size.width)
+                    .height(size.height),
+            )
+            .center_x(CARD_WIDTH)
+            .height(size.height);
+            let line = container(Space::new())
+                .width(Length::Fill)
+                .height(1)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.12))),
+                    ..Default::default()
+                });
+            let label = notification
+                .capsule()
+                .map_or(String::new(), |(label, _)| label.to_owned());
+            let footer = column![
+                container(line).padding([0.0, 12.0]),
+                container(text(label).size(TEXT_SIZE).color(Color::WHITE))
+                    .center_x(CARD_WIDTH)
+                    .center_y(FOOTER_HEIGHT - 1.0),
+            ];
+            let whole = Size::new(CARD_WIDTH, notification.height());
+            group(column![
+                top,
+                group(column![shown, Space::new().height(PICTURE_GAP), footer,]).opacity(shows),
+            ])
+            .clip(whole)
+            .into()
+        }
+        _ => top.into(),
+    };
+    container(inside)
+        .width(CARD_WIDTH)
+        .height(notification.height())
         .style(move |_| panel_style(material, RADIUS))
         .into()
 }
@@ -533,6 +681,8 @@ pub fn card<'a>(
 ) -> Element<'a> {
     let id = notification.id;
     let height = notification.height();
+    let hover = capsule;
+    let capsule = notification.capsule_shows(hover);
     let mut layers: Vec<Element<'a>> = vec![
         pin(face(notification, time, capsule, material))
             .x(OVERHANG)
@@ -583,6 +733,51 @@ pub fn card<'a>(
             .y(OVERHANG + rect.y)
             .into(),
         );
+    }
+    // Opening up: the arrow, and once it's open, what closes it and the row with what can be done.
+    if notification.open_picture().is_some() {
+        let opened = notification.is_expanded();
+        let arrow = mouse_area(
+            container(icons::icon(
+                if opened { Glyph::Close } else { Glyph::Chevron },
+                if opened { 10.0 } else { 12.0 },
+                Color::from_rgba(1.0, 1.0, 1.0, 0.85),
+            ))
+            .center(ARROW_SIZE),
+        )
+        .on_press(Message::NotificationExpand(id));
+        layers.push(
+            pin(group(arrow).opacity(hover))
+                .x(OVERHANG + CARD_WIDTH - ARROW_INSET_X - ARROW_SIZE)
+                .y(OVERHANG + ARROW_INSET_Y)
+                .into(),
+        );
+        if opened && let Some((_, opens_menu)) = notification.capsule() {
+            let on_row = if opens_menu {
+                Message::NotificationOptions(
+                    id,
+                    (
+                        origin.0 as i32,
+                        (origin.1 + height - FOOTER_HEIGHT) as i32,
+                        CARD_WIDTH as i32,
+                        FOOTER_HEIGHT as i32,
+                    ),
+                )
+            } else {
+                Message::NotificationAction(id, notification.actions[0].0.clone())
+            };
+            layers.push(
+                pin(mouse_area(
+                    container(Space::new())
+                        .width(CARD_WIDTH)
+                        .height(FOOTER_HEIGHT),
+                )
+                .on_press(on_row))
+                .x(OVERHANG)
+                .y(OVERHANG + height - FOOTER_HEIGHT)
+                .into(),
+            );
+        }
     }
     if hovered {
         layers.push(close_button(on_close, material));
@@ -713,6 +908,7 @@ impl Server {
                 _ => None,
             },
             icon: incoming_icon(&hints, app_icon.clone()),
+            picture: body_picture(&body),
             app_icon,
             app_name,
             summary,
@@ -748,7 +944,13 @@ impl Server {
     // Persistence: a notification lives on in Notification Center after its banner, so it isn't
     // closed, and its actions keep working, until it's dismissed there.
     fn get_capabilities(&self) -> Vec<&'static str> {
-        vec!["actions", "body", "icon-static", "persistence"]
+        vec![
+            "actions",
+            "body",
+            "body-images",
+            "icon-static",
+            "persistence",
+        ]
     }
 
     #[zbus(out_args("name", "vendor", "version", "spec_version"))]
@@ -773,19 +975,33 @@ fn hint<'a>(hints: &'a HashMap<String, OwnedValue>, names: &[&str]) -> Option<&'
 
 /// The most specific picture the app offered, in the specification's order.
 fn incoming_icon(hints: &HashMap<String, OwnedValue>, app_icon: String) -> IncomingIcon {
-    if let Some(handle) =
+    if let Some(picture) =
         hint(hints, &["image-data", "image_data", "icon_data"]).and_then(image_data)
     {
-        return IncomingIcon::Pixels(handle);
+        return IncomingIcon::Pixels(picture);
     }
     match hint(hints, &["image-path", "image_path"]) {
-        Some(Value::Str(path)) if !path.is_empty() => IncomingIcon::Named(path.to_string()),
+        // A picture of something particular, unless it's only the name of an icon.
+        Some(Value::Str(path)) if !path.is_empty() => Picture::from_file(path).map_or_else(
+            || IncomingIcon::Named(path.to_string()),
+            IncomingIcon::Pixels,
+        ),
         _ => IncomingIcon::Named(app_icon),
     }
 }
 
+/// The picture in a notification's text, which is how browsers send them.
+fn body_picture(body: &str) -> Option<Picture> {
+    let tag = &body[body.find("<img")?..];
+    let tag = &tag[..tag.find('>')?];
+    let source = &tag[tag.find("src=")? + 4..];
+    let quote = source.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let source = &source[1..];
+    Picture::from_file(&source[..source.find(quote)?])
+}
+
 /// Pixels sent as `(width, height, rowstride, has_alpha, bits_per_sample, channels, data)`.
-fn image_data(value: &Value<'_>) -> Option<image::Handle> {
+fn image_data(value: &Value<'_>) -> Option<Picture> {
     let Value::Structure(structure) = value else {
         return None;
     };
@@ -828,7 +1044,7 @@ fn image_data(value: &Value<'_>) -> Option<image::Handle> {
             rgba.push(pixel.get(3).copied().unwrap_or(u8::MAX));
         }
     }
-    Some(image::Handle::from_rgba(width as u32, height as u32, rgba))
+    Some(Picture::of(width as u32, height as u32, rgba))
 }
 
 /// Serves the session's notifications, and reports what apps send.
@@ -920,5 +1136,12 @@ mod motion_tests {
         assert!(!fade.is_animating());
         fade.aim(None);
         assert!(fade.amount(1) > 0.5);
+    }
+
+    #[test]
+    fn a_picture_comes_out_of_the_text_only_if_its_really_there() {
+        assert!(body_picture("no picture here").is_none());
+        assert!(body_picture("<img src=\"/nonexistent.png\" alt=\"x\"/>").is_none());
+        assert!(body_picture("<img alt=\"x\"").is_none());
     }
 }

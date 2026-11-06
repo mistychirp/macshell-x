@@ -211,7 +211,7 @@ impl Row<'_> {
                 notification,
                 closed_group,
             } => {
-                notification.height()
+                notification.target_height()
                     + if *closed_group {
                         PEEKS.len() as f32 * PEEK_HEIGHT
                     } else {
@@ -342,7 +342,7 @@ pub fn material_shapes(
                 let card_height = notification.height();
                 add(shape(CARD_X, y, CARD_WIDTH, card_height, RADIUS), shows);
                 // On top of the card's, so after it.
-                let capsule = fade.amount(notification.id);
+                let capsule = notification.capsule_shows(fade.amount(notification.id));
                 if !closed_group
                     && capsule > 0.0
                     && let Some(rect) = notification.capsule_rect()

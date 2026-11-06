@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::f32::consts::PI;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -241,6 +242,8 @@ pub struct Layout {
     pub minimized: usize,
     /// Horizontal center of the line between the apps and the places.
     pub separator: f32,
+    /// Which slot the recent apps start at, if they're showing.
+    pub recents: Option<Recents>,
     pub label: Option<Label>,
     /// How far each icon is lifted by a bounce. Only drawing uses it: the input region, the
     /// material and the label stay put, so bouncing doesn't touch the surface's state.
@@ -249,6 +252,17 @@ pub struct Layout {
     pub dragged: Option<usize>,
     /// What releasing the drag would do.
     pub drop: Option<Drop>,
+}
+
+/// The section of the dock with the apps that aren't kept in it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Recents {
+    /// Which slot it starts at.
+    pub start: usize,
+    /// How much of the room for the line before it has opened up, from 0 to 1.
+    pub shown: f32,
+    /// Horizontal center of that line.
+    pub line: f32,
 }
 
 /// An icon being dragged.
@@ -283,6 +297,66 @@ fn headroom(max_icon: f32) -> f32 {
     ((max_icon - base_icon()).max(0.0) + LABEL_GAP + LABEL_HEIGHT + 4.0).max(drag_headroom())
 }
 
+/// How many recent apps that aren't running stay in the dock, like on macOS.
+pub const IDLE_RECENTS: usize = 3;
+
+/// Adds what's come along to the recent apps, in order, and forgets the oldest that have gone if
+/// there are too many. Returns whether anything changed.
+pub fn note_recents(
+    recents: &mut Vec<String>,
+    came_along: impl IntoIterator<Item = String>,
+    is_running: impl Fn(&str) -> bool,
+) -> bool {
+    let mut changed = false;
+    for id in came_along {
+        if !recents.contains(&id) {
+            recents.push(id);
+            changed = true;
+        }
+    }
+    let mut idle = recents.iter().filter(|id| !is_running(id)).count();
+    recents.retain(|id| {
+        if idle > IDLE_RECENTS && !is_running(id) {
+            idle -= 1;
+            changed = true;
+            false
+        } else {
+            true
+        }
+    });
+    changed
+}
+
+fn recents_file() -> Option<PathBuf> {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+        })?;
+    Some(state.join("macshell/recent-apps"))
+}
+
+/// The recent apps, oldest first, as they were last time.
+pub fn load_recents() -> Vec<String> {
+    recents_file()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|list| list.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+pub fn save_recents(recents: &[String]) {
+    let Some(path) = recents_file() else {
+        return;
+    };
+    let saved = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, recents.join("\n")));
+    if let Err(err) = saved {
+        log::warn!("can't save the recent apps: {err}");
+    }
+}
+
 /// How long the dock takes to make room for a new tile or close up behind one, from Tahoe's.
 const ROOM_TIME: Duration = Duration::from_millis(450);
 const ROOM_SPRING: Spring = Spring::new(0.3, 0.82);
@@ -313,17 +387,26 @@ pub fn settings(max_icon: f32) -> NewLayerShellSettings {
 
 /// Unmagnified center of slot `index`, in pill coordinates, with `apps` app slots before the
 /// separator.
-fn base_center(index: usize, apps: usize) -> f32 {
-    let gap = if index >= apps { separator_gap() } else { 0.0 };
+fn base_center(index: usize, apps: usize, recents: Option<usize>) -> f32 {
+    let mut gap = if index >= apps { separator_gap() } else { 0.0 };
+    if recents.is_some_and(|start| index >= start) {
+        gap += separator_gap();
+    }
     padding_x() + index as f32 * (base_icon() + spacing()) + gap + base_icon() / 2.0
 }
 
-fn icon_size(index: usize, apps: usize, pointer: &Pointer, max_icon: f32) -> f32 {
+fn icon_size(
+    index: usize,
+    apps: usize,
+    recents: Option<usize>,
+    pointer: &Pointer,
+    max_icon: f32,
+) -> f32 {
     let Some(base_x) = pointer.base_x else {
         return base_icon();
     };
-    let distance =
-        (base_x - base_center(index, apps)).abs() / (INFLUENCE * (base_icon() + spacing()));
+    let distance = (base_x - base_center(index, apps, recents)).abs()
+        / (INFLUENCE * (base_icon() + spacing()));
     if distance >= 1.0 {
         return base_icon();
     }
@@ -436,18 +519,35 @@ pub fn layout(
     bounce: Vec<f32>,
     drag: Option<&Drag>,
     room: &Room,
+    recents: Option<(usize, f32)>,
 ) -> Layout {
     if let Some(drag) = drag
         && drag.index < items.len()
     {
-        return drag_layout(surface_width, items.len(), minimized.len(), drag, max_icon);
+        return drag_layout(
+            surface_width,
+            items.len(),
+            minimized.len(),
+            drag,
+            max_icon,
+            recents.map(|(start, _)| start),
+        );
     }
 
     let apps = items.len();
     let grown = |index: usize| room.grown.get(&index).copied().unwrap_or(1.0);
     let sizes: Vec<f32> = (0..apps + Place::ALL.len() + minimized.len())
-        .map(|index| icon_size(index, apps, pointer, max_icon) * grown(index))
+        .map(|index| {
+            icon_size(
+                index,
+                apps,
+                recents.map(|(start, _)| start),
+                pointer,
+                max_icon,
+            ) * grown(index)
+        })
         .collect();
+    let recents_gap = recents.map_or(0.0, |(_, shown)| separator_gap() * shown.max(0.0));
     let gap_before = |index: usize| -> f32 {
         room.closing
             .iter()
@@ -459,7 +559,8 @@ pub fn layout(
         .map(|index| spacing() * grown(index) + gap_before(index))
         .sum();
     // The last slot, which is always there, has nothing after it.
-    let icons_width = sizes.iter().sum::<f32>() + room_between - spacing() + separator_gap();
+    let icons_width =
+        sizes.iter().sum::<f32>() + room_between - spacing() + separator_gap() + recents_gap;
 
     let width = (2.0 * padding_x() + icons_width).round();
     let pill = Rectangle {
@@ -472,11 +573,16 @@ pub fn layout(
     let icon_bottom = pill.y + padding_y() + base_icon();
     let mut x = pill.x + padding_x();
     let mut separator = 0.0;
+    let mut recents_line = 0.0;
     let icons: Vec<Rectangle> = sizes
         .iter()
         .enumerate()
         .map(|(index, &size)| {
             x += gap_before(index);
+            if recents.is_some_and(|(start, _)| start == index) {
+                recents_line = x - spacing() / 2.0 + recents_gap / 2.0;
+                x += recents_gap;
+            }
             if index == apps {
                 separator = x - spacing() / 2.0 + separator_gap() / 2.0;
                 x += separator_gap();
@@ -531,6 +637,11 @@ pub fn layout(
         apps,
         minimized: minimized.len(),
         separator,
+        recents: recents.map(|(start, shown)| Recents {
+            start,
+            shown,
+            line: recents_line,
+        }),
         label,
         bounce,
         dragged: None,
@@ -546,6 +657,7 @@ fn drag_layout(
     minimized: usize,
     drag: &Drag,
     max_icon: f32,
+    recents: Option<usize>,
 ) -> Layout {
     let pill_y = headroom(max_icon).round();
     let removing = drag.removable && drag.pointer.y < pill_y - REMOVE_DISTANCE;
@@ -554,10 +666,24 @@ fn drag_layout(
     let trailing = Place::ALL.len() + minimized;
     let slots = app_slots + trailing;
 
+    // Where the recent apps start, without what's being dragged out of the kept ones.
+    let recents = recents.map(|start| {
+        if removing && drag.index < start {
+            start - 1
+        } else {
+            start
+        }
+    });
+    let recents_gap = if recents.is_some() {
+        separator_gap()
+    } else {
+        0.0
+    };
     let width = 2.0 * padding_x()
         + slots as f32 * base_icon()
         + (slots - 1) as f32 * spacing()
-        + separator_gap();
+        + separator_gap()
+        + recents_gap;
     let pill = Rectangle {
         x: ((surface_width - width) / 2.0).round(),
         y: pill_y,
@@ -571,7 +697,13 @@ fn drag_layout(
         width: base_icon(),
         height: base_icon(),
     };
-    let slot_x = |slot: usize| pill.x + padding_x() + slot as f32 * (base_icon() + spacing());
+    let slot_x = |slot: usize| {
+        let past_line = recents.is_some_and(|start| slot >= start);
+        pill.x
+            + padding_x()
+            + slot as f32 * (base_icon() + spacing())
+            + if past_line { recents_gap } else { 0.0 }
+    };
     let target = (!removing).then(|| {
         let slot = (dragged.x - slot_x(0)) / (base_icon() + spacing());
         slot.round().clamp(0.0, (count - 1) as f32) as usize
@@ -629,6 +761,11 @@ fn drag_layout(
         apps: count,
         minimized,
         separator,
+        recents: recents.map(|start| Recents {
+            start,
+            shown: 1.0,
+            line: slot_x(start) - spacing() / 2.0 - recents_gap / 2.0,
+        }),
         label,
         bounce: Vec::new(),
         dragged: Some(drag.index),
@@ -659,23 +796,26 @@ fn slot(icon: &Rectangle) -> (f32, f32) {
 /// so a pointer that doesn't move keeps the dock still even though the icons around it grew.
 pub fn base_x(layout: &Layout, surface_x: f32) -> f32 {
     let slot_width = base_icon() + spacing();
+    let recents = layout.recents.map(|recents| recents.start);
     let (Some(first), Some(last)) = (layout.icons.first(), layout.icons.last()) else {
         return surface_x - layout.pill.x;
     };
 
     let (first_start, _) = slot(first);
     if surface_x < first_start {
-        return base_center(0, layout.apps) - slot_width / 2.0 - (first_start - surface_x);
+        return base_center(0, layout.apps, recents) - slot_width / 2.0 - (first_start - surface_x);
     }
     for (index, icon) in layout.icons.iter().enumerate() {
         let (start, end) = slot(icon);
         if surface_x < end {
             let t = (surface_x - start) / (end - start);
-            return base_center(index, layout.apps) - slot_width / 2.0 + t * slot_width;
+            return base_center(index, layout.apps, recents) - slot_width / 2.0 + t * slot_width;
         }
     }
     let (_, last_end) = slot(last);
-    base_center(layout.icons.len() - 1, layout.apps) + slot_width / 2.0 + (surface_x - last_end)
+    base_center(layout.icons.len() - 1, layout.apps, recents)
+        + slot_width / 2.0
+        + (surface_x - last_end)
 }
 
 /// The item whose slot contains `point` (in surface coordinates).
@@ -739,6 +879,7 @@ fn rect_i32(rect: Rectangle) -> material::Rect {
 
 pub fn items(
     pinned: &[String],
+    recents: &[String],
     windows: &[WindowInfo],
     running: &BTreeMap<String, Vec<Process>>,
     apps: &mut AppIndex,
@@ -782,6 +923,26 @@ pub fn items(
         }
     }
 
+    // The recent apps that aren't running, and all of them in the order they came along, so that they
+    // stay where they are as they start and quit.
+    for id in recents {
+        let app = apps.resolve(id);
+        if app.command.is_some() && !items.iter().any(|item| item.app.id == app.id) {
+            items.push(Item {
+                app,
+                windows: Vec::new(),
+                processes: Vec::new(),
+            });
+        }
+    }
+    let first_recent = pinned.len().min(items.len());
+    items[first_recent..].sort_by_key(|item| {
+        recents
+            .iter()
+            .position(|id| *id == item.app.id)
+            .unwrap_or(usize::MAX)
+    });
+
     for item in &mut items {
         item.windows
             .sort_by_key(|w| std::cmp::Reverse(w.focused_at));
@@ -792,6 +953,8 @@ pub fn items(
 /// What a dock menu item does.
 #[derive(Debug, Clone)]
 pub enum MenuAction {
+    /// Takes an app that isn't running out of the recent ones.
+    ForgetRecent(String),
     FocusWindow(u64),
     /// Launches the app with this id, bouncing its icon until it opens a window.
     Open(String),
@@ -876,6 +1039,12 @@ pub fn menu_entries(item: &Item, pinned: bool) -> Vec<menu::Entry> {
             )
             .checked(autostart::is_enabled(app_id)),
         ]));
+    if !pinned && !item.is_running() {
+        entries.push(menu::Entry::item(
+            "Remove from Dock",
+            Message::DockMenu(MenuAction::ForgetRecent(app_id.clone())),
+        ));
+    }
     entries.push(menu::Entry::Separator);
 
     if item.windows.is_empty() {
@@ -1040,6 +1209,27 @@ pub fn view<'a>(
             .y(layout.pill.y + padding_y() + (base_icon() - separator_height()) / 2.0)
             .into(),
     );
+    if let Some(recents) = layout.recents {
+        let shown = recents.shown.clamp(0.0, 1.0);
+        let line = container(Space::new())
+            .width(1)
+            .height(separator_height())
+            .style(move |_| container::Style {
+                background: Some(Background::Color(Color::from_rgba(
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.3 * shown,
+                ))),
+                ..Default::default()
+            });
+        layers.push(
+            pin(line)
+                .x(recents.line - 0.5)
+                .y(layout.pill.y + padding_y() + (base_icon() - separator_height()) / 2.0)
+                .into(),
+        );
+    }
 
     // The dragged icon floats above everything else.
     if let Some(index) = layout.dragged
@@ -1258,5 +1448,50 @@ mod size_tests {
         assert_eq!(fit_icon(1000.0), ICON_RANGE.1);
         assert_eq!(fit_icon(1.0), ICON_RANGE.0);
         assert_eq!(fit_icon(50.4), 50.0);
+    }
+}
+
+#[cfg(test)]
+mod recents_tests {
+    use super::*;
+
+    fn list(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn new_apps_go_at_the_end_and_stay_where_they_are() {
+        let mut recents = list(&["a", "b"]);
+        assert!(note_recents(&mut recents, list(&["c", "a"]), |_| true));
+        assert_eq!(recents, list(&["a", "b", "c"]));
+        assert!(!note_recents(&mut recents, list(&["b"]), |_| true));
+    }
+
+    #[test]
+    fn only_a_few_stay_after_they_quit_and_the_oldest_go_first() {
+        let mut recents = list(&["a", "b", "c", "d", "e"]);
+        assert!(note_recents(&mut recents, Vec::new(), |id| id == "a"));
+        // "a" is running, so it stays however old it is, and three others do.
+        assert_eq!(recents, list(&["a", "c", "d", "e"]));
+    }
+
+    #[test]
+    fn the_line_before_the_recents_takes_room_as_it_shows() {
+        let mut layout_at = |shown: f32| {
+            layout(
+                1000.0,
+                &[],
+                &[],
+                &Pointer::default(),
+                base_icon(),
+                Vec::new(),
+                None,
+                &Room::default(),
+                Some((0, shown)),
+            )
+        };
+        let (none, all) = (layout_at(0.0), layout_at(1.0));
+        assert!(all.pill.width > none.pill.width);
+        assert_eq!(all.pill.width - none.pill.width, separator_gap());
     }
 }

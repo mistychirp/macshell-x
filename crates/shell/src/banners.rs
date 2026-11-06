@@ -21,7 +21,7 @@ const TOP_MARGIN: i32 = 8;
 const RIGHT_MARGIN: f32 = 16.0;
 const WIDTH: f32 = OVERHANG + CARD_WIDTH + RIGHT_MARGIN;
 /// Room for [`MAX_BANNERS`] of the tallest cards.
-const HEIGHT: f32 = OVERHANG + MAX_BANNERS as f32 * (134.0 + GAP);
+const HEIGHT: f32 = OVERHANG + MAX_BANNERS as f32 * (134.0 + GAP) + 360.0;
 // Measured from a recording of Tahoe's.
 /// How fast a banner comes in: how long it takes to get about two thirds of the way, in seconds. It's
 /// fastest at the start.
@@ -104,9 +104,12 @@ impl Banners {
 
     /// Whether anything is moving, which takes frames.
     pub fn animating(&self) -> bool {
-        self.banners
-            .iter()
-            .any(|banner| banner.left.is_some() || banner.slide() != 0.0 || banner.y.is_moving())
+        self.banners.iter().any(|banner| {
+            banner.left.is_some()
+                || banner.slide() != 0.0
+                || banner.y.is_moving()
+                || banner.notification.is_expanding()
+        })
     }
 
     /// Whether any banner is waiting to expire.
@@ -186,6 +189,20 @@ impl Banners {
         }
     }
 
+    /// Opens up the banner showing this notification to show its picture, or closes it, and it stays
+    /// until it's dismissed, since someone's looking at it.
+    pub fn toggle_expanded(&mut self, id: u32) {
+        if let Some(banner) = self
+            .banners
+            .iter_mut()
+            .find(|banner| banner.notification.id == id)
+        {
+            banner.notification.toggle_expanded();
+            banner.expires = None;
+        }
+        self.rearrange();
+    }
+
     /// The pointer left a banner: gives it a moment before it goes.
     pub fn pointer_left(&mut self, id: u32, now: Instant) {
         if let Some(banner) = self
@@ -228,7 +245,7 @@ impl Banners {
         self.banners[..index]
             .iter()
             .filter(|banner| !banner.leaving)
-            .map(|banner| banner.notification.height() + GAP)
+            .map(|banner| banner.notification.target_height() + GAP)
             .sum()
     }
 
@@ -254,7 +271,7 @@ impl Banners {
             });
             opacities.push(1.0);
             // On top of the card's, so after it.
-            let capsule = fade.amount(id);
+            let capsule = banner.notification.capsule_shows(fade.amount(id));
             if capsule > 0.0
                 && let Some(rect) = banner.notification.capsule_rect()
             {

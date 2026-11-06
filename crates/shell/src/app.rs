@@ -299,6 +299,8 @@ pub enum Message {
     NotificationDismissed(u32),
     /// A card's capsule was pressed, for its menu, and where it is on its surface.
     NotificationOptions(u32, (i32, i32, i32, i32)),
+    /// A card's arrow was pressed, which opens it up to show its picture, or closes it.
+    NotificationExpand(u32),
     /// Something about notifications is moving, which has no more to it than time passing.
     NotificationFrame,
     /// A group in Notification Center was opened, closed or cleared; carries the app's key.
@@ -450,6 +452,11 @@ struct Shell {
     dock_last_frame: Option<Instant>,
     dock_room: dock::RoomTracker,
     dock_was_dragged: bool,
+    /// The apps that aren't kept in the dock, oldest first, and whether they show.
+    recents: Vec<String>,
+    show_recents: bool,
+    /// How much room the line before the recent apps has.
+    dock_section: anim::Motion,
     dock_was_pinned: bool,
     /// The pointer left the dock while it was pinned.
     dock_pointer_left: bool,
@@ -583,6 +590,8 @@ const FALLBACK_SCREEN_HEIGHT: f32 = 700.0;
 /// How long the pointer has to stay on a menu's row to change which submenus are open, so that
 /// heading for an open submenu across other rows doesn't close it.
 const MENU_HOVER_DELAY: Duration = Duration::from_millis(130);
+/// How the line before the dock's recent apps makes room.
+const DOCK_SECTION_SPRING: anim::Spring = anim::Spring::new(0.3, 0.85);
 /// How long things can go without a frame while they're moving, before they move anyway.
 const FRAME_KICK: Duration = Duration::from_millis(32);
 /// How long the dock fills up for as the session starts, which isn't worth animating.
@@ -617,7 +626,18 @@ impl Shell {
         autostart::run_once();
         let config = Config::load();
         let mut apps = AppIndex::load();
-        let dock = dock::items(&config.dock.pinned, &[], &BTreeMap::new(), &mut apps);
+        let recents = dock::load_recents();
+        let dock = dock::items(
+            &config.dock.pinned,
+            if config.dock.show_recents {
+                &recents
+            } else {
+                &[]
+            },
+            &[],
+            &BTreeMap::new(),
+            &mut apps,
+        );
 
         let (menubar_id, open_menubar) = Message::layershell_open(menubar::settings());
         dock::set_base_icon(config.dock.icon_size);
@@ -692,6 +712,9 @@ impl Shell {
             dock_last_frame: None,
             dock_room: dock::RoomTracker::default(),
             dock_was_dragged: false,
+            recents,
+            show_recents: config.dock.show_recents,
+            dock_section: anim::Motion::at(0.0, DOCK_SECTION_SPRING, 0.005),
             dock_was_pinned: false,
             dock_pointer_left: false,
             last_frame: Instant::now(),
@@ -940,7 +963,8 @@ impl Shell {
                 }
                 self.windows = windows;
                 self.note_window_processes();
-                self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
+                self.note_recents();
+                self.dock = self.dock_items();
                 let captures = self.sync_minimized();
                 // A window showing up is what ends a launch bounce.
                 let dock = &self.dock;
@@ -1529,8 +1553,7 @@ impl Shell {
                 // Windows that came up while that was being worked out.
                 self.note_window_processes();
                 if before != self.running {
-                    self.dock =
-                        dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
+                    self.dock = self.dock_items();
                     return self.relayout_dock();
                 }
             }
@@ -2125,6 +2148,13 @@ impl Shell {
                 return self.open_notification_options(id, anchor);
             }
             Message::NotificationFrame => return self.sync_banners(),
+            Message::NotificationExpand(id) => {
+                if let Some(known) = self.notifications.iter_mut().find(|known| known.id == id) {
+                    known.toggle_expanded();
+                }
+                self.banners.toggle_expanded(id);
+                return self.sync_banners();
+            }
             Message::TrayItems(items) => {
                 self.tray = items
                     .into_iter()
@@ -2843,6 +2873,48 @@ impl Shell {
         self.sync_banners()
     }
 
+    /// What's in the dock, from what's kept there, what's running, and the recent apps.
+    fn dock_items(&mut self) -> Vec<dock::Item> {
+        let recents: &[String] = if self.show_recents {
+            &self.recents
+        } else {
+            &[]
+        };
+        dock::items(
+            &self.pinned,
+            recents,
+            &self.windows,
+            &self.running,
+            &mut self.apps,
+        )
+    }
+
+    /// Notes the apps with windows that aren't kept in the dock as recent, and which of those to keep.
+    fn note_recents(&mut self) {
+        let came_along: Vec<String> = self
+            .windows
+            .iter()
+            .filter_map(|window| window.app_id.as_deref())
+            .map(|app_id| self.apps.resolve(app_id))
+            .filter(|app| app.command.is_some() && !app.unlisted && !self.pinned.contains(&app.id))
+            .map(|app| app.id.clone())
+            .collect();
+        let running: HashSet<String> = self
+            .dock
+            .iter()
+            .filter(|item| item.is_running())
+            .map(|item| item.app.id.clone())
+            .collect();
+        if dock::note_recents(&mut self.recents, came_along, |id| running.contains(id)) {
+            dock::save_recents(&self.recents);
+        }
+    }
+
+    /// Where the recent apps start in the dock, if they're showing and there are any.
+    fn recents_start(&self) -> Option<usize> {
+        (self.show_recents && self.dock.len() > self.pinned.len()).then_some(self.pinned.len())
+    }
+
     /// Whether anything's moving, which is what takes frames.
     fn is_moving(&self) -> bool {
         self.dock_is_moving()
@@ -2860,6 +2932,7 @@ impl Shell {
                 .is_some_and(spotlight::Spotlight::is_animating)
             || self.notification_fade.is_animating()
             || self.center_motion.is_animating()
+            || self.notifications.iter().any(Notification::is_expanding)
             || self.menu_blink.is_some()
             || self.widget_tint.is_animating()
     }
@@ -2868,6 +2941,7 @@ impl Shell {
         self.dock_pointer.amount != self.dock_target
             || !self.launching.is_empty()
             || self.dock_room.is_animating()
+            || self.dock_section.is_moving()
             || self.dock.iter().any(dock::Item::wants_attention)
     }
 
@@ -2891,7 +2965,10 @@ impl Shell {
         if self.menu_blink.is_some() {
             steps.push(self.apply(Message::MenuBlinkFrame));
         }
-        if self.notification_fade.is_animating() || self.center_motion.is_animating() {
+        if self.notification_fade.is_animating()
+            || self.center_motion.is_animating()
+            || self.notifications.iter().any(Notification::is_expanding)
+        {
             steps.push(self.apply(Message::NotificationFrame));
         }
         Task::batch(steps)
@@ -3513,9 +3590,10 @@ impl Shell {
                 tasks.push(self.show_wallpaper(handle));
             }
         }
-        if config.dock.pinned != self.pinned {
+        if config.dock.pinned != self.pinned || config.dock.show_recents != self.show_recents {
             self.pinned = config.dock.pinned.clone();
-            self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
+            self.show_recents = config.dock.show_recents;
+            self.dock = self.dock_items();
             tasks.push(self.relayout_dock());
         }
         let icon_was = dock::base_icon();
@@ -3930,7 +4008,8 @@ impl Shell {
             index,
             pointer: self.dock_cursor,
             grab,
-            removable: self.pinned.contains(&press.app_id),
+            removable: self.pinned.contains(&press.app_id)
+                || self.dock.get(index).is_some_and(|item| !item.is_running()),
         });
         // Icons are dragged at their plain size, so magnification snaps off.
         self.dock_pointer = dock::Pointer::default();
@@ -3945,8 +4024,20 @@ impl Shell {
         };
         let app_id = item.app.id.clone();
 
+        let kept = self.pinned.contains(&app_id);
         match self.dock_layout.drop {
-            Some(dock::Drop::Remove) => self.pinned.retain(|id| *id != app_id),
+            Some(dock::Drop::Remove) => {
+                self.pinned.retain(|id| *id != app_id);
+                self.recents.retain(|id| *id != app_id);
+                dock::save_recents(&self.recents);
+            }
+            // Moved around among the recent apps, it's still one of them.
+            Some(dock::Drop::Slot(slot))
+                if !kept
+                    && self
+                        .dock_layout
+                        .recents
+                        .is_some_and(|recents| slot >= recents.start) => {}
             // Dropping an icon somewhere keeps it there, like on macOS: the dock's new order,
             // filtered down to pinned apps (now including this one), becomes the pinned list.
             Some(dock::Drop::Slot(slot)) => {
@@ -3960,6 +4051,8 @@ impl Shell {
                 order.insert(slot.min(order.len()), app_id.clone());
 
                 let mut pinned: HashSet<String> = self.pinned.drain(..).collect();
+                self.recents.retain(|id| *id != app_id);
+                dock::save_recents(&self.recents);
                 pinned.insert(app_id);
                 self.pinned = order.into_iter().filter(|id| pinned.contains(id)).collect();
             }
@@ -3969,7 +4062,7 @@ impl Shell {
         if let Err(err) = config::save_pinned(&self.pinned) {
             log::error!("can't save pinned apps: {err}");
         }
-        self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
+        self.dock = self.dock_items();
     }
 
     /// Keeps the list of minimized windows up to date, and asks for pictures of new ones.
@@ -4080,16 +4173,23 @@ impl Shell {
                     Message::QuitGraceOver(app_id.clone())
                 });
             }
+            dock::MenuAction::ForgetRecent(app_id) => {
+                self.recents.retain(|id| *id != app_id);
+                dock::save_recents(&self.recents);
+                self.dock = self.dock_items();
+            }
             dock::MenuAction::TogglePin(app_id) => {
                 if let Some(index) = self.pinned.iter().position(|id| *id == app_id) {
                     self.pinned.remove(index);
                 } else {
+                    self.recents.retain(|id| *id != app_id);
+                    dock::save_recents(&self.recents);
                     self.pinned.push(app_id);
                 }
                 if let Err(err) = config::save_pinned(&self.pinned) {
                     log::error!("can't save pinned apps: {err}");
                 }
-                self.dock = dock::items(&self.pinned, &self.windows, &self.running, &mut self.apps);
+                self.dock = self.dock_items();
             }
             dock::MenuAction::OpenPlace(place) => self.open_place(place),
             dock::MenuAction::ConfirmEmptyTrash => {
@@ -4143,6 +4243,12 @@ impl Shell {
         );
         self.dock_was_dragged = dragging;
         let room = self.dock_room.room(now);
+        let start = self.recents_start();
+        self.dock_section
+            .go_to(if start.is_some() { 1.0 } else { 0.0 });
+        // It stays where the kept apps end while the line goes.
+        let recents = (start.is_some() || self.dock_section.is_moving())
+            .then(|| (self.pinned.len(), self.dock_section.value()));
         let bounce = self
             .dock
             .iter()
@@ -4164,6 +4270,7 @@ impl Shell {
             bounce,
             self.dock_drag.as_ref(),
             &room,
+            recents,
         );
         // Like macOS, an open menu or stack hides the name over the icon. It would show
         // through the popup's clear glass anyway.
