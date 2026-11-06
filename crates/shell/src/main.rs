@@ -30,6 +30,7 @@ mod notifications;
 mod places;
 mod plasma_protocol;
 mod portal;
+mod settings;
 mod shadow_protocol;
 mod stack;
 mod tray;
@@ -43,5 +44,8 @@ fn main() -> Result<(), iced_layershell::Error> {
     )
     .init();
     fonts::load();
+    if std::env::args().nth(1).as_deref() == Some("settings") {
+        return settings::run();
+    }
     app::run()
 }

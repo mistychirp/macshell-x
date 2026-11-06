@@ -23,8 +23,8 @@ pub fn settings() -> NewLayerShellSettings {
     }
 }
 
-/// The image at a configured path, which may start with `~/`, if it's there.
-pub fn load(configured: &str) -> Option<image::Handle> {
+/// The file at a configured path, which may start with `~/`, if it's there.
+pub fn resolve(configured: &str) -> Option<PathBuf> {
     let path = match configured.strip_prefix("~/") {
         Some(rest) => PathBuf::from(env::var_os("HOME")?).join(rest),
         None => PathBuf::from(configured),
@@ -33,7 +33,12 @@ pub fn load(configured: &str) -> Option<image::Handle> {
         log::error!("no wallpaper at {}", path.display());
         return None;
     }
-    Some(image::Handle::from_path(path))
+    Some(path)
+}
+
+/// The image at a configured path, if it's there.
+pub fn load(configured: &str) -> Option<image::Handle> {
+    resolve(configured).map(image::Handle::from_path)
 }
 
 pub fn view<'a>(handle: &image::Handle) -> Element<'a> {

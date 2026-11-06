@@ -23,6 +23,7 @@ rustPlatform.buildRustPackage {
       ../vendor
       ../protocols
       ../contrib/macshell.desktop
+      ../contrib/macshell-settings.desktop
     ];
   };
   cargoLock.lockFile = ../Cargo.lock;
@@ -33,6 +34,9 @@ rustPlatform.buildRustPackage {
   postInstall = ''
     install -Dm0644 contrib/macshell.desktop $out/share/applications/macshell.desktop
     substituteInPlace $out/share/applications/macshell.desktop \
+      --replace-fail @macshell@ $out/bin/macshell
+    install -Dm0644 contrib/macshell-settings.desktop $out/share/applications/macshell-settings.desktop
+    substituteInPlace $out/share/applications/macshell-settings.desktop \
       --replace-fail @macshell@ $out/bin/macshell
   '';
 

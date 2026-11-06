@@ -4,8 +4,6 @@
 use iced_widget::core::Color;
 use iced_widget::svg;
 
-use crate::app::Element;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Glyph {
     /// Two switches: the Control Center's icon.
@@ -64,6 +62,9 @@ pub enum Glyph {
     LockSmall,
     /// What marks a menu item that opens a submenu.
     Chevron,
+    /// A drop of something clear, for the glass settings.
+    Drop,
+    Keyboard,
 }
 
 impl Glyph {
@@ -217,6 +218,17 @@ impl Glyph {
                 <rect x="13.5" y="13" width="7" height="7.5" rx="1.6"/>
                 </svg>"##
             }
+            Glyph::Drop => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000">
+                <path d="M12 2.5c3.6 4.6 7 8.3 7 12.2a7 7 0 0 1-14 0c0-3.9 3.4-7.6 7-12.2z"/>
+                </svg>"##
+            }
+            Glyph::Keyboard => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round">
+                <rect x="2.5" y="6" width="19" height="12.5" rx="2.5"/>
+                <path d="M6.5 10h.01M10.2 10h.01M13.8 10h.01M17.5 10h.01M8 14.5h8"/>
+                </svg>"##
+            }
             Glyph::Gear => {
                 r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="3"/>
@@ -342,7 +354,16 @@ impl Glyph {
 }
 
 /// `glyph` at `size` logical pixels, in `color`.
-pub fn icon<'a>(glyph: Glyph, size: f32, color: Color) -> Element<'a> {
+pub fn icon<'a, Message: 'a>(
+    glyph: Glyph,
+    size: f32,
+    color: Color,
+) -> iced_widget::core::Element<
+    'a,
+    Message,
+    iced_widget::core::Theme,
+    iced_widget::renderer::Renderer,
+> {
     svg(svg::Handle::from_memory(glyph.source().as_bytes()))
         .width(size)
         .height(size)

@@ -209,6 +209,8 @@ pub enum Message {
     AddingModifiers(bool),
     /// A new wallpaper was picked, if one was.
     WallpaperChosen(Option<PathBuf>),
+    /// "System Settings…" was chosen in the menu.
+    OpenSettings,
     /// The alert was pressed where there's no button.
     AlertDragged,
     AlertFieldChanged(String),
@@ -373,6 +375,9 @@ struct Shell {
     dock_last_frame: Option<Instant>,
     /// Size of a fully magnified icon.
     dock_max_icon: f32,
+    /// The wallpaper as it's written in the config file.
+    wallpaper_path: Option<String>,
+    always_glassy_widgets: bool,
     dock_layout: dock::Layout,
     material: Option<Rc<Material>>,
     dock_material: Option<MaterialSurface>,
@@ -489,11 +494,7 @@ impl Shell {
         let dock = dock::items(&config.dock.pinned, &[], &mut apps);
 
         let (menubar_id, open_menubar) = Message::layershell_open(menubar::settings());
-        let dock_max_icon = if config.dock.magnification {
-            config.dock.magnified_size.clamp(dock::ICON_SIZE, 128.0)
-        } else {
-            dock::ICON_SIZE
-        };
+        let dock_max_icon = dock_max_icon(&config.dock);
         let (dock_id, open_dock) = Message::layershell_open(dock::settings(dock_max_icon));
         let (desktop_id, open_desktop) = Message::layershell_open(desktop::settings());
 
@@ -535,6 +536,8 @@ impl Shell {
                 .wallpaper
                 .as_deref()
                 .and_then(wallpaper::load),
+            wallpaper_path: config.desktop.wallpaper.clone(),
+            always_glassy_widgets: config.desktop.always_glassy_widgets,
             apps,
             pinned: config.dock.pinned,
             focused_app: None,
@@ -1267,20 +1270,28 @@ impl Shell {
                 if let Err(err) = config::save_wallpaper(&path) {
                     log::warn!("can't save the wallpaper: {err}");
                 }
-                let handle = image::Handle::from_path(path);
-                self.wallpaper = Some(handle.clone());
-                self.wallpaper_loaded = None;
-                if self
-                    .surfaces
-                    .values()
-                    .any(|surface| *surface == Surface::Wallpaper)
-                {
-                    return iced_runtime::image::allocate(handle).map(Message::WallpaperLoaded);
-                }
-                let (id, open) = Message::layershell_open(wallpaper::settings());
-                self.surfaces.insert(id, Surface::Wallpaper);
-                return open;
+                self.wallpaper_path = Some(path.to_string_lossy().into_owned());
+                return self.show_wallpaper(image::Handle::from_path(path));
             }
+            Message::OpenSettings => {
+                let close = self.close_popup();
+                match self
+                    .windows
+                    .iter()
+                    .find(|window| window.app_id.as_deref() == Some(crate::settings::APP_ID))
+                {
+                    Some(window) => kwin::focus_window(window.id),
+                    None => match std::env::current_exe() {
+                        Ok(exe) => apps::spawn(vec![
+                            exe.to_string_lossy().into_owned(),
+                            String::from("settings"),
+                        ]),
+                        Err(err) => log::warn!("can't find the Settings app: {err}"),
+                    },
+                }
+                return close;
+            }
+            Message::Arrange(arrange::Event::ConfigChanged) => return self.reload_config(),
             Message::SurfaceOpened(id, size)
                 if self.surfaces.get(&id) == Some(&Surface::Wallpaper) =>
             {
@@ -2401,9 +2412,54 @@ impl Shell {
     }
 
     /// Whether widgets are glass: like on macOS, they are while a window is active, and in color
-    /// when the desktop is.
+    /// when the desktop is, unless the Settings app says they always are.
     fn widgets_tinted(&self) -> bool {
-        self.focused_app.is_some() && !self.widgets.editing && !self.widgets.is_dragging()
+        self.always_glassy_widgets
+            || (self.focused_app.is_some() && !self.widgets.editing && !self.widgets.is_dragging())
+    }
+
+    fn show_wallpaper(&mut self, handle: image::Handle) -> Task<Message> {
+        self.wallpaper = Some(handle.clone());
+        self.wallpaper_loaded = None;
+        if self
+            .surfaces
+            .values()
+            .any(|surface| *surface == Surface::Wallpaper)
+        {
+            return iced_runtime::image::allocate(handle).map(Message::WallpaperLoaded);
+        }
+        let (id, open) = Message::layershell_open(wallpaper::settings());
+        self.surfaces.insert(id, Surface::Wallpaper);
+        open
+    }
+
+    /// Takes in what the Settings app just wrote to the config file.
+    fn reload_config(&mut self) -> Task<Message> {
+        let config = Config::load();
+        self.always_glassy_widgets = config.desktop.always_glassy_widgets;
+        let mut tasks = Vec::new();
+        if config.desktop.wallpaper != self.wallpaper_path {
+            self.wallpaper_path.clone_from(&config.desktop.wallpaper);
+            if let Some(handle) = config
+                .desktop
+                .wallpaper
+                .as_deref()
+                .and_then(wallpaper::load)
+            {
+                tasks.push(self.show_wallpaper(handle));
+            }
+        }
+        let max_icon = dock_max_icon(&config.dock);
+        if max_icon != self.dock_max_icon {
+            self.dock_max_icon = max_icon;
+            self.dock_target = 0.0;
+            tasks.push(Task::done(Message::SizeChange {
+                id: self.dock_id,
+                size: (0, dock::surface_height(max_icon) as u32),
+            }));
+            tasks.push(self.relayout_dock());
+        }
+        Task::batch(tasks)
     }
 
     /// Keeps the glass behind widgets in line with them.
@@ -3207,6 +3263,15 @@ impl Shell {
                 _ => None,
             }),
         ])
+    }
+}
+
+/// The size of a fully magnified icon, which is the plain size without magnification.
+fn dock_max_icon(config: &config::DockConfig) -> f32 {
+    if config.magnification {
+        config.magnified_size.clamp(dock::ICON_SIZE, 128.0)
+    } else {
+        dock::ICON_SIZE
     }
 }
 

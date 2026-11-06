@@ -91,6 +91,8 @@ pub enum Event {
     Hovered(i32, i32),
     /// The pointer left the green light.
     Left,
+    /// The Settings app changed the config file.
+    ConfigChanged,
 }
 
 /// An open menu.
@@ -120,6 +122,12 @@ impl Windows {
     #[zbus(name = "ZoomLeft")]
     fn zoom_left(&self) {
         let _ = self.events.unbounded_send(Event::Left);
+    }
+
+    /// The Settings app changed the config file.
+    #[zbus(name = "ConfigChanged")]
+    fn config_changed(&self) {
+        let _ = self.events.unbounded_send(Event::ConfigChanged);
     }
 }
 

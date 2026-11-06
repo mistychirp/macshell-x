@@ -301,6 +301,9 @@ pub fn system_menu() -> Vec<menu::Entry> {
         menu::Entry::item(label, Message::System(action)).icon(menu::Icon::Glyph(glyph))
     };
     vec![
+        menu::Entry::item("System Settings…", Message::OpenSettings)
+            .icon(menu::Icon::Glyph(Glyph::Gear)),
+        menu::Entry::Separator,
         item("Sleep", Glyph::Sleep, SystemAction::Sleep),
         item("Restart…", Glyph::Restart, SystemAction::Restart),
         item("Shut Down…", Glyph::Power, SystemAction::ShutDown),

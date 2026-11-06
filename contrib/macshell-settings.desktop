@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=System Settings
+Comment=Settings for the macshell desktop
+Exec=@macshell@ settings
+Icon=preferences-system
+Categories=Settings;
+StartupWMClass=macshell-settings

@@ -57,6 +57,15 @@ QString Arranger::windowUnderCursor(int &x, int &y)
     return QString();
 }
 
+void Arranger::fullScreenUnderCursor()
+{
+    int x;
+    int y;
+    if (EffectWindow *w = effects->findWindow(QUuid(windowUnderCursor(x, y)))) {
+        w->window()->setFullScreen(true);
+    }
+}
+
 /// Takes a window out of anything that would stop it going somewhere, and puts it there.
 static void place(EffectWindow *w, const RectF &rect)
 {

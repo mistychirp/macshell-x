@@ -69,6 +69,7 @@ kcoreaddons_add_plugin(macshell-decoration
 set_target_properties(macshell-decoration PROPERTIES OUTPUT_NAME "org.kde.macshell")
 target_link_libraries(macshell-decoration PRIVATE
     KDecoration3::KDecoration
+    KF6::ConfigCore
     KF6::CoreAddons
     Qt6::DBus
     Qt6::Gui

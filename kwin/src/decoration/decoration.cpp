@@ -12,6 +12,9 @@
 #include <KDecoration3/ScaleHelpers>
 #include <KPluginFactory>
 
+#include <KConfigGroup>
+#include <KSharedConfig>
+
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
@@ -368,6 +371,21 @@ Button::Button(KDecoration3::DecorationButtonType type, Decoration *decoration, 
     setGeometry(QRectF(0, 0, s_dotSize, s_dotSize));
     if (type == KDecoration3::DecorationButtonType::Maximize) {
         setAcceptedButtons(Qt::LeftButton);
+        // Its click either maximizes, as KDecoration has it, or goes full screen, as the Settings
+        // app chooses. The check is here since that can change at any time.
+        disconnect(this, &KDecoration3::DecorationButton::clicked, nullptr, nullptr);
+        connect(this, &KDecoration3::DecorationButton::clicked, decoration, [decoration](Qt::MouseButton button) {
+            const KConfigGroup group = KSharedConfig::openConfig(QStringLiteral("kwinrc"))->group(QStringLiteral("Effect-macshell"));
+            if (group.readEntry("GreenFullScreen", 0.0) == 0.0) {
+                decoration->requestToggleMaximization(button);
+                return;
+            }
+            const auto message = QDBusMessage::createMethodCall(QStringLiteral("org.kde.KWin"),
+                                                                QStringLiteral("/org/macshell/Arranger"),
+                                                                QStringLiteral("org.macshell.Arranger"),
+                                                                QStringLiteral("fullScreenUnderCursor"));
+            QDBusConnection::sessionBus().asyncCall(message);
+        }, Qt::QueuedConnection);
     }
 }
 

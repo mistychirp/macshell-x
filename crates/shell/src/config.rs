@@ -22,6 +22,8 @@ pub struct DesktopConfig {
     /// Path of the wallpaper image, which may start with `~/`. Without one, the shell leaves the
     /// background to whatever else draws it.
     pub wallpaper: Option<String>,
+    /// Keep widgets as glass even when the desktop has focus, instead of in color.
+    pub always_glassy_widgets: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,6 +71,30 @@ pub fn save_wallpaper(wallpaper: &std::path::Path) -> io::Result<()> {
             doc["desktop"] = toml_edit::table();
         }
         doc["desktop"]["wallpaper"] = toml_edit::value(wallpaper.to_string_lossy().as_ref());
+    })
+}
+
+/// Rewrites `[dock] magnification`, the same way.
+pub fn save_magnification(magnification: bool) -> io::Result<()> {
+    save("dock", "magnification", toml_edit::value(magnification))
+}
+
+/// Rewrites `[dock] magnified_size`, the same way.
+pub fn save_magnified_size(size: f32) -> io::Result<()> {
+    save("dock", "magnified_size", toml_edit::value(f64::from(size)))
+}
+
+/// Rewrites `[desktop] always_glassy_widgets`, the same way.
+pub fn save_always_glassy_widgets(always: bool) -> io::Result<()> {
+    save("desktop", "always_glassy_widgets", toml_edit::value(always))
+}
+
+fn save(table: &str, key: &str, value: toml_edit::Item) -> io::Result<()> {
+    edit(|doc| {
+        if !doc.contains_table(table) {
+            doc[table] = toml_edit::table();
+        }
+        doc[table][key] = value;
     })
 }
 

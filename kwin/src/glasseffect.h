@@ -75,11 +75,8 @@ struct GlassSettings {
     float glassProfile = 2.5;
     float glassShoulder = 1.5;
     float glassGloss = 0.25;
-    float controlThickness = 47.5;
-    float controlBezel = 17.0;
-    /// For everything else with a lens: the dock, cards and bubbles.
-    float liquidThickness = 47.5;
-    float liquidBezel = 17.0;
+    float glassThickness = 47.5;
+    float glassBezel = 17.0;
 
     /// Backdrops, which set things apart from a busy background, dim it a little as well.
     float backdropBrightness = 0.9;
@@ -131,6 +128,7 @@ struct WindowGlass {
 class GlassEffect : public KWin::Effect
 {
     Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.macshell.Glass")
 
 public:
     GlassEffect();
@@ -154,6 +152,14 @@ public:
         return 21;
     }
 
+public Q_SLOTS:
+    /// The current value of a setting the Settings app can change, or 0 if it's not one of those.
+    Q_SCRIPTABLE double setting(const QString &key) const;
+    /// Changes one, right away. It's saved a moment later, so a slider can be dragged.
+    Q_SCRIPTABLE void setSetting(const QString &key, double value);
+    /// Puts all of them back to their defaults.
+    Q_SCRIPTABLE void resetSettings();
+
 private:
     void updateWindow(KWin::EffectWindow *w);
     void windowMoved(KWin::EffectWindow *w, const KWin::RectF &oldGeometry);
@@ -162,6 +168,7 @@ private:
     bool ensureTextures(ShapeRender &render, const QSize &size, GLenum format, int levels);
     void frost(ShapeRender &render, int passes, float offset);
     float measureLuminance(ShapeRender &render, bool linear);
+    QTimer *m_saveSoon = nullptr;
 
     std::unique_ptr<GlassManager> m_manager;
     std::unique_ptr<Arranger> m_arranger;

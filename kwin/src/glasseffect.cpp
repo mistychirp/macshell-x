@@ -19,6 +19,8 @@
 #include <KConfigGroup>
 #include <KSharedConfig>
 
+#include <QDBusConnection>
+
 #include <QLoggingCategory>
 #include <QMatrix4x4>
 #include <QPointer>
@@ -26,6 +28,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <numbers>
 
 Q_LOGGING_CATEGORY(MACSHELL_GLASS, "macshell_glass", QtWarningMsg)
@@ -128,6 +131,14 @@ GlassEffect::GlassEffect()
         }
     });
 
+    m_saveSoon = new QTimer(this);
+    m_saveSoon->setSingleShot(true);
+    m_saveSoon->setInterval(500);
+    connect(m_saveSoon, &QTimer::timeout, this, [] {
+        KSharedConfig::openConfig(QStringLiteral("kwinrc"))->sync();
+    });
+    QDBusConnection::sessionBus().registerObject(QStringLiteral("/org/macshell/Glass"), this, QDBusConnection::ExportScriptableSlots);
+
     reconfigure(ReconfigureAll);
     for (EffectWindow *w : effects->stackingOrder()) {
         updateWindow(w);
@@ -171,16 +182,60 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.glassProfile = group.readEntry("GlassProfile", defaults.glassProfile);
     m_settings.glassShoulder = group.readEntry("GlassShoulder", defaults.glassShoulder);
     m_settings.glassGloss = group.readEntry("GlassGloss", defaults.glassGloss);
-    m_settings.controlThickness = group.readEntry("ControlThickness", defaults.controlThickness);
-    m_settings.controlBezel = group.readEntry("ControlBezel", defaults.controlBezel);
-    m_settings.liquidThickness = group.readEntry("LiquidThickness", defaults.liquidThickness);
-    m_settings.liquidBezel = group.readEntry("LiquidBezel", defaults.liquidBezel);
+    m_settings.glassThickness = group.readEntry("GlassThickness", defaults.glassThickness);
+    m_settings.glassBezel = group.readEntry("GlassBezel", defaults.glassBezel);
     m_settings.inactiveTint = group.readEntry("InactiveTint", defaults.inactiveTint);
     m_settings.chipTint = group.readEntry("ChipTint", defaults.chipTint);
     m_settings.chipRim = group.readEntry("ChipRim", defaults.chipRim);
     m_settings.bubbleTint = group.readEntry("BubbleTint", defaults.bubbleTint);
     m_settings.bubbleEdgeGain = group.readEntry("BubbleEdgeGain", defaults.bubbleEdgeGain);
     effects->addRepaintFull();
+}
+
+/// What the Settings app may change, besides the green button's click, which the decoration reads.
+static const std::map<QString, float GlassSettings::*> s_tunable = {
+    {QStringLiteral("GlassThickness"), &GlassSettings::glassThickness},
+    {QStringLiteral("GlassBezel"), &GlassSettings::glassBezel},
+    {QStringLiteral("GlassIor"), &GlassSettings::glassIor},
+    {QStringLiteral("GlassIorSpread"), &GlassSettings::glassIorSpread},
+    {QStringLiteral("GlassProfile"), &GlassSettings::glassProfile},
+    {QStringLiteral("GlassGloss"), &GlassSettings::glassGloss},
+    {QStringLiteral("Grain"), &GlassSettings::grain},
+};
+static const QString s_greenFullScreen = QStringLiteral("GreenFullScreen");
+
+static KConfigGroup settingsGroup()
+{
+    return KSharedConfig::openConfig(QStringLiteral("kwinrc"))->group(QStringLiteral("Effect-macshell"));
+}
+
+double GlassEffect::setting(const QString &key) const
+{
+    if (key == s_greenFullScreen) {
+        return settingsGroup().readEntry(key, 0.0);
+    }
+    const auto found = s_tunable.find(key);
+    return found == s_tunable.end() ? 0.0 : m_settings.*(found->second);
+}
+
+void GlassEffect::setSetting(const QString &key, double value)
+{
+    if (key != s_greenFullScreen && !s_tunable.contains(key)) {
+        return;
+    }
+    settingsGroup().writeEntry(key, value);
+    m_saveSoon->start();
+    reconfigure(ReconfigureAll);
+}
+
+void GlassEffect::resetSettings()
+{
+    KConfigGroup group = settingsGroup();
+    for (const auto &[key, member] : s_tunable) {
+        group.deleteEntry(key);
+    }
+    m_saveSoon->start();
+    reconfigure(ReconfigureAll);
 }
 
 void GlassEffect::placeDialog(EffectWindow *w)
@@ -275,7 +330,7 @@ void GlassEffect::updateWindow(EffectWindow *w)
     // The lens and the blur read the background well away from each pixel, so repaints under the
     // glass have to reach that far.
     const int blurReach = blurOffset * (1 << passes) * 2;
-    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(std::max(m_settings.controlThickness, m_settings.liquidThickness) * 2.4f) + blurReach);
+    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.glassThickness * 2.4f) + blurReach);
     data.item->setEffectBoundingRect(bounds);
     w->addRepaintFull();
 
@@ -719,8 +774,8 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("rimInner", 1.0f);
         m_glassShader->setUniform("rimSoft", control ? 1.0f : 0.0f);
         const bool lens = control || liquid || bubble || shape.style == Style::Card;
-        m_glassShader->setUniform("thickness", !lens ? 0.0f : control ? m_settings.controlThickness : m_settings.liquidThickness);
-        m_glassShader->setUniform("bezel", control ? m_settings.controlBezel : m_settings.liquidBezel);
+        m_glassShader->setUniform("thickness", lens ? m_settings.glassThickness : 0.0f);
+        m_glassShader->setUniform("bezel", m_settings.glassBezel);
         m_glassShader->setUniform("shoulder", m_settings.glassShoulder);
         m_glassShader->setUniform("profile", m_settings.glassProfile);
         m_glassShader->setUniform("ior", m_settings.glassIor);

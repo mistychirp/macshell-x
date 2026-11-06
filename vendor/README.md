@@ -44,6 +44,7 @@ buffer, and `window::Action::Drag` starts an interactive move. Upstream drops th
 layer surface, it instead keeps the press's serial for `toplevel::take_drag_serial`, for starting a
 drag and drop.
 `layershellev` keeps its seat private, so the application hands one in with `toplevel::set_seat`.
+`window::Action::Minimize` minimizes a window, for one that draws its own traffic lights.
 
 Patch: send the keyboard to a chosen window (`toplevel::set_keyboard_target`, `src/multi_window.rs`).
 `layershellev` tags key events with the surface it heard of last, which also changes as the pointer

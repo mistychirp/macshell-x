@@ -1273,6 +1273,14 @@ pub(crate) fn run_action<P, C, E: Executor>(
                     f(window.raw.as_ref());
                 }
             }
+            WindowAction::Minimize(id, true) => {
+                if let Some(toplevel) = window_manager
+                    .get(id)
+                    .and_then(|window| window.raw.toplevel.as_ref())
+                {
+                    toplevel.set_minimized();
+                }
+            }
             WindowAction::Drag(id) => {
                 if let Some(window) = window_manager.get(id)
                     && let Some(serial) = ev.take_popup_grab_serial()

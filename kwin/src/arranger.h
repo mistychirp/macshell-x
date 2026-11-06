@@ -32,6 +32,8 @@ public Q_SLOTS:
     /// "fullscreen". With "two", "three" or "four", the window shares the screen with as many of the
     /// windows most recently in front of it.
     Q_SCRIPTABLE void arrange(const QString &id, const QString &layout);
+    /// Makes the window under the pointer full screen, for the green button's click.
+    Q_SCRIPTABLE void fullScreenUnderCursor();
 };
 
 }
