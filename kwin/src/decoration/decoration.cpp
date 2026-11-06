@@ -16,6 +16,7 @@
 #include <KSharedConfig>
 
 #include <QDBusConnection>
+#include <QHoverEvent>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
 #include <QFontDatabase>
@@ -184,7 +185,6 @@ bool Decoration::init()
                             KDecoration3::DecorationButtonType::Maximize}) {
         auto *button = new Button(type, this, this);
         m_buttons->addButton(button);
-        connect(button, &KDecoration3::DecorationButton::hoveredChanged, this, &Decoration::updateButtons);
         // These don't have tooltips on macOS, and one would get in the way of the green one's menu.
         connect(button, &KDecoration3::DecorationButton::pointerEntered, this, [this] {
             QTimer::singleShot(0, this, [this] {
@@ -224,10 +224,33 @@ bool Decoration::init()
 
 bool Decoration::buttonsHovered() const
 {
-    const auto buttons = m_buttons ? m_buttons->buttons() : QList<KDecoration3::DecorationButton *>();
-    return std::any_of(buttons.begin(), buttons.end(), [](const KDecoration3::DecorationButton *button) {
-        return button->isHovered();
-    });
+    return m_overButtons;
+}
+
+void Decoration::setOverButtons(bool over)
+{
+    if (m_overButtons != over) {
+        m_overButtons = over;
+        updateButtons();
+    }
+}
+
+void Decoration::hoverEnterEvent(QHoverEvent *event)
+{
+    KDecoration3::Decoration::hoverEnterEvent(event);
+    setOverButtons(m_buttons && m_buttons->geometry().contains(event->position()));
+}
+
+void Decoration::hoverMoveEvent(QHoverEvent *event)
+{
+    KDecoration3::Decoration::hoverMoveEvent(event);
+    setOverButtons(m_buttons && m_buttons->geometry().contains(event->position()));
+}
+
+void Decoration::hoverLeaveEvent(QHoverEvent *event)
+{
+    KDecoration3::Decoration::hoverLeaveEvent(event);
+    setOverButtons(false);
 }
 
 void Decoration::zoomHoverChanged(bool hovered)
@@ -249,7 +272,6 @@ void Decoration::zoomHoverChanged(bool hovered)
 
 void Decoration::updateButtons()
 {
-    // Hovering one changes all of them.
     if (m_buttons) {
         update(m_buttons->geometry());
     }

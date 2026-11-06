@@ -29,10 +29,17 @@ public:
     bool init() override;
     void paint(QPainter *painter, const QRectF &repaintArea) override;
 
-    /// Whether the pointer's over any of the traffic lights. They all show their glyphs then.
+    /// Whether the pointer's anywhere in the area the traffic lights take up, gaps included. They all
+    /// show their glyphs then.
     bool buttonsHovered() const;
 
+protected:
+    void hoverEnterEvent(QHoverEvent *event) override;
+    void hoverMoveEvent(QHoverEvent *event) override;
+    void hoverLeaveEvent(QHoverEvent *event) override;
+
 private:
+    void setOverButtons(bool over);
     void updateGeometry();
     void updateButtons();
     void updateShadow();
@@ -42,6 +49,7 @@ private:
     QPointer<KDecoration3::DecorationButton> m_zoom;
     QTimer m_zoomHover;
     bool m_zoomMenuOpen = false;
+    bool m_overButtons = false;
 };
 
 /// One of the traffic lights.
