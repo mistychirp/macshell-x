@@ -4,6 +4,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use iced_widget::core::mouse::ScrollDelta;
 use iced_widget::core::text::{Shaping, Wrapping};
@@ -11,10 +12,12 @@ use iced_widget::core::{Alignment, Color, Length};
 use iced_widget::graphics::text::cosmic_text::{self, Attrs, Buffer, Metrics, SwashCache, Weight};
 use iced_widget::{Space, container, image, mouse_area, pin, row, stack, text};
 
+use crate::group::group;
+
 use crate::app::{Element, Message};
 use crate::notifications::{
-    CARD_WIDTH, CHIP_INK, CLOSE_SIZE, Notification, OVERHANG, RADIUS, card, chip_shape,
-    close_button, close_shape, panel_style,
+    CARD_WIDTH, CHIP_INK, CLOSE_SIZE, HoverFade, Notification, OVERHANG, RADIUS, Spring, card,
+    chip_shape, close_button, close_shape, closing_face, closing_scale, panel_style,
 };
 use crate::{dock, fonts, material, menu, menubar};
 
@@ -47,6 +50,131 @@ const BACKDROP_HEIGHT: f32 = 231.0;
 /// How far to scroll to move by a row: about a notch of a mouse wheel.
 const PIXELS_PER_ROW: f32 = 25.0;
 
+/// How long a closed card takes to go, measured from Tahoe's, and how far it rises as it does.
+const CLOSING_TIME: Duration = Duration::from_millis(110);
+const CLOSING_RISE: f32 = 40.0;
+/// How long a row that's new here takes to show, when a group opens.
+const ARRIVAL_TIME: Duration = Duration::from_millis(180);
+
+/// How rows get to where they should be, as others come and go, and the cards on their way out.
+#[derive(Default)]
+pub struct Motion {
+    rows: HashMap<String, RowMotion>,
+    closing: Vec<Closing>,
+    last: Option<Instant>,
+}
+
+struct RowMotion {
+    y: Spring,
+    target: f32,
+    /// When it arrived, unless it was there from the start.
+    arrived: Option<Instant>,
+}
+
+struct Closing {
+    notification: Notification,
+    time: String,
+    y: f32,
+    started: Instant,
+}
+
+impl Closing {
+    fn t(&self) -> f32 {
+        (self.started.elapsed().as_secs_f32() / CLOSING_TIME.as_secs_f32()).min(1.0)
+    }
+
+    fn y(&self, t: f32) -> f32 {
+        self.y - CLOSING_RISE * t
+    }
+}
+
+impl Motion {
+    /// Moves everything along toward what's there now.
+    pub fn sync(
+        &mut self,
+        notifications: &[Notification],
+        open: &HashSet<String>,
+        first: usize,
+        height: f32,
+        now: Instant,
+    ) {
+        let seconds = self
+            .last
+            .map_or(0.0, |last| {
+                now.saturating_duration_since(last).as_secs_f32()
+            })
+            .min(0.05);
+        let from_start = self.last.is_none();
+        self.last = Some(now);
+        let targets: Vec<(String, f32)> = placed(notifications, open, first, height)
+            .into_iter()
+            .map(|(row, y)| (row.key(), y))
+            .collect();
+        let mut above: Option<f32> = None;
+        for (key, target) in &targets {
+            let row = self.rows.entry(key.clone()).or_insert_with(|| RowMotion {
+                // A new one comes out from under the one above it.
+                y: Spring::at(if from_start {
+                    *target
+                } else {
+                    above.unwrap_or(*target)
+                }),
+                target: *target,
+                arrived: (!from_start).then_some(now),
+            });
+            row.target = *target;
+            row.y.step(*target, seconds);
+            if row
+                .arrived
+                .is_some_and(|arrived| now.saturating_duration_since(arrived) >= ARRIVAL_TIME)
+            {
+                row.arrived = None;
+            }
+            above = Some(row.y.value);
+        }
+        self.rows
+            .retain(|key, _| targets.iter().any(|(target, _)| target == key));
+        self.closing.retain(|closing| closing.t() < 1.0);
+    }
+
+    /// A card was closed: it goes from where it is.
+    pub fn close(&mut self, notification: &Notification) {
+        if let Some(row) = self.rows.get(&card_key(notification.id)) {
+            self.closing.push(Closing {
+                notification: notification.clone(),
+                time: notification.time_label(),
+                y: row.y.value,
+                started: Instant::now(),
+            });
+        }
+    }
+
+    pub fn is_animating(&self) -> bool {
+        !self.closing.is_empty()
+            || self
+                .rows
+                .values()
+                .any(|row| row.arrived.is_some() || !row.y.is_at(row.target))
+    }
+
+    fn y(&self, key: &str, target: f32) -> f32 {
+        self.rows.get(key).map_or(target, |row| row.y.value)
+    }
+
+    fn shows(&self, key: &str) -> f32 {
+        self.rows
+            .get(key)
+            .and_then(|row| row.arrived)
+            .map_or(1.0, |arrived| {
+                (arrived.elapsed().as_secs_f32() / ARRIVAL_TIME.as_secs_f32()).min(1.0)
+            })
+    }
+}
+
+fn card_key(id: u32) -> String {
+    format!("card {id}")
+}
+
 /// The height of Notification Center's surface on a screen this tall: down to the dock. Any taller
 /// and the compositor slides it up over the bar to keep it out of the dock's reserved area.
 pub fn height(screen_height: f32) -> f32 {
@@ -70,6 +198,15 @@ enum Row<'a> {
 }
 
 impl Row<'_> {
+    /// What tells it from the others, wherever it moves to.
+    fn key(&self) -> String {
+        match self {
+            Row::Title => String::from("title"),
+            Row::Header { app_key, .. } => format!("header {app_key}"),
+            Row::Card { notification, .. } => card_key(notification.id),
+        }
+    }
+
     fn height(&self) -> f32 {
         match self {
             Row::Title => PANEL_TITLE_HEIGHT,
@@ -148,77 +285,122 @@ pub fn row_count(notifications: &[Notification], open: &HashSet<String>) -> usiz
     rows(notifications, open).len()
 }
 
+/// The glass, with how opaque each shape is.
+#[allow(clippy::too_many_arguments)]
 pub fn material_shapes(
     notifications: &[Notification],
     open: &HashSet<String>,
     first: usize,
     hovered: Option<u32>,
     height: f32,
-) -> Vec<material::Shape> {
+    motion: &Motion,
+    fade: &HoverFade,
+) -> (Vec<material::Shape>, Vec<f32>) {
     let shape = |x: f32, y: f32, width: f32, height: f32, radius: f32| material::Shape {
         rect: (x as i32, y as i32, width as i32, height as i32),
         radius: radius as i32,
         style: material::Style::Card,
     };
+    let mut shapes = Vec::new();
+    let mut opacities = Vec::new();
     if notifications.is_empty() {
-        return vec![material::Shape {
+        shapes.push(material::Shape {
             rect: (0, 0, WIDTH as i32, BACKDROP_HEIGHT as i32),
             radius: 0,
             style: material::Style::Backdrop([190, 30, 100, 110]),
-        }];
+        });
+        opacities.push(1.0);
     }
-    let mut shapes = Vec::new();
     for (row, y) in placed(notifications, open, first, height) {
+        let key = row.key();
+        let shows = motion.shows(&key);
+        let y = motion.y(&key, y);
+        let mut add = |new: material::Shape, opacity: f32| {
+            shapes.push(new);
+            opacities.push(opacity);
+        };
         match row {
             Row::Title => {
-                shapes.push(close_shape(CARD_X + CARD_WIDTH - CLOSE_SIZE, y));
+                add(close_shape(CARD_X + CARD_WIDTH - CLOSE_SIZE, y), shows);
             }
             Row::Header { .. } => {
                 let close_x = CARD_X + CARD_WIDTH - CLOSE_SIZE;
-                shapes.push(chip_shape(
-                    close_x - CONTROL_GAP - SHOW_LESS_WIDTH,
-                    y,
-                    SHOW_LESS_WIDTH,
-                    SHOW_LESS_HEIGHT,
-                ));
-                shapes.push(close_shape(
-                    close_x,
-                    y + (SHOW_LESS_HEIGHT - CLOSE_SIZE) / 2.0,
-                ));
+                add(
+                    chip_shape(
+                        close_x - CONTROL_GAP - SHOW_LESS_WIDTH,
+                        y,
+                        SHOW_LESS_WIDTH,
+                        SHOW_LESS_HEIGHT,
+                    ),
+                    shows,
+                );
+                add(
+                    close_shape(close_x, y + (SHOW_LESS_HEIGHT - CLOSE_SIZE) / 2.0),
+                    shows,
+                );
             }
             Row::Card {
                 notification,
                 closed_group,
             } => {
                 let card_height = notification.height();
-                shapes.push(shape(CARD_X, y, CARD_WIDTH, card_height, RADIUS));
+                add(shape(CARD_X, y, CARD_WIDTH, card_height, RADIUS), shows);
                 // On top of the card's, so after it.
+                let capsule = fade.amount(notification.id);
+                if !closed_group
+                    && capsule > 0.0
+                    && let Some(rect) = notification.capsule_rect()
+                {
+                    add(
+                        chip_shape(CARD_X + rect.x, y + rect.y, rect.width, rect.height),
+                        capsule * shows,
+                    );
+                }
                 if hovered == Some(notification.id) {
-                    shapes.push(close_shape(CARD_X - OVERHANG, y - OVERHANG));
+                    add(close_shape(CARD_X - OVERHANG, y - OVERHANG), shows);
                 }
                 if closed_group {
                     for (index, inset) in PEEKS.into_iter().enumerate() {
-                        shapes.push(shape(
-                            CARD_X + inset,
-                            y + card_height + 1.0 + index as f32 * PEEK_HEIGHT,
-                            CARD_WIDTH - 2.0 * inset,
-                            PEEK_HEIGHT - 1.0,
-                            (PEEK_HEIGHT - 1.0) / 2.0,
-                        ));
+                        add(
+                            shape(
+                                CARD_X + inset,
+                                y + card_height + 1.0 + index as f32 * PEEK_HEIGHT,
+                                CARD_WIDTH - 2.0 * inset,
+                                PEEK_HEIGHT - 1.0,
+                                (PEEK_HEIGHT - 1.0) / 2.0,
+                            ),
+                            shows,
+                        );
                     }
                 }
             }
         }
     }
-    shapes
+    for closing in &motion.closing {
+        let t = closing.t();
+        let scale = closing_scale(t);
+        let (width, height) = (CARD_WIDTH * scale, closing.notification.height() * scale);
+        shapes.push(shape(
+            CARD_X + (CARD_WIDTH - width) / 2.0,
+            closing.y(t) + (closing.notification.height() - height) / 2.0,
+            width,
+            height,
+            RADIUS * scale,
+        ));
+        opacities.push(1.0 - t);
+    }
+    (shapes, opacities)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     notifications: &'a [Notification],
     open: &HashSet<String>,
     first: usize,
     hovered: Option<u32>,
     height: f32,
+    motion: &'a Motion,
+    fade: &HoverFade,
     material: Option<material::Kind>,
 ) -> Element<'a> {
     let mut layers: Vec<Element<'a>> = Vec::new();
@@ -234,6 +416,9 @@ pub fn view<'a>(
     }
 
     for (row, y) in placed(notifications, open, first, height) {
+        let key = row.key();
+        let shows = motion.shows(&key);
+        let y = motion.y(&key, y);
         match row {
             Row::Title => {
                 layers.push(
@@ -250,9 +435,14 @@ pub fn view<'a>(
                 );
             }
             Row::Header { app_key, app } => {
-                layers.push(pin(header(app_key, material)).x(CARD_X).y(y).into());
                 layers.push(
-                    pin(title(app, TITLE_SIZE))
+                    pin(group(header(app_key, material)).opacity(shows))
+                        .x(CARD_X)
+                        .y(y)
+                        .into(),
+                );
+                layers.push(
+                    pin(group(title(app, TITLE_SIZE)).opacity(shows))
                         .x(CARD_X - SHADOW_REACH)
                         .y(y - SHADOW_REACH)
                         .into(),
@@ -275,14 +465,17 @@ pub fn view<'a>(
                     )
                 };
                 layers.push(
-                    pin(card(
+                    pin(group(card(
                         notification,
                         Some(notification.time_label()),
                         hovered == Some(id),
+                        if closed_group { 0.0 } else { fade.amount(id) },
+                        (CARD_X, y),
                         material,
                         on_press,
                         on_close,
                     ))
+                    .opacity(shows))
                     .x(CARD_X - OVERHANG)
                     .y(y - OVERHANG)
                     .into(),
@@ -302,6 +495,20 @@ pub fn view<'a>(
                 }
             }
         }
+    }
+    for closing in &motion.closing {
+        let t = closing.t();
+        layers.push(
+            pin(closing_face(
+                &closing.notification,
+                Some(closing.time.clone()),
+                t,
+                material,
+            ))
+            .x(CARD_X)
+            .y(closing.y(t))
+            .into(),
+        );
     }
 
     // Scrolling anywhere works; presses on the empty part fall through and close the panel.
@@ -459,4 +666,16 @@ fn header<'a>(app_key: &str, material: Option<material::Kind>) -> Element<'a> {
     .height(SHOW_LESS_HEIGHT)
     .align_y(Alignment::Center)
     .into()
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+
+    #[test]
+    fn nothing_moves_when_nothing_is_there() {
+        let mut motion = Motion::default();
+        motion.sync(&[], &HashSet::new(), 0, 500.0, Instant::now());
+        assert!(!motion.is_animating());
+    }
 }

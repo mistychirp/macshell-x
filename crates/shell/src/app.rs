@@ -291,6 +291,10 @@ pub enum Message {
     NotificationAction(u32, String),
     /// A notification's ✕ was pressed.
     NotificationDismissed(u32),
+    /// A card's capsule was pressed, for its menu, and where it is on its surface.
+    NotificationOptions(u32, (i32, i32, i32, i32)),
+    /// Something about notifications is moving, which has no more to it than time passing.
+    NotificationFrame,
     /// A group in Notification Center was opened, closed or cleared; carries the app's key.
     NotificationGroupOpened(String),
     NotificationGroupClosed(String),
@@ -521,6 +525,11 @@ struct Shell {
     notifications: Vec<Notification>,
     /// The notification the pointer is over.
     notification_hovered: Option<u32>,
+    /// The card whose menu of options is open, which counts as being pointed at.
+    notification_pinned: Option<u32>,
+    notification_fade: notifications::HoverFade,
+    center_motion: notification_center::Motion,
+    banners_opacities: Vec<f32>,
     /// Groups opened in Notification Center, by app.
     open_groups: HashSet<String>,
     /// How far Notification Center is scrolled, in rows.
@@ -717,6 +726,10 @@ impl Shell {
             screen_height: FALLBACK_SCREEN_HEIGHT,
             notifications: Vec::new(),
             notification_hovered: None,
+            notification_pinned: None,
+            notification_fade: notifications::HoverFade::default(),
+            center_motion: notification_center::Motion::default(),
+            banners_opacities: Vec::new(),
             open_groups: HashSet::new(),
             center_scroll: 0.0,
             banners: Banners::default(),
@@ -748,6 +761,7 @@ impl Shell {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.apply(message);
+        self.update_notification_motion();
         self.update_panel_shapes();
         self.update_desktop_shapes();
         self.update_spotlight_shapes();
@@ -2027,7 +2041,7 @@ impl Shell {
             }
             Message::Notification(event) => return self.handle_notification(event),
             Message::BannerFrame(now) => {
-                let over = self.banners.frame(now, self.notification_hovered);
+                let over = self.banners.frame(now, self.card_pointed_at());
                 let mut tasks = vec![self.sync_banners()];
                 tasks.extend(over.into_iter().map(|id| {
                     Task::future(notifications::report_closed(
@@ -2069,9 +2083,21 @@ impl Shell {
             }
             Message::NotificationAction(id, key) => {
                 let invoke = Task::future(notifications::invoke_action(id, key)).discard();
-                return Task::batch([invoke, self.dismiss_notification(id)]);
+                let close = if matches!(
+                    self.popup.as_ref().map(|popup| &popup.content),
+                    Some(PopupContent::NotificationCenter)
+                ) {
+                    self.close_submenus(0)
+                } else {
+                    self.close_popup()
+                };
+                return Task::batch([close, invoke, self.dismiss_notification(id)]);
             }
             Message::NotificationDismissed(id) => return self.dismiss_notification(id),
+            Message::NotificationOptions(id, anchor) => {
+                return self.open_notification_options(id, anchor);
+            }
+            Message::NotificationFrame => return self.sync_banners(),
             Message::TrayItems(items) => {
                 self.tray = items
                     .into_iter()
@@ -2188,6 +2214,9 @@ impl Shell {
                     if let Some(material) = submenu.material {
                         material.destroy();
                     }
+                    if submenu.opener == usize::MAX {
+                        return self.unpin_notification();
+                    }
                     if !self.submenus.iter().any(|menu| menu.closing)
                         && let Some((level, row)) = self.next_submenu.take()
                     {
@@ -2203,7 +2232,8 @@ impl Shell {
                     }
                     self.menu_hover = None;
                     self.next_submenu = None;
-                    let relayout = self.relayout_dock();
+                    let unpinned = self.unpin_notification();
+                    let relayout = Task::batch([self.relayout_dock(), unpinned]);
                     if let Some(settings) = self.next_view_options.take() {
                         let open =
                             self.open_popup(None, settings, PopupContent::ViewOptions, 0.0, None);
@@ -2607,13 +2637,18 @@ impl Shell {
                             menu::material_shapes(popup.size, popup.tail)
                         }
                         PopupContent::ControlCenter => control::material_shapes(&self.control),
-                        PopupContent::NotificationCenter => notification_center::material_shapes(
-                            &self.notifications,
-                            &self.open_groups,
-                            self.center_scroll as usize,
-                            self.notification_hovered,
-                            popup.size.1 as f32,
-                        ),
+                        PopupContent::NotificationCenter => {
+                            notification_center::material_shapes(
+                                &self.notifications,
+                                &self.open_groups,
+                                self.center_scroll as usize,
+                                self.notification_hovered,
+                                popup.size.1 as f32,
+                                &self.center_motion,
+                                &self.notification_fade,
+                            )
+                            .0
+                        }
                     };
                     let appear = match popup.content {
                         PopupContent::ControlCenter => Some(material::Appear::Fade),
@@ -2673,8 +2708,10 @@ impl Shell {
                 _ => target.destroy(),
             },
             Some(Surface::Banners) => {
-                self.banners_shapes = self.banners.material_shapes(self.notification_hovered);
-                material.set_shapes(&target, &self.banners_shapes);
+                (self.banners_shapes, self.banners_opacities) = self
+                    .banners
+                    .material_shapes(self.notification_hovered, &self.notification_fade);
+                material.set_faded_shapes(&target, &self.banners_shapes, &self.banners_opacities);
                 self.banners_material = Some(target);
             }
             // Closed before it could be reached, or not a surface with material.
@@ -2769,10 +2806,97 @@ impl Shell {
         self.sync_banners()
     }
 
-    /// Takes a notification away, and tells its app.
+    /// Which card counts as being pointed at.
+    fn card_pointed_at(&self) -> Option<u32> {
+        self.notification_hovered.or(self.notification_pinned)
+    }
+
+    /// Opens the menu of what can be done with a notification, from its capsule.
+    fn open_notification_options(
+        &mut self,
+        id: u32,
+        anchor: (i32, i32, i32, i32),
+    ) -> Task<Message> {
+        let Some(entries) = self.find_notification(id).map(Notification::options) else {
+            return Task::none();
+        };
+        let size = menu::size(&entries);
+        self.notification_pinned = Some(id);
+        // Notification Center's a popup itself, which only one that's its child can open from.
+        if let Some(popup) = &self.popup {
+            if !matches!(popup.content, PopupContent::NotificationCenter) {
+                return Task::none();
+            }
+            let parent = popup.id;
+            let id = IcedId::unique();
+            self.surfaces.insert(id, Surface::Popup);
+            self.submenus.push(Submenu {
+                id,
+                // No row of what it opened from is a menu's.
+                opener: usize::MAX,
+                x: 0.0,
+                entries,
+                size,
+                material: None,
+                closing: false,
+            });
+            let settings = IcedNewPopupSettings::new(parent, size, anchor)
+                .anchor(PopupAnchor::BottomRight)
+                .gravity(PopupGravity::BottomLeft)
+                .constraint_adjustment(
+                    PopupConstraintAdjustment::FlipY | PopupConstraintAdjustment::SlideX,
+                );
+            return Task::done(Message::NewPopUp { settings, id });
+        }
+        let Some(parent) = self.banners_surface else {
+            return Task::none();
+        };
+        let settings = IcedNewPopupSettings::new(parent, size, anchor)
+            .anchor(PopupAnchor::BottomRight)
+            .gravity(PopupGravity::BottomLeft)
+            .constraint_adjustment(
+                PopupConstraintAdjustment::FlipY | PopupConstraintAdjustment::SlideX,
+            );
+        self.open_popup(None, settings, PopupContent::Menu(entries), 0.0, None)
+    }
+
+    /// A menu of options closed: its card goes back to being like the others.
+    fn unpin_notification(&mut self) -> Task<Message> {
+        match self.notification_pinned.take() {
+            Some(id) => {
+                self.banners.pointer_left(id, Instant::now());
+                self.sync_banners()
+            }
+            None => Task::none(),
+        }
+    }
+
+    /// Keeps what moves by itself in notifications going.
+    fn update_notification_motion(&mut self) {
+        let now = Instant::now();
+        self.notification_fade.aim(self.card_pointed_at(), now);
+        match &self.popup {
+            Some(popup) if matches!(popup.content, PopupContent::NotificationCenter) => {
+                self.center_motion.sync(
+                    &self.notifications,
+                    &self.open_groups,
+                    self.center_scroll as usize,
+                    popup.size.1 as f32,
+                    now,
+                );
+            }
+            _ => self.center_motion = notification_center::Motion::default(),
+        }
+    }
+
+    /// Takes a notification away, and tells its app. It goes at once from a banner, like on macOS,
+    /// and with a little more to it from Notification Center.
     fn dismiss_notification(&mut self, id: u32) -> Task<Message> {
+        if let Some(known) = self.notifications.iter().find(|known| known.id == id) {
+            self.center_motion.close(known);
+        }
         self.notifications.retain(|known| known.id != id);
-        self.banners.dismiss(id);
+        self.banners.remove(id);
         if self.notification_hovered == Some(id) {
             self.notification_hovered = None;
         }
@@ -2815,18 +2939,24 @@ impl Shell {
             return open;
         };
         if self.banners.is_empty() {
-            if std::mem::replace(&mut self.banners_closing, true) {
+            // A menu of options could still hang from it, which has to go first.
+            if self.notification_pinned.is_some()
+                || std::mem::replace(&mut self.banners_closing, true)
+            {
                 return Task::none();
             }
             return iced_runtime::window::close(id);
         }
 
-        let shapes = self.banners.material_shapes(self.notification_hovered);
-        if shapes != self.banners_shapes
+        let (shapes, opacities) = self
+            .banners
+            .material_shapes(self.card_pointed_at(), &self.notification_fade);
+        if (shapes != self.banners_shapes || opacities != self.banners_opacities)
             && let (Some(material), Some(target)) = (&self.material, &self.banners_material)
         {
-            material.set_shapes(target, &shapes);
+            material.set_faded_shapes(target, &shapes, &opacities);
             self.banners_shapes = shapes;
+            self.banners_opacities = opacities;
         }
 
         let region = self.banners.input_region();
@@ -2846,23 +2976,25 @@ impl Shell {
 
     /// Keeps the glass of the panels whose content changes while they're open under that content.
     fn update_panel_shapes(&mut self) {
+        let pointed_at = self.card_pointed_at();
         let Some(popup) = &mut self.popup else {
             return;
         };
-        let shapes = match popup.content {
+        let (shapes, opacities) = match popup.content {
             PopupContent::NotificationCenter => notification_center::material_shapes(
                 &self.notifications,
                 &self.open_groups,
                 self.center_scroll as usize,
-                self.notification_hovered,
+                pointed_at,
                 popup.size.1 as f32,
+                &self.center_motion,
+                &self.notification_fade,
             ),
-            PopupContent::ControlCenter => control::material_shapes(&self.control),
+            PopupContent::ControlCenter => (
+                control::material_shapes(&self.control),
+                control::material_opacities(&self.control),
+            ),
             _ => return,
-        };
-        let opacities = match popup.content {
-            PopupContent::ControlCenter => control::material_opacities(&self.control),
-            _ => Vec::new(),
         };
         if (shapes != popup.shapes || opacities != popup.shape_opacities)
             && let (Some(material), Some(target)) = (&self.material, &popup.material)
@@ -4039,8 +4171,10 @@ impl Shell {
                         &self.notifications,
                         &self.open_groups,
                         self.center_scroll as usize,
-                        self.notification_hovered,
+                        self.card_pointed_at(),
                         self.popup.as_ref().map_or(0.0, |popup| popup.size.1 as f32),
+                        &self.center_motion,
+                        &self.notification_fade,
                         material,
                     ),
                     None => Space::new().into(),
@@ -4065,7 +4199,8 @@ impl Shell {
                 None => Space::new().into(),
             },
             Some(Surface::Banners) => self.banners.view(
-                self.notification_hovered,
+                self.card_pointed_at(),
+                &self.notification_fade,
                 self.material.as_ref().map(|m| m.kind()),
             ),
             None => Space::new().into(),
@@ -4158,6 +4293,12 @@ impl Shell {
         } else {
             Subscription::none()
         };
+        let notification_frames =
+            if self.notification_fade.is_animating() || self.center_motion.is_animating() {
+                time::every(Duration::from_millis(16)).map(|_| Message::NotificationFrame)
+            } else {
+                Subscription::none()
+            };
         let menu_blink = if self.menu_blink.is_some() {
             time::every(Duration::from_millis(16)).map(|_| Message::MenuBlinkFrame)
         } else {
@@ -4172,6 +4313,7 @@ impl Shell {
         Subscription::batch([
             dock_frames,
             banner_frames,
+            notification_frames,
             menu_hover,
             menu_blink,
             widget_tint,

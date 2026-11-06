@@ -3,21 +3,22 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
 use iced_futures::Subscription;
 use iced_futures::futures::channel::mpsc;
 use iced_futures::futures::{SinkExt as _, Stream, future};
 use iced_widget::core::text::{LineHeight, Shaping};
-use iced_widget::core::{Alignment, Background, Border, Color, Length};
-use iced_widget::{Space, button, column, container, image, mouse_area, pin, row, stack, text};
+use iced_widget::core::{Alignment, Background, Color, Length, Rectangle, Size};
+use iced_widget::{Space, column, container, image, mouse_area, pin, row, stack, text};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Value};
 
 use crate::app::{Element, Message};
 use crate::apps::AppIndex;
+use crate::group::group;
 use crate::icons::{self, Glyph};
 use crate::{dbus, fonts, material, menu};
 
@@ -50,12 +51,29 @@ const MAX_BODY_LINES: f32 = 4.0;
 const TIME_ROOM: f32 = 76.0;
 const TIME_SIZE: f32 = 11.0;
 const TIME_INK: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.55);
-const ATTACHMENT_SIZE: f32 = 30.0;
-const ATTACHMENT_GAP: f32 = 8.0;
+const ATTACHMENT_SIZE: f32 = 32.0;
+const ATTACHMENT_RADIUS: f32 = 7.0;
+const ATTACHMENT_GAP: f32 = 10.0;
 /// Far more than fits on four lines, so that measuring a huge message stays quick.
 const MAX_BODY_CHARS: usize = 600;
 const MAX_ACTIONS: usize = 3;
-const ACTIONS_HEIGHT: f32 = 32.0;
+/// The capsule that shows under the pointer, for what can be done with a notification.
+const CAPSULE_HEIGHT: f32 = 22.0;
+const CAPSULE_TEXT_SIZE: f32 = 12.0;
+const CAPSULE_PADDING: f32 = 10.0;
+const CAPSULE_CHEVRON: f32 = 8.0;
+const CAPSULE_INSET_X: f32 = 12.0;
+const CAPSULE_INSET_BOTTOM: f32 = 10.0;
+/// How wide the text fades out over before it would run under the capsule, and in how many steps,
+/// since a renderer can't draw a gradient of opacity.
+const TEXT_FADE: f32 = 30.0;
+const TEXT_FADE_STEPS: usize = 6;
+/// How long the capsule takes to show and to go, measured from Tahoe's.
+const HOVER_IN: Duration = Duration::from_millis(100);
+const HOVER_OUT: Duration = Duration::from_millis(280);
+/// How a row moves when others come or go: fast off the mark and settling within about 270ms,
+/// measured from Tahoe's, as a critically damped spring.
+const SPRING: f32 = 22.0;
 pub const CLOSE_SIZE: f32 = 19.0;
 /// What's on a chip, like the ✕ on its button.
 pub const CHIP_INK: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.75);
@@ -178,33 +196,163 @@ impl Notification {
         }
     }
 
-    /// When it came, the way macOS says it: the time today, or more than that otherwise.
+    /// When it came, the way macOS says it: how long ago, or the day once that's too long.
     pub fn time_label(&self) -> String {
-        let today = Local::now().date_naive();
-        let day = self.received.date_naive();
-        if day == today {
-            self.received.format("%H:%M").to_string()
-        } else if today.pred_opt() == Some(day) {
-            self.received.format("Yesterday, %H:%M").to_string()
-        } else {
-            self.received.format("%b %-d").to_string()
+        time_ago(self.received, Local::now())
+    }
+
+    /// What its capsule says, and whether that opens a menu of what can be done, if anything can.
+    fn capsule(&self) -> Option<(&str, bool)> {
+        match self.actions.as_slice() {
+            [] => None,
+            [(_, label)] => Some((label, false)),
+            _ => Some(("Options", true)),
         }
+    }
+
+    /// Where its capsule goes, from the card's top left corner.
+    pub fn capsule_rect(&self) -> Option<Rectangle> {
+        let (label, opens_menu) = self.capsule()?;
+        let label = menu::fit(label, CAPSULE_TEXT_SIZE, fonts::REGULAR, CARD_WIDTH / 2.0);
+        let width = (menu::text_width(&label, CAPSULE_TEXT_SIZE, fonts::REGULAR)
+            + 2.0 * CAPSULE_PADDING
+            + if opens_menu {
+                CAPSULE_CHEVRON + 4.0
+            } else {
+                0.0
+            })
+        .ceil();
+        Some(Rectangle {
+            x: CARD_WIDTH - CAPSULE_INSET_X - width,
+            y: self.height() - CAPSULE_INSET_BOTTOM - CAPSULE_HEIGHT,
+            width,
+            height: CAPSULE_HEIGHT,
+        })
+    }
+
+    /// The menu of what can be done with it, if it has more than one thing.
+    pub fn options(&self) -> Vec<menu::Entry> {
+        self.actions
+            .iter()
+            .map(|(key, label)| {
+                menu::Entry::item(label, Message::NotificationAction(self.id, key.clone()))
+            })
+            .collect()
     }
 
     /// How tall its card is, without the close button's overhang.
     pub fn height(&self) -> f32 {
-        let beside = if self.attachment.is_some() {
-            ATTACHMENT_SIZE
+        (LINE_HEIGHT + self.body_height).max(ICON_SIZE) + 2.0 * PADDING_Y
+    }
+}
+
+/// How long ago something happened, the way Tahoe puts it.
+fn time_ago(then: DateTime<Local>, now: DateTime<Local>) -> String {
+    let minutes = (now - then).num_minutes();
+    let day = then.date_naive();
+    let today = now.date_naive();
+    if minutes < 1 {
+        String::from("now")
+    } else if minutes < 60 {
+        format!("{minutes}m ago")
+    } else if day == today {
+        format!("{}h ago", minutes / 60)
+    } else if today.pred_opt() == Some(day) {
+        String::from("Yesterday")
+    } else {
+        then.format("%b %-d").to_string()
+    }
+}
+
+/// A position that moves toward where it should be like a critically damped spring, starting fast
+/// and settling, whenever that changes and however irregular the frames are.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Spring {
+    pub value: f32,
+    velocity: f32,
+}
+
+impl Spring {
+    pub fn at(value: f32) -> Self {
+        Self {
+            value,
+            velocity: 0.0,
+        }
+    }
+
+    pub fn step(&mut self, target: f32, seconds: f32) {
+        let distance = self.value - target;
+        let decay = (-SPRING * seconds).exp();
+        let lead = self.velocity + SPRING * distance;
+        let (distance, velocity) = (
+            (distance + lead * seconds) * decay,
+            (self.velocity - SPRING * lead * seconds) * decay,
+        );
+        if distance.abs() < 0.25 && velocity.abs() < 4.0 {
+            *self = Self::at(target);
         } else {
-            0.0
-        };
-        let text = LINE_HEIGHT + self.body_height.max(beside);
-        let actions = if self.actions.is_empty() {
-            0.0
+            self.value = target + distance;
+            self.velocity = velocity;
+        }
+    }
+
+    pub fn is_at(&self, target: f32) -> bool {
+        self.value == target && self.velocity == 0.0
+    }
+}
+
+/// How much a card's capsule shows, which comes and goes gradually with the pointer.
+#[derive(Debug, Default)]
+pub struct HoverFade {
+    current: Option<u32>,
+    /// Those on their way: which, from how much, and since when. The one that's [`Self::current`]
+    /// is on its way in, and the others out.
+    moving: Vec<(u32, f32, Instant)>,
+}
+
+impl HoverFade {
+    fn time(&self, id: u32) -> Duration {
+        if self.current == Some(id) {
+            HOVER_IN
         } else {
-            ACTIONS_HEIGHT
-        };
-        text.max(ICON_SIZE) + actions + 2.0 * PADDING_Y
+            HOVER_OUT
+        }
+    }
+
+    pub fn amount(&self, id: u32) -> f32 {
+        let target = if self.current == Some(id) { 1.0 } else { 0.0 };
+        self.moving
+            .iter()
+            .find(|(moving, ..)| *moving == id)
+            .map_or(target, |(_, from, started)| {
+                let t = started.elapsed().as_secs_f32() / self.time(id).as_secs_f32();
+                from + (target - from) * t.min(1.0)
+            })
+    }
+
+    /// Says which card the pointer's over now.
+    pub fn aim(&mut self, hovered: Option<u32>, now: Instant) {
+        if hovered != self.current {
+            let starts: Vec<(u32, f32)> = [self.current, hovered]
+                .into_iter()
+                .flatten()
+                .map(|id| (id, self.amount(id)))
+                .collect();
+            self.current = hovered;
+            self.moving
+                .retain(|(id, ..)| !starts.iter().any(|(start, _)| start == id));
+            self.moving
+                .extend(starts.into_iter().map(|(id, from)| (id, from, now)));
+        }
+        let moving = std::mem::take(&mut self.moving);
+        self.moving = moving
+            .into_iter()
+            .filter(|(id, _, started)| started.elapsed() < self.time(*id))
+            .collect();
+    }
+
+    pub fn is_animating(&self) -> bool {
+        !self.moving.is_empty()
     }
 }
 
@@ -296,19 +444,15 @@ fn markup_tag(text: &str) -> Option<(usize, &'static str)> {
     }
 }
 
-/// A notification's card with its close button, which shows while `hovered`. It takes up
-/// [`CARD_WIDTH`] and [`Notification::height`], plus [`OVERHANG`] above and to the left.
-pub fn card<'a>(
+/// What a notification says, on a card of [`CARD_WIDTH`] and [`Notification::height`]. `capsule`:
+/// how much its capsule shows, which the text fades out in front of.
+fn face<'a>(
     notification: &'a Notification,
     time: Option<String>,
-    hovered: bool,
+    capsule: f32,
     material: Option<material::Kind>,
-    on_press: Message,
-    on_close: Message,
 ) -> Element<'a> {
-    let id = notification.id;
     let height = notification.height();
-
     let icon: Element<'a> = match &notification.icon {
         Some(handle) => image(handle.clone())
             .width(ICON_SIZE)
@@ -318,6 +462,7 @@ pub fn card<'a>(
         None => Space::new().width(ICON_SIZE).height(ICON_SIZE).into(),
     };
 
+    let width = body_width(notification.attachment.is_some());
     let line_height = LineHeight::Absolute(LINE_HEIGHT.into());
     let heading = row![
         text(&notification.title)
@@ -333,55 +478,150 @@ pub fn card<'a>(
             .line_height(line_height)
             .color(TIME_INK)
     }))
-    .width(TEXT_WIDTH);
+    .width(width);
 
-    let mut under = row![].width(TEXT_WIDTH);
-    if !notification.body.is_empty() {
-        under = under.push(
-            text(&notification.body)
-                .size(TEXT_SIZE)
-                .line_height(line_height)
-                .shaping(Shaping::Advanced)
-                .width(body_width(notification.attachment.is_some())),
-        );
-    }
+    let body = || {
+        text(&notification.body)
+            .size(TEXT_SIZE)
+            .line_height(line_height)
+            .shaping(Shaping::Advanced)
+            .width(width)
+    };
+    let text_left = PADDING_X + ICON_SIZE + ICON_GAP;
+    let under: Element<'a> = match notification.capsule_rect().filter(|_| capsule > 0.0) {
+        Some(rect) if !notification.body.is_empty() => {
+            let room = (rect.x - text_left - 4.0).min(width);
+            let area = Size::new(width, notification.body_height);
+            let solid = (room - TEXT_FADE).max(0.0);
+            // All of it, going as what's in front of the capsule takes over: whole up to where the
+            // fade starts, and then strips of less and less of it, side by side so that nothing's
+            // drawn twice, which would make it look bolder.
+            let mut layers: Vec<Element<'a>> = vec![
+                group(body()).opacity(1.0 - capsule).clip(area).into(),
+                group(body())
+                    .opacity(capsule)
+                    .clip(Size::new(solid, area.height))
+                    .into(),
+            ];
+            let strip = (room - solid) / TEXT_FADE_STEPS as f32;
+            for step in 0..TEXT_FADE_STEPS {
+                let left = solid + strip * step as f32;
+                let shows = 1.0 - (step as f32 + 0.5) / TEXT_FADE_STEPS as f32;
+                layers.push(
+                    group(body())
+                        .opacity(shows * capsule)
+                        .clip(Size::new(left + strip, area.height))
+                        .clip_left(left)
+                        .into(),
+                );
+            }
+            stack(layers).width(width).height(area.height).into()
+        }
+        _ if notification.body.is_empty() => Space::new().into(),
+        _ => body().into(),
+    };
+
+    let mut content = row![icon, column![heading, under]]
+        .spacing(ICON_GAP)
+        .align_y(Alignment::Center);
     if let Some(handle) = &notification.attachment {
-        under = under.push(Space::new().width(Length::Fill)).push(
-            image(handle.clone())
-                .width(ATTACHMENT_SIZE)
-                .height(ATTACHMENT_SIZE)
-                .border_radius(ATTACHMENT_SIZE / 2.0),
+        // The capsule takes its place.
+        let shows = if notification.capsule().is_some() {
+            1.0 - capsule
+        } else {
+            1.0
+        };
+        content = content
+            .push(Space::new().width(ATTACHMENT_GAP - ICON_GAP))
+            .push(
+                image(handle.clone())
+                    .width(ATTACHMENT_SIZE)
+                    .height(ATTACHMENT_SIZE)
+                    .border_radius(ATTACHMENT_RADIUS)
+                    .opacity(shows),
+            );
+    }
+    container(content)
+        .padding(iced_widget::core::Padding {
+            top: PADDING_Y,
+            bottom: PADDING_Y,
+            left: PADDING_X,
+            right: PADDING_END,
+        })
+        .width(CARD_WIDTH)
+        .height(height)
+        .align_y(Alignment::Center)
+        .style(move |_| panel_style(material, RADIUS))
+        .into()
+}
+
+/// A notification's card with its close button, which shows while `hovered`, and its capsule, which
+/// shows as much as `capsule`. It takes up [`CARD_WIDTH`] and [`Notification::height`], plus
+/// [`OVERHANG`] above and to the left. `origin` is where the card's corner is on its surface.
+#[allow(clippy::too_many_arguments)]
+pub fn card<'a>(
+    notification: &'a Notification,
+    time: Option<String>,
+    hovered: bool,
+    capsule: f32,
+    origin: (f32, f32),
+    material: Option<material::Kind>,
+    on_press: Message,
+    on_close: Message,
+) -> Element<'a> {
+    let id = notification.id;
+    let height = notification.height();
+    let mut layers: Vec<Element<'a>> = vec![
+        pin(face(notification, time, capsule, material))
+            .x(OVERHANG)
+            .y(OVERHANG)
+            .into(),
+    ];
+    if capsule > 0.0
+        && let (Some((label, opens_menu)), Some(rect)) =
+            (notification.capsule(), notification.capsule_rect())
+    {
+        let on_capsule = if opens_menu {
+            Message::NotificationOptions(
+                id,
+                (
+                    (origin.0 + rect.x) as i32,
+                    (origin.1 + rect.y) as i32,
+                    rect.width as i32,
+                    rect.height as i32,
+                ),
+            )
+        } else {
+            let key = notification.actions[0].0.clone();
+            Message::NotificationAction(id, key)
+        };
+        let words = menu::fit(label, CAPSULE_TEXT_SIZE, fonts::REGULAR, CARD_WIDTH / 2.0);
+        let mut inside = row![text(words).size(CAPSULE_TEXT_SIZE).color(Color::WHITE)]
+            .spacing(4)
+            .align_y(Alignment::Center);
+        if opens_menu {
+            inside = inside.push(icons::icon(
+                Glyph::ChevronDown,
+                CAPSULE_CHEVRON,
+                Color::WHITE,
+            ));
+        }
+        layers.push(
+            pin(group(
+                mouse_area(
+                    container(inside)
+                        .center_x(rect.width)
+                        .center_y(rect.height)
+                        .style(move |_| panel_style(material, CAPSULE_HEIGHT / 2.0)),
+                )
+                .on_press(on_capsule),
+            )
+            .opacity(capsule))
+            .x(OVERHANG + rect.x)
+            .y(OVERHANG + rect.y)
+            .into(),
         );
     }
-    let mut words = column![heading, under];
-    if !notification.actions.is_empty() {
-        let width = (TEXT_WIDTH - 6.0 * (notification.actions.len() as f32 - 1.0))
-            / notification.actions.len() as f32;
-        words = words.push(Space::new().height(8)).push(
-            row(notification.actions.iter().map(|(key, label)| {
-                action_button(label, width, Message::NotificationAction(id, key.clone()))
-            }))
-            .spacing(6),
-        );
-    }
-
-    let content = container(
-        row![icon, words]
-            .spacing(ICON_GAP)
-            .align_y(Alignment::Center),
-    )
-    .padding(iced_widget::core::Padding {
-        top: PADDING_Y,
-        bottom: PADDING_Y,
-        left: PADDING_X,
-        right: PADDING_END,
-    })
-    .width(CARD_WIDTH)
-    .height(height)
-    .align_y(Alignment::Center)
-    .style(move |_| panel_style(material, RADIUS));
-
-    let mut layers: Vec<Element<'a>> = vec![pin(content).x(OVERHANG).y(OVERHANG).into()];
     if hovered {
         layers.push(close_button(on_close, material));
     }
@@ -396,35 +636,38 @@ pub fn card<'a>(
     .into()
 }
 
-fn action_button<'a>(label: &str, width: f32, on_press: Message) -> Element<'a> {
-    button(
-        text(menu::fit(label, 12.0, fonts::REGULAR, width - 16.0))
-            .size(12)
-            .center()
-            .width(Length::Fill),
-    )
-    .on_press(on_press)
-    .width(width)
-    .height(24)
-    .padding([0, 8])
-    .style(|_, status| {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        button::Style {
-            background: Some(Background::Color(Color::from_rgba(
-                1.0,
-                1.0,
-                1.0,
-                if hovered { 0.28 } else { 0.16 },
-            ))),
-            text_color: Color::WHITE,
-            border: Border {
-                radius: 12.0.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    })
-    .into()
+/// How a closed card goes in Notification Center, measured from Tahoe's: shrinking to about half,
+/// going out of focus and fading, `t` of the way through. A renderer can't blur, so it's drawn
+/// several times around a growing circle, which over this little time reads the same.
+pub fn closing_face<'a>(
+    notification: &'a Notification,
+    time: Option<String>,
+    t: f32,
+    material: Option<material::Kind>,
+) -> Element<'a> {
+    const COPIES: usize = 8;
+    const BLUR: f32 = 7.0;
+    let shows = 1.0 - t;
+    // What each copy has to be for all of them together to come to that.
+    let each = 1.0 - (1.0 - shows).powf(1.0 / COPIES as f32);
+    let size = Size::new(CARD_WIDTH, notification.height());
+    let layers: Vec<Element<'a>> = (0..COPIES)
+        .map(|copy| {
+            let angle = copy as f32 / COPIES as f32 * std::f32::consts::TAU;
+            pin(group(face(notification, time.clone(), 0.0, material)).opacity(each))
+                .x(angle.cos() * BLUR * t)
+                .y(angle.sin() * BLUR * t)
+                .into()
+        })
+        .collect();
+    group(stack(layers).width(size.width).height(size.height))
+        .scale(closing_scale(t))
+        .into()
+}
+
+/// How big a closed card is, `t` of the way through going.
+pub fn closing_scale(t: f32) -> f32 {
+    1.0 - 0.5 * t
 }
 
 /// The round ✕ that dismisses something, on the glass of [`close_shape`].
@@ -679,5 +922,63 @@ where
         .await
     {
         log::warn!("can't send {signal}: {err}");
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    #[test]
+    fn a_spring_gets_there_about_as_fast_as_tahoes() {
+        // The share of the way left in a recording, at 33, 67, 100, 133, 167 and 200ms.
+        let measured = [0.89, 0.6, 0.36, 0.2, 0.09, 0.04];
+        let mut spring = Spring::at(100.0);
+        for left in measured {
+            for _ in 0..2 {
+                spring.step(0.0, 1.0 / 60.0);
+            }
+            assert!(
+                (spring.value / 100.0 - left).abs() < 0.13,
+                "{} where Tahoe has {left}",
+                spring.value / 100.0
+            );
+        }
+        for _ in 0..60 {
+            spring.step(0.0, 1.0 / 60.0);
+        }
+        assert!(spring.is_at(0.0));
+    }
+
+    #[test]
+    fn times_read_like_macos() {
+        let at = |day, hour, minute| {
+            Local
+                .with_ymd_and_hms(2026, 11, day, hour, minute, 0)
+                .unwrap()
+        };
+        let now = at(6, 18, 40);
+        assert_eq!(time_ago(at(6, 18, 40), now), "now");
+        assert_eq!(time_ago(at(6, 18, 39), now), "1m ago");
+        assert_eq!(time_ago(at(6, 16, 10), now), "2h ago");
+        assert_eq!(time_ago(at(5, 23, 0), now), "Yesterday");
+        assert_eq!(time_ago(at(1, 9, 0), now), "Nov 1");
+    }
+
+    #[test]
+    fn a_capsule_comes_and_goes_gradually() {
+        let mut fade = HoverFade::default();
+        assert_eq!(fade.amount(1), 0.0);
+        fade.aim(Some(1), Instant::now());
+        assert!(fade.is_animating());
+        assert!(fade.amount(1) < 0.5);
+        fade.aim(Some(1), Instant::now() - HOVER_IN);
+        fade.moving[0].2 -= HOVER_IN;
+        assert_eq!(fade.amount(1), 1.0);
+        fade.aim(Some(1), Instant::now());
+        assert!(!fade.is_animating());
+        fade.aim(None, Instant::now());
+        assert!(fade.amount(1) > 0.5);
     }
 }

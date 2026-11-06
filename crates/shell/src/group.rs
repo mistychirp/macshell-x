@@ -4,8 +4,8 @@
 use iced_widget::core::layout::{self, Layout};
 use iced_widget::core::widget::{self, Widget};
 use iced_widget::core::{
-    Clipboard, Element, Event, Length, Rectangle, Shell, Size, Theme, Vector, mouse, overlay,
-    renderer,
+    Clipboard, Element, Event, Length, Rectangle, Shell, Size, Theme, Transformation, Vector,
+    mouse, overlay, renderer,
 };
 use iced_widget::renderer::Renderer;
 
@@ -16,6 +16,8 @@ pub struct Group<'a, Message> {
     content: Element<'a, Message, Theme, Renderer>,
     opacity: f32,
     clip: Option<Size>,
+    scale: f32,
+    clip_left: f32,
 }
 
 /// Wraps something, which so far looks the same.
@@ -26,12 +28,26 @@ pub fn group<'a, Message>(
         content: content.into(),
         opacity: 1.0,
         clip: None,
+        scale: 1.0,
+        clip_left: 0.0,
     }
 }
 
 impl<Message> Group<'_, Message> {
     pub fn opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Draws it this much bigger or smaller around its middle, without changing what it takes up.
+    pub fn scale(mut self, scale: f32) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    /// With a clip: also doesn't show this much of the left side.
+    pub fn clip_left(mut self, left: f32) -> Self {
+        self.clip_left = left;
         self
     }
 
@@ -152,8 +168,23 @@ impl<Message> Widget<Message, Theme, Renderer> for Group<'_, Message> {
         let bounds = layout.bounds();
         let content = layout.children().next().unwrap();
         iced_wgpu::group::multiply(self.opacity, || {
-            if self.clip.is_some() {
-                use iced_widget::core::Renderer as _;
+            use iced_widget::core::Renderer as _;
+            if self.scale != 1.0 {
+                let center = bounds.center();
+                let transformation = Transformation::translate(center.x, center.y)
+                    * Transformation::scale(self.scale)
+                    * Transformation::translate(-center.x, -center.y);
+                renderer.with_transformation(transformation, |renderer| {
+                    self.content
+                        .as_widget()
+                        .draw(tree, renderer, theme, style, content, cursor, viewport);
+                });
+            } else if self.clip.is_some() {
+                let bounds = Rectangle {
+                    x: bounds.x + self.clip_left,
+                    width: (bounds.width - self.clip_left).max(0.0),
+                    ..bounds
+                };
                 renderer.with_layer(bounds, |renderer| {
                     self.content
                         .as_widget()

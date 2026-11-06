@@ -1,14 +1,16 @@
 //! Notification banners: glass cards that slide in at the top right and out again, newest on
 //! top. The surface exists only while there are banners, and only takes input over them.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
 use iced_widget::core::Length;
 use iced_widget::{container, pin, stack};
 
 use crate::app::{Element, Message};
-use crate::notifications::{CARD_WIDTH, Notification, OVERHANG, RADIUS, card, close_shape};
+use crate::notifications::{
+    CARD_WIDTH, HoverFade, Notification, OVERHANG, RADIUS, Spring, card, chip_shape, close_shape,
+};
 use crate::{material, menubar};
 
 const MAX_BANNERS: usize = 4;
@@ -19,8 +21,10 @@ const RIGHT_MARGIN: f32 = 16.0;
 const WIDTH: f32 = OVERHANG + CARD_WIDTH + RIGHT_MARGIN;
 /// Room for [`MAX_BANNERS`] of the tallest cards.
 const HEIGHT: f32 = OVERHANG + MAX_BANNERS as f32 * (134.0 + GAP);
-/// Time constant of the easing, in seconds.
+/// Time constant of how a banner slides in, in seconds.
 const EASING: f32 = 0.07;
+/// How long it takes to slide out, picking up speed, measured from Tahoe's.
+const SLIDE_OUT: Duration = Duration::from_millis(220);
 /// A banner that was being pointed at stays this long after the pointer leaves.
 const AFTER_HOVER: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -43,7 +47,9 @@ struct Banner {
     /// How far it has slid out: 0 in place, 1 off the screen.
     slide: f32,
     leaving: bool,
-    y: f32,
+    /// When it started sliding out, and from where, once it has.
+    left: Option<(Instant, f32)>,
+    y: Spring,
 }
 
 impl Banner {
@@ -75,7 +81,7 @@ impl Banners {
     /// Whether anything is moving, which takes frames.
     pub fn animating(&self) -> bool {
         self.banners.iter().enumerate().any(|(index, banner)| {
-            banner.slide != slide_target(banner) || banner.y != self.y_target(index)
+            banner.slide != slide_target(banner) || !banner.y.is_at(self.y_target(index))
         })
     }
 
@@ -93,7 +99,8 @@ impl Banners {
                 notification,
                 slide: 1.0,
                 leaving: false,
-                y: 0.0,
+                left: None,
+                y: Spring::default(),
             },
         );
         if let Some(oldest) = self
@@ -105,7 +112,7 @@ impl Banners {
             oldest.leaving = true;
         }
         // It starts where it's going to be; only the slide shows.
-        self.banners[0].y = self.y_target(0);
+        self.banners[0].y = Spring::at(self.y_target(0));
         self.last_frame = None;
     }
 
@@ -122,6 +129,13 @@ impl Banners {
         banner.notification = notification.clone();
         self.last_frame = None;
         true
+    }
+
+    /// Takes away the banner showing this notification, if any, at once, which is how one goes when
+    /// it's closed. Those under it move up.
+    pub fn remove(&mut self, id: u32) {
+        self.banners.retain(|banner| banner.notification.id != id);
+        self.last_frame = None;
     }
 
     /// Sends off the banner showing this notification, if any.
@@ -182,8 +196,16 @@ impl Banners {
         for index in 0..self.banners.len() {
             let y_target = self.y_target(index);
             let banner = &mut self.banners[index];
-            banner.y = approach(banner.y, y_target, ease);
-            banner.slide = approach(banner.slide, slide_target(banner), ease);
+            banner.y.step(y_target, dt);
+            if banner.leaving {
+                let (started, from) = *banner.left.get_or_insert((now, banner.slide));
+                let t = (now.saturating_duration_since(started).as_secs_f32()
+                    / SLIDE_OUT.as_secs_f32())
+                .min(1.0);
+                banner.slide = from + (1.0 - from) * t * t;
+            } else {
+                banner.slide = approach(banner.slide, 0.0, ease);
+            }
         }
         self.banners
             .retain(|banner| !(banner.leaving && banner.slide == 1.0));
@@ -199,25 +221,46 @@ impl Banners {
             .sum()
     }
 
-    pub fn material_shapes(&self, hovered: Option<u32>) -> Vec<material::Shape> {
+    /// The glass, with how opaque each shape is.
+    pub fn material_shapes(
+        &self,
+        hovered: Option<u32>,
+        fade: &HoverFade,
+    ) -> (Vec<material::Shape>, Vec<f32>) {
         let mut shapes = Vec::new();
+        let mut opacities = Vec::new();
         for banner in &self.banners {
+            let id = banner.notification.id;
             shapes.push(material::Shape {
                 rect: (
                     banner.x() as i32,
-                    (banner.y + OVERHANG) as i32,
+                    (banner.y.value + OVERHANG) as i32,
                     CARD_WIDTH as i32,
                     banner.notification.height() as i32,
                 ),
                 radius: RADIUS as i32,
                 style: material::Style::Card,
             });
+            opacities.push(1.0);
             // On top of the card's, so after it.
-            if hovered == Some(banner.notification.id) {
-                shapes.push(close_shape(banner.x() - OVERHANG, banner.y));
+            let capsule = fade.amount(id);
+            if capsule > 0.0
+                && let Some(rect) = banner.notification.capsule_rect()
+            {
+                shapes.push(chip_shape(
+                    banner.x() + rect.x,
+                    banner.y.value + OVERHANG + rect.y,
+                    rect.width,
+                    rect.height,
+                ));
+                opacities.push(capsule);
+            }
+            if hovered == Some(id) {
+                shapes.push(close_shape(banner.x() - OVERHANG, banner.y.value));
+                opacities.push(1.0);
             }
         }
-        shapes
+        (shapes, opacities)
     }
 
     /// Where the surface takes input: over banners that are staying, with their close buttons.
@@ -228,7 +271,7 @@ impl Banners {
             .map(|banner| {
                 (
                     (banner.x() - OVERHANG) as i32,
-                    banner.y as i32,
+                    banner.y.value as i32,
                     (CARD_WIDTH + OVERHANG) as i32,
                     (banner.notification.height() + OVERHANG) as i32,
                 )
@@ -236,7 +279,12 @@ impl Banners {
             .collect()
     }
 
-    pub fn view(&self, hovered: Option<u32>, material: Option<material::Kind>) -> Element<'_> {
+    pub fn view(
+        &self,
+        hovered: Option<u32>,
+        fade: &HoverFade,
+        material: Option<material::Kind>,
+    ) -> Element<'_> {
         let layers: Vec<Element<'_>> = self
             .banners
             .iter()
@@ -246,12 +294,14 @@ impl Banners {
                     &banner.notification,
                     None,
                     hovered == Some(id),
+                    fade.amount(id),
+                    (banner.x(), banner.y.value + OVERHANG),
                     material,
                     Message::NotificationPressed(id),
                     Message::NotificationDismissed(id),
                 ))
                 .x(banner.x() - OVERHANG)
-                .y(banner.y)
+                .y(banner.y.value)
                 .into()
             })
             .collect();
