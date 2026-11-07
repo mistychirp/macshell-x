@@ -97,13 +97,14 @@ To remove it: `sudo ./install.sh uninstall`. Your settings in `~/.config/makshel
 ### Updating
 
 ```sh
-git pull
-./install.sh build
+./install.sh update          # gets the latest makshell and builds it
 sudo ./install.sh install
 ```
 
-Do this after every KWin update too: the plugins must be built against the KWin they load into.
-If they don't match, KWin won't load them, and the desktop runs without liquid glass.
+It's safe to do from inside the makshell session; the new version starts when you log out and back
+in. Run `./install.sh build` and `sudo ./install.sh install` after every KWin update too: the plugins
+must be built against the KWin they load into, and if they don't match, KWin won't load them and the
+desktop runs without liquid glass.
 
 ## Configuration
 
