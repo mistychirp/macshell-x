@@ -416,7 +416,10 @@ bool GlassEffect::takesAppGlass(EffectWindow *w) const
 {
     // A window that draws its own title bar has its shadow in its surface too, but its frame is where
     // it says its edges are, without the shadow, and that's what the glass covers.
-    return !w->isDeleted() && (w->isNormalWindow() || w->isDialog()) && !w->isFullScreen()
+    // One with no title bar at all that covers its whole screen is an overlay, like a screenshot
+    // tool's for choosing an area, which shows the screen through it as it is.
+    const bool overlay = !w->hasDecoration() && w->screen() && w->frameGeometry().contains(RectF(w->screen()->geometry()));
+    return !w->isDeleted() && (w->isNormalWindow() || w->isDialog()) && !w->isFullScreen() && !overlay
         && !w->internalWindow() && !(w->surface() && m_manager->usesGlass(w->surface()));
 }
 

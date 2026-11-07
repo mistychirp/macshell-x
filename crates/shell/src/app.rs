@@ -1862,6 +1862,22 @@ impl Shell {
             // A new popup can only take the grab once the old one is destroyed, so another title's
             // menu opens when the open one reports closed.
             Message::BarPressed(title) => {
+                // Like on macOS, Control Center's own icon goes back from a module's detail first, and
+                // closes it after that.
+                let going_back = self
+                    .control
+                    .morph
+                    .is_some_and(|morph| !morph.is_opening());
+                if title == menubar::Title::ControlCenter
+                    && matches!(
+                        self.popup.as_ref().map(|popup| &popup.content),
+                        Some(PopupContent::ControlCenter)
+                    )
+                    && self.control.detail.is_some()
+                    && !going_back
+                {
+                    return self.apply(Message::ControlDetail(None));
+                }
                 if let Some(open) = self.popup.as_ref().and_then(|popup| popup.title)
                     && open != title
                 {
