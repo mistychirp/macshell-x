@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use iced_futures::Subscription;
 use iced_futures::futures::channel::mpsc;
@@ -124,6 +125,8 @@ const GREEN_FULL_SCREEN: &str = "GreenFullScreen";
 /// How opaque apps' windows are, with what's behind blurred.
 const WINDOW_OPACITY: &str = "WindowOpacity";
 const WINDOW_OPACITY_RANGE: (f32, f32) = (0.5, 1.0);
+/// How many apps the list to add an exception from shows at once; searching finds the rest.
+const MAX_APPS_TO_PICK: usize = 8;
 /// Where an import keeps the settings it replaces.
 const BACKUP_NAME: &str = "before-import.toml";
 
@@ -168,8 +171,14 @@ pub enum Message {
     ShowPage(Page),
     /// Something outside asked for this page.
     PageAsked(String),
-    TranslucentAppsRead(Vec<(String, bool)>),
-    AppTranslucentToggled(String, bool),
+    ExceptionsRead(Vec<String>),
+    /// An app's to be left as it is, or not.
+    ExceptionChanged(String, bool),
+    /// The list of apps to add one from was opened or closed.
+    ExceptionPickerToggled,
+    ExceptionPickerSearched(String),
+    /// Draws the window again, for what's finished loading since, like icons.
+    Redraw,
     /// The notifications of the app with this key can come again.
     NotificationsTurnedOn(String),
     AccentChosen(String),
@@ -217,54 +226,38 @@ trait Glass {
     fn set_setting(&self, key: &str, value: f64) -> zbus::Result<()>;
     #[zbus(name = "resetSettings")]
     fn reset_settings(&self) -> zbus::Result<()>;
-    #[zbus(name = "appWindows")]
-    fn app_windows(&self) -> zbus::Result<Vec<String>>;
-    #[zbus(name = "opaqueApps")]
-    fn opaque_apps(&self) -> zbus::Result<Vec<String>>;
-    #[zbus(name = "setAppOpaque")]
-    fn set_app_opaque(&self, app: &str, opaque: bool) -> zbus::Result<()>;
+    #[zbus(name = "exceptions")]
+    fn exceptions(&self) -> zbus::Result<Vec<String>>;
+    #[zbus(name = "setException")]
+    fn set_exception(&self, app: &str, excepted: bool) -> zbus::Result<()>;
 }
 
-/// The apps that can be see-through, by window class, and whether they are: those with windows open,
-/// and those kept opaque.
-async fn read_translucent_apps() -> Vec<(String, bool)> {
+/// The apps that are left as they are, with no blur and no translucency.
+async fn read_exceptions() -> Vec<String> {
     let result = async {
         let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
-        let proxy = GlassProxy::new(&connection).await?;
-        let open = proxy.app_windows().await?;
-        let opaque = proxy.opaque_apps().await?;
-        let mut apps: Vec<(String, bool)> = open
-            .into_iter()
-            .map(|app| {
-                let translucent = !opaque.contains(&app);
-                (app, translucent)
-            })
-            .collect();
-        for app in opaque {
-            if !apps.iter().any(|(known, _)| *known == app) {
-                apps.push((app, false));
-            }
-        }
-        Ok::<_, zbus::Error>(apps)
+        GlassProxy::new(&connection).await?.exceptions().await
     }
     .await;
     result
-        .inspect_err(|err| log::warn!("can't read which apps are see-through: {err}"))
+        .inspect_err(|err| log::warn!("can't read which apps are left as they are: {err}"))
         .unwrap_or_default()
 }
 
-async fn set_app_opaque(app: String, opaque: bool) {
+/// Adds an app to the exceptions, or takes it off, and returns them as they are then.
+async fn set_exception(app: String, excepted: bool) -> Vec<String> {
     let result = async {
         let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
         GlassProxy::new(&connection)
             .await?
-            .set_app_opaque(&app, opaque)
+            .set_exception(&app, excepted)
             .await
     }
     .await;
     if let Err(err) = result {
-        log::warn!("can't change whether an app is see-through: {err}");
+        log::warn!("can't change which apps are left as they are: {err}");
     }
+    read_exceptions().await
 }
 
 #[zbus::proxy(
@@ -497,8 +490,13 @@ struct SettingsApp {
     palette_preview: Vec<[u8; 3]>,
     /// The apps whose notifications are off, as their keys and names.
     notifications_off: Vec<(String, String)>,
-    /// The apps that can be see-through: their window class, name, and whether they are.
-    translucent_apps: Vec<(String, String, bool)>,
+    /// The apps that are left as they are, with no blur and no translucency.
+    exceptions: Vec<Rc<apps::App>>,
+    /// What's being searched for among the apps to add, while that list is open.
+    exception_search: Option<String>,
+    /// Every app there is to add, by name, once that's been asked for.
+    all_apps: Vec<Rc<apps::App>>,
+    app_index: Option<apps::AppIndex>,
     about: About,
     /// How the last export or import went.
     transfer_status: Option<String>,
@@ -661,7 +659,10 @@ impl SettingsApp {
             match_apps: config.appearance.match_apps,
             palette_preview: Vec::new(),
             notifications_off: notifications_off(),
-            translucent_apps: Vec::new(),
+            exceptions: Vec::new(),
+            exception_search: None,
+            all_apps: Vec::new(),
+            app_index: None,
             about: About::read(),
             transfer_status: None,
         };
@@ -727,7 +728,7 @@ impl SettingsApp {
                 }
                 // Which apps have windows changes all the time.
                 if page == Page::Windows {
-                    return Task::perform(read_translucent_apps(), Message::TranslucentAppsRead);
+                    return Task::perform(read_exceptions(), Message::ExceptionsRead);
                 }
             }
             Message::PageAsked(name) => {
@@ -735,28 +736,38 @@ impl SettingsApp {
                     return self.update(Message::ShowPage(page));
                 }
             }
-            Message::TranslucentAppsRead(apps) => {
-                let mut index = apps::AppIndex::load();
-                self.translucent_apps = apps
-                    .into_iter()
-                    .map(|(app, translucent)| {
-                        let name = index.resolve(&app).name.clone();
-                        (app, name, translucent)
-                    })
-                    .collect();
-                self.translucent_apps
-                    .sort_by_key(|(_, name, _)| name.to_lowercase());
+            Message::ExceptionsRead(ids) => {
+                let index = self.app_index.get_or_insert_with(apps::AppIndex::load);
+                self.exceptions = ids.iter().map(|id| index.resolve(id)).collect();
+                self.exceptions.sort_by_key(|app| app.name.to_lowercase());
             }
-            Message::AppTranslucentToggled(app, on) => {
-                if let Some(entry) = self
-                    .translucent_apps
-                    .iter_mut()
-                    .find(|(known, _, _)| *known == app)
-                {
-                    entry.2 = on;
+            Message::ExceptionChanged(id, excepted) => {
+                self.exception_search = None;
+                return Task::perform(set_exception(id, excepted), Message::ExceptionsRead);
+            }
+            Message::ExceptionPickerToggled => {
+                if self.exception_search.take().is_none() {
+                    self.exception_search = Some(String::new());
+                    if self.all_apps.is_empty() {
+                        let index = self.app_index.get_or_insert_with(apps::AppIndex::load);
+                        let mut all: Vec<Rc<apps::App>> = index
+                            .listed_ids()
+                            .iter()
+                            .map(|id| index.resolve(id))
+                            .collect();
+                        all.sort_by_key(|app| app.name.to_lowercase());
+                        all.dedup_by(|a, b| a.id == b.id);
+                        self.all_apps = all;
+                    }
+                    return redraw_soon();
                 }
-                return Task::future(set_app_opaque(app, !on)).discard();
             }
+            Message::ExceptionPickerSearched(text) => {
+                self.exception_search = Some(text);
+                return redraw_soon();
+            }
+            // Marking the window changed, as every message does, is all it takes.
+            Message::Redraw => {}
             Message::NotificationsTurnedOn(key) => {
                 let mut off = Config::load().notifications.off;
                 off.retain(|app| *app != key);
@@ -1329,59 +1340,134 @@ impl SettingsApp {
             .get(GREEN_FULL_SCREEN)
             .is_some_and(|value| *value != 0.0);
         let opacity = glass.get(WINDOW_OPACITY).copied().unwrap_or(1.0);
-        let mut translucency = vec![setting_row(
-            "Opacity",
-            settings_slider(
-                WINDOW_OPACITY_RANGE,
-                opacity,
-                0.01,
-                |value| Message::GlassChanged(WINDOW_OPACITY, value),
-                Message::GlassReleased(WINDOW_OPACITY),
-            ),
-        )];
-        if opacity < 1.0 {
-            translucency.extend(self.translucent_apps.iter().map(|(app, name, on)| {
-                let app = app.clone();
-                setting_row(
-                    name,
-                    settings_toggle(*on, move |on| {
-                        Message::AppTranslucentToggled(app.clone(), on)
-                    }),
-                )
-            }));
-        }
-        column![section(
-            "Translucency",
-            column![
-                card(translucency),
-                caption(
-                    "Windows let what's behind them show through, blurred. The apps listed are the \
-                     ones with windows open, and any kept opaque. One that's see-through by itself, \
-                     like a terminal set up that way, keeps its own opacity, and gets the blur too.",
+        let mut exceptions: Vec<Element<'_>> = if self.exceptions.is_empty() {
+            vec![info_row("No apps", "")]
+        } else {
+            self.exceptions
+                .iter()
+                .map(|app| {
+                    app_row(
+                        app,
+                        capsule_button("Remove", Message::ExceptionChanged(app.id.clone(), false)),
+                    )
+                })
+                .collect()
+        };
+        exceptions.push(
+            row![
+                Space::new().width(Length::Fill),
+                capsule_button(
+                    if self.exception_search.is_some() {
+                        "Cancel"
+                    } else {
+                        "Add App…"
+                    },
+                    Message::ExceptionPickerToggled,
                 ),
             ]
-            .spacing(6),
-        ),
-        section(
-            "Green Button",
-            column![
-                card(vec![setting_row(
-                    "When Clicked",
-                    row![
-                        choice("Maximize", !full_screen, false),
-                        choice("Full Screen", full_screen, true),
-                    ]
-                    .spacing(2)
-                    .into(),
-                )]),
-                caption(
-                    "A full-screen window has no title bar to leave it with yet: its window \
+            .padding([0, 12])
+            .height(44)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+        let mut exceptions_section = column![card(exceptions)].spacing(6);
+        if let Some(search) = &self.exception_search {
+            let wanted = search.to_lowercase();
+            let mut picks: Vec<Element<'_>> = vec![
+                container(
+                    text_input("Search", search)
+                        .on_input(Message::ExceptionPickerSearched)
+                        .size(TEXT_SIZE)
+                        .padding([5, 10])
+                        .style(|_, _| text_input::Style {
+                            background: Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.1)),
+                            border: Border {
+                                radius: 8.0.into(),
+                                ..Default::default()
+                            },
+                            icon: DIM,
+                            placeholder: DIM,
+                            value: Color::WHITE,
+                            selection: appearance::accent(),
+                        }),
+                )
+                .padding(10)
+                .into(),
+            ];
+            picks.extend(
+                self.all_apps
+                    .iter()
+                    .filter(|app| !self.exceptions.iter().any(|known| known.id == app.id))
+                    .filter(|app| wanted.is_empty() || app.name.to_lowercase().contains(&wanted))
+                    .take(MAX_APPS_TO_PICK)
+                    .map(|app| {
+                        button(app_row(app, Space::new().into()))
+                            .padding(0)
+                            .width(Length::Fill)
+                            .on_press(Message::ExceptionChanged(app.id.clone(), true))
+                            .style(|_, status| button::Style {
+                                background: matches!(
+                                    status,
+                                    button::Status::Hovered | button::Status::Pressed
+                                )
+                                .then_some(Background::Color(Color::from_rgba(
+                                    1.0, 1.0, 1.0, 0.08,
+                                ))),
+                                text_color: Color::WHITE,
+                                ..Default::default()
+                            })
+                            .into()
+                    }),
+            );
+            exceptions_section = exceptions_section.push(card(picks));
+        }
+        let exceptions_section = exceptions_section.push(caption(
+            "These have no blur behind them, and are never made see-through.",
+        ));
+        column![
+            section(
+                "Translucency",
+                column![
+                    card(vec![setting_row(
+                        "Opacity",
+                        settings_slider(
+                            WINDOW_OPACITY_RANGE,
+                            opacity,
+                            0.01,
+                            |value| Message::GlassChanged(WINDOW_OPACITY, value),
+                            Message::GlassReleased(WINDOW_OPACITY),
+                        ),
+                    )]),
+                    caption(
+                        "Windows let what's behind them show through, blurred. One that's \
+                         see-through by itself, like a terminal set up that way, keeps its own \
+                         opacity, and gets the blur too.",
+                    ),
+                ]
+                .spacing(6),
+            ),
+            section("Exceptions", exceptions_section),
+            section(
+                "Green Button",
+                column![
+                    card(vec![setting_row(
+                        "When Clicked",
+                        row![
+                            choice("Maximize", !full_screen, false),
+                            choice("Full Screen", full_screen, true),
+                        ]
+                        .spacing(2)
+                        .into(),
+                    )]),
+                    caption(
+                        "A full-screen window has no title bar to leave it with yet: its window \
                          menu (Alt+F3) has the way out, under More. Resting on the button still \
                          shows its menu.",
-                ),
-            ]
-            .spacing(6),
-        ),]
+                    ),
+                ]
+                .spacing(6),
+            ),
+        ]
         .spacing(18)
         .into()
     }
@@ -1495,6 +1581,17 @@ fn lights<'a>(hovered: bool) -> Element<'a> {
     .on_enter(Message::LightsHovered(true))
     .on_exit(Message::LightsHovered(false))
     .into()
+}
+
+/// Draws the window again a little later, and a little later again. Icons are read from their files
+/// after they're first drawn, and nothing else would show them once they have been.
+fn redraw_soon() -> Task<Message> {
+    Task::batch([150, 600].map(|ms| {
+        Task::future(async move {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            Message::Redraw
+        })
+    }))
 }
 
 /// What the field for a typed-in accent shows for what's in the config file.
@@ -1699,6 +1796,24 @@ fn setting_row<'a>(label: &'a str, control: Element<'a>) -> Element<'a> {
             .width(Length::Fill)
             .align_x(Alignment::End),
     ]
+    .padding([0, 12])
+    .height(40)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// An app, with its icon, and something to do with it on the right.
+fn app_row<'a>(app: &'a apps::App, control: Element<'a>) -> Element<'a> {
+    let icon: Element<'a> = match &app.icon {
+        Some(handle) => image(handle.clone()).width(20).height(20).into(),
+        None => Space::new().width(20).height(20).into(),
+    };
+    row![
+        icon,
+        text(&app.name).size(TEXT_SIZE).width(Length::Fill),
+        control,
+    ]
+    .spacing(10)
     .padding([0, 12])
     .height(40)
     .align_y(Alignment::Center)

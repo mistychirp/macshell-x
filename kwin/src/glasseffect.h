@@ -168,11 +168,10 @@ public Q_SLOTS:
     Q_SCRIPTABLE void setSetting(const QString &key, double value);
     /// Puts all of them back to their defaults.
     Q_SCRIPTABLE void resetSettings();
-    /// The apps with windows open that can be see-through, by window class.
-    Q_SCRIPTABLE QStringList appWindows() const;
-    /// The apps that are kept opaque, whatever windows' opacity is.
-    Q_SCRIPTABLE QStringList opaqueApps() const;
-    Q_SCRIPTABLE void setAppOpaque(const QString &app, bool opaque);
+    /// The apps left as they are, with no blur behind and no translucency, by desktop entry id or
+    /// window class.
+    Q_SCRIPTABLE QStringList exceptions() const;
+    Q_SCRIPTABLE void setException(const QString &app, bool excepted);
 
 private:
     void updateWindow(KWin::EffectWindow *w);
@@ -181,6 +180,7 @@ private:
     /// Follows what changes whether an app's window gets glass, and how much.
     void watchAppWindow(KWin::EffectWindow *w);
     bool takesAppGlass(KWin::EffectWindow *w) const;
+    bool isException(KWin::EffectWindow *w) const;
     void windowMoved(KWin::EffectWindow *w, const KWin::RectF &oldGeometry);
     void placeDialog(KWin::EffectWindow *w);
     void paintGlass(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data);
@@ -195,7 +195,7 @@ private:
     std::unique_ptr<GlassManager> m_manager;
     std::unique_ptr<Arranger> m_arranger;
     GlassSettings m_settings;
-    QStringList m_opaqueApps;
+    QStringList m_exceptions;
 
     std::unique_ptr<KWin::GLShader> m_glassShader;
     std::unique_ptr<KWin::GLShader> m_downsampleShader;

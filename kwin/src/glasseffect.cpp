@@ -59,6 +59,9 @@ static constexpr int s_windowRadius = 16;
 /// The least opaque windows can be made, past which they'd be hard to read.
 static constexpr float s_leastWindowOpacity = 0.5f;
 
+/// Where the apps that are left as they are, with no blur and no translucency, are kept in kwinrc.
+static const QString s_exceptionsKey = QStringLiteral("BlurExceptions");
+
 /// How long a new surface stays out of sight if its glass doesn't come.
 static constexpr int s_awaitGlassMs = 200;
 
@@ -283,7 +286,7 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.bubbleTint = group.readEntry("BubbleTint", defaults.bubbleTint);
     m_settings.bubbleEdgeGain = group.readEntry("BubbleEdgeGain", defaults.bubbleEdgeGain);
     m_settings.windowOpacity = std::clamp(group.readEntry("WindowOpacity", defaults.windowOpacity), s_leastWindowOpacity, 1.0f);
-    m_opaqueApps = group.readEntry("OpaqueApps", QStringList());
+    m_exceptions = group.readEntry(s_exceptionsKey, QStringList());
     if (m_valid) {
         for (EffectWindow *w : effects->stackingOrder()) {
             updateAppGlass(w);
@@ -343,34 +346,31 @@ void GlassEffect::resetSettings()
     reconfigure(ReconfigureAll);
 }
 
-QStringList GlassEffect::appWindows() const
+QStringList GlassEffect::exceptions() const
 {
-    QStringList apps;
-    for (EffectWindow *w : effects->stackingOrder()) {
-        const QString app = w->window()->resourceClass();
-        if (takesAppGlass(w) && !app.isEmpty() && !apps.contains(app)) {
-            apps.append(app);
-        }
-    }
-    apps.sort(Qt::CaseInsensitive);
-    return apps;
+    return m_exceptions;
 }
 
-QStringList GlassEffect::opaqueApps() const
+void GlassEffect::setException(const QString &app, bool excepted)
 {
-    return m_opaqueApps;
-}
-
-void GlassEffect::setAppOpaque(const QString &app, bool opaque)
-{
-    QStringList apps = m_opaqueApps;
+    QStringList apps = m_exceptions;
     apps.removeAll(app);
-    if (opaque) {
+    if (excepted) {
         apps.append(app);
     }
-    settingsGroup().writeEntry(QStringLiteral("OpaqueApps"), apps);
+    settingsGroup().writeEntry(s_exceptionsKey, apps);
     m_saveSoon->start();
     reconfigure(ReconfigureAll);
+}
+
+bool GlassEffect::isException(EffectWindow *w) const
+{
+    // Listed by desktop entry, which on Wayland is usually the app ID too, but not always.
+    const QString windowClass = w->window()->resourceClass();
+    const QString entry = w->window()->desktopFileName();
+    return std::any_of(m_exceptions.cbegin(), m_exceptions.cend(), [&](const QString &app) {
+        return app.compare(windowClass, Qt::CaseInsensitive) == 0 || (!entry.isEmpty() && app.compare(entry, Qt::CaseInsensitive) == 0);
+    });
 }
 
 bool GlassEffect::takesAppGlass(EffectWindow *w) const
@@ -420,10 +420,10 @@ void GlassEffect::updateAppGlass(EffectWindow *w)
         // The app's own.
         return;
     }
-    const bool fits = takesAppGlass(w);
+    const bool fits = takesAppGlass(w) && !isException(w);
     // One that's see-through by itself keeps its own opacity, and gets the blur behind.
     const bool clear = fits && seeThrough(w);
-    const bool dim = fits && !clear && m_settings.windowOpacity < 1.0f && !m_opaqueApps.contains(w->window()->resourceClass());
+    const bool dim = fits && !clear && m_settings.windowOpacity < 1.0f;
     if (!clear && !dim) {
         if (ours) {
             effects->makeOpenGLContextCurrent();
