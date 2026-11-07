@@ -99,7 +99,9 @@ enum Surface {
 #[derive(Debug, Clone)]
 pub enum Message {
     /// Other apps are in line with the config file, which comes to this accent.
-    AppearanceApplied(Option<[u8; 3]>),
+    AppearanceApplied(Option<appearance::Applied>),
+    /// Time to see whether it's become light or dark, for Auto.
+    AppearanceTick,
     WindowsChanged(Vec<WindowInfo>),
     KeyboardLayoutsChanged(KeyboardLayouts),
     /// A layout was chosen in the keyboard layout menu; carries its index.
@@ -570,6 +572,8 @@ struct Shell {
     banners_opacities: Vec<f32>,
     /// Groups opened in Notification Center, by app.
     open_groups: HashSet<String>,
+    /// The appearance goes by the sun, which takes looking now and then.
+    appearance_auto: bool,
     /// Which status items the bar shows.
     show_wifi: bool,
     show_bluetooth: bool,
@@ -800,6 +804,7 @@ impl Shell {
             center_motion: notification_center::Motions::default(),
             banners_opacities: Vec::new(),
             open_groups: HashSet::new(),
+            appearance_auto: config.appearance.mode == "auto",
             show_wifi: config.menubar.show_wifi,
             show_bluetooth: config.menubar.show_bluetooth,
             show_sound: config.menubar.show_sound,
@@ -967,12 +972,18 @@ impl Shell {
 
     fn apply(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::AppearanceApplied(accent) => {
-                if let Some(accent) = accent {
-                    appearance::set_accent(accent);
+            Message::AppearanceApplied(applied) => {
+                if let Some(applied) = applied {
+                    appearance::set_accent(applied.accent);
                     // Whatever's on screen in the old color is redrawn.
                     self.surface_contents.clear();
+                    if applied.icons_changed {
+                        return self.reload_icons();
+                    }
                 }
+            }
+            Message::AppearanceTick => {
+                return Task::perform(appearance::refresh(), Message::AppearanceApplied);
             }
             Message::WindowsChanged(mut windows) => {
                 // An alert is a window to the compositor, but not to the rest of the shell.
@@ -3776,6 +3787,7 @@ impl Shell {
         let config = Config::load();
         self.always_glassy_widgets = config.desktop.always_glassy_widgets;
         self.notifications_off.clone_from(&config.notifications.off);
+        self.appearance_auto = config.appearance.mode == "auto";
         self.show_wifi = config.menubar.show_wifi;
         self.show_bluetooth = config.menubar.show_bluetooth;
         self.show_sound = config.menubar.show_sound;
@@ -4432,6 +4444,16 @@ impl Shell {
 
     /// Recomputes the dock layout, and pushes whatever changed to the material and the input
     /// region.
+    /// Reads the apps' icons again, from an icon theme that's just changed.
+    fn reload_icons(&mut self) -> Task<Message> {
+        self.apps = AppIndex::load();
+        self.dock = self.dock_items();
+        self.update_place_icons();
+        self.spotlight_apps.clear();
+        self.spotlight_unread = self.apps.listed_ids();
+        self.relayout_dock()
+    }
+
     fn relayout_dock(&mut self) -> Task<Message> {
         // Nothing to place until the compositor has given the surface a size.
         if self.dock_width == 0.0 {
@@ -4648,6 +4670,12 @@ impl Shell {
             self.popup.as_ref().map(|popup| &popup.content),
             Some(PopupContent::ControlCenter | PopupContent::Status(_))
         );
+        // Light turns to dark at sunset, with nothing else to say so.
+        let appearance_tick = if self.appearance_auto {
+            time::every(Duration::from_secs(60)).map(|_| Message::AppearanceTick)
+        } else {
+            Subscription::none()
+        };
         let control_refresh = if control_open {
             time::every(Duration::from_secs(2)).map(|_| Message::ControlRefresh)
         } else if self.show_wifi || self.show_bluetooth || self.show_sound {
@@ -4718,6 +4746,7 @@ impl Shell {
             appmenu::registrar(),
             bar_brightness,
             control_refresh,
+            appearance_tick,
             kwin::windows().map(Message::WindowsChanged),
             kwin::keyboard_layouts().map(Message::KeyboardLayoutsChanged),
             time::every(Duration::from_secs(1)).map(|_| Message::Tick),

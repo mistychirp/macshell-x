@@ -239,9 +239,10 @@ pub fn init() {
 pub struct Palette(Vec<(&'static str, Rgb)>);
 
 impl Palette {
-    pub fn from_seed(seed: [u8; 3]) -> Self {
+    /// A palette from this color, for a light or a dark appearance.
+    pub fn from_seed(seed: [u8; 3], dark: bool) -> Self {
         let source = Rgb::new(seed[0], seed[1], seed[2]);
-        let s: Scheme = SchemeContent::new(Hct::new(source), true, None)
+        let s: Scheme = SchemeContent::new(Hct::new(source), dark, None)
             .scheme
             .into();
         // Colors for terminals, which have to stay recognizably red or green, nudged toward the seed
@@ -289,11 +290,26 @@ impl Palette {
             ("shadow", s.shadow),
             ("scrim", s.scrim),
             ("source", source),
-            ("term_black", s.surface_container_high),
-            ("term_white", s.on_surface_variant),
-            ("term_bright_black", s.outline),
-            ("term_bright_white", s.on_surface),
         ];
+        // A terminal's black is what's darkest and its white what's lightest, whichever the
+        // background is.
+        if dark {
+            roles.extend([
+                ("term_black", s.surface_container_high),
+                ("term_white", s.on_surface_variant),
+                ("term_bright_black", s.outline),
+                ("term_bright_white", s.on_surface),
+            ]);
+        } else {
+            roles.extend([
+                ("term_black", s.on_surface),
+                ("term_white", s.surface_container_highest),
+                ("term_bright_black", s.outline),
+                ("term_bright_white", s.surface_container_low),
+            ]);
+        }
+        // On a light background, colors have to be dark to be read.
+        let (tone, bright_tone) = if dark { (70.0, 82.0) } else { (40.0, 50.0) };
         for (name, bright, rgb) in [
             ("term_red", "term_bright_red", 0xE5_5B_5Bu32),
             ("term_green", "term_bright_green", 0x5B_C2_6A),
@@ -302,8 +318,8 @@ impl Palette {
             ("term_magenta", "term_bright_magenta", 0xC2_6B_D9),
             ("term_cyan", "term_bright_cyan", 0x4C_C2_C2),
         ] {
-            roles.push((name, ansi(rgb, 70.0)));
-            roles.push((bright, ansi(rgb, 82.0)));
+            roles.push((name, ansi(rgb, tone)));
+            roles.push((bright, ansi(rgb, bright_tone)));
         }
         Self(roles)
     }
@@ -346,31 +362,72 @@ impl Palette {
     }
 }
 
-/// Brings everything in line with the config file, as far as that's changed since last time, and
-/// returns the accent.
-pub async fn refresh() -> Option<[u8; 3]> {
-    let (accent, changed_colors) = tokio::task::spawn_blocking(sync)
+/// What bringing apps in line with the config file came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Applied {
+    pub accent: [u8; 3],
+    /// The icon theme changed, which the shell's own icons come from too.
+    pub icons_changed: bool,
+}
+
+/// Brings everything in line with the config file, as far as that's changed since last time.
+pub async fn refresh() -> Option<Applied> {
+    let (accent, changed_colors, icons_changed) = tokio::task::spawn_blocking(sync)
         .await
         .inspect_err(|err| log::warn!("couldn't update the colors: {err}"))
         .ok()?;
     if changed_colors {
-        tell_kde_apps().await;
+        tell_kde_apps(false).await;
     }
-    Some(accent)
+    if icons_changed {
+        tell_kde_apps(true).await;
+    }
+    Some(Applied {
+        accent,
+        icons_changed,
+    })
 }
 
 /// One at a time, each going by the config file as it is by then, so the last one is right however
 /// quickly the accent is changed.
 static SYNCING: Mutex<()> = Mutex::new(());
 
-/// What's been done, as a line in a file: whether apps match, to what, and from which templates.
-fn applied_state(matching: bool, accent: [u8; 3]) -> String {
-    let templates = if matching { templates_fingerprint() } else { 0 };
+/// What's been done, as a line in a file: whether apps have a palette made for them, light or dark,
+/// with the accent, and from what and which templates.
+fn applied_state(generated: bool, light: bool, accent: [u8; 3], seed: [u8; 3]) -> String {
+    let templates = if generated {
+        templates_fingerprint()
+    } else {
+        0
+    };
     format!(
-        "{} {} {templates:x}",
-        if matching { "matching" } else { "own" },
+        "{} {} {} {} {templates:x}",
+        if generated { "generated" } else { "own" },
+        if light { "light" } else { "dark" },
         hex(accent),
+        if generated {
+            hex(seed)
+        } else {
+            String::from("-")
+        },
     )
+}
+
+/// What the last line said, read the way it's written now or was before: whether apps had a palette
+/// made for them, whether that was light, and the accent.
+fn read_state(line: &str) -> (bool, bool, Option<String>) {
+    let words: Vec<&str> = line.split(' ').collect();
+    let generated = matches!(words.first(), Some(&"generated" | &"matching"));
+    match words.get(1) {
+        // Before there was light, the accent came second.
+        Some(word) if word.starts_with('#') => (generated, false, Some((*word).to_owned())),
+        Some(mode) => (
+            generated,
+            *mode == "light",
+            words.get(2).map(|word| (*word).to_owned()),
+        ),
+        None => (generated, false, None),
+    }
 }
 
 /// Changes when a template does, built in or the user's, which means files have to be written again.
@@ -392,29 +449,38 @@ fn templates_fingerprint() -> u64 {
     hasher.finish()
 }
 
-fn sync() -> ([u8; 3], bool) {
+fn sync() -> ([u8; 3], bool, bool) {
     let _one_at_a_time = SYNCING.lock();
     let config = Config::load();
     let colors = wallpaper_colors(config.desktop.wallpaper.as_deref());
     let (accent, seed) = resolve(Choice::parse(&config.appearance.accent), &colors);
     let matching = config.appearance.match_apps;
+    let light = Mode::parse(&config.appearance.mode).is_light(chrono::Local::now());
+    // A light appearance takes a palette made for it, even when apps otherwise keep their own: it's
+    // their own scheme's light twin, from its accent.
+    let generated = matching || light;
+    let own_accent = own_kde_accent().unwrap_or(accent);
+    let (palette_seed, kde_accent) = if matching {
+        (seed, accent)
+    } else {
+        (own_accent, own_accent)
+    };
 
     let state_file = state_dir().join("colors-applied");
-    let state = applied_state(matching, accent);
+    let state = applied_state(generated, light, accent, palette_seed);
     let before = fs::read_to_string(&state_file).ok();
     let before = before.as_deref().map(str::trim);
     if before == Some(state.as_str()) {
-        return (accent, false);
+        return (accent, false, false);
     }
-    let mut was = before.unwrap_or_default().split(' ');
-    let was_matching = was.next() == Some("matching");
+    let (was_generated, was_light, was_accent) = read_state(before.unwrap_or_default());
     // The first time, there's nothing to go by, and KDE's accent is left as it's been set.
-    let accent_changed = was.next().is_some_and(|old| old != hex(accent));
+    let accent_changed = was_accent.is_some_and(|old| old != hex(accent));
 
     let mut changed_colors = false;
     let mut done = true;
-    if matching {
-        match match_apps(seed, accent) {
+    if generated {
+        match match_apps(palette_seed, kde_accent, light, accent) {
             Ok(()) => changed_colors = true,
             Err(err) => {
                 log::warn!("can't make apps match: {err}");
@@ -422,7 +488,7 @@ fn sync() -> ([u8; 3], bool) {
             }
         }
     } else {
-        if was_matching {
+        if was_generated {
             match stop_matching_apps(accent) {
                 Ok(()) => changed_colors = true,
                 Err(err) => {
@@ -441,10 +507,217 @@ fn sync() -> ([u8; 3], bool) {
             }
         }
     }
+    let mut icons_changed = false;
+    if before.is_none() || light != was_light {
+        icons_changed = set_appearance(light);
+    }
     if done && let Err(err) = write_file(&state_file, &state) {
         log::warn!("can't remember what colors were applied: {err}");
     }
-    (accent, changed_colors)
+    (accent, changed_colors, icons_changed)
+}
+
+/// Light or dark, or whichever the sun says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Light,
+    Dark,
+    Auto,
+}
+
+impl Mode {
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "light" => Self::Light,
+            "auto" => Self::Auto,
+            _ => Self::Dark,
+        }
+    }
+
+    /// Whether it's light now. Auto is light between sunrise and sunset where the weather widget
+    /// is, and from seven to seven without a place to go by.
+    pub fn is_light(self, now: chrono::DateTime<chrono::Local>) -> bool {
+        match self {
+            Self::Light => true,
+            Self::Dark => false,
+            Self::Auto => match place()
+                .and_then(|(latitude, longitude)| sun_times(now.date_naive(), latitude, longitude))
+            {
+                Some((sunrise, sunset)) => {
+                    let now = now.timestamp();
+                    sunrise <= now && now < sunset
+                }
+                None => {
+                    use chrono::Timelike as _;
+                    (7..19).contains(&now.hour())
+                }
+            },
+        }
+    }
+}
+
+/// When the sun rises and sets on a day, as Unix times, by the sunrise equation (as NOAA's): within a
+/// minute or two, which is plenty. `None` when it doesn't, near the poles.
+pub fn sun_times(day: chrono::NaiveDate, latitude: f64, longitude: f64) -> Option<(i64, i64)> {
+    use std::f64::consts::PI;
+    let radians = |degrees: f64| degrees * PI / 180.0;
+    let degrees = |radians: f64| radians * 180.0 / PI;
+    let noon = day.and_hms_opt(12, 0, 0)?.and_utc().timestamp() as f64;
+    let julian_day = noon / 86400.0 + 2440587.5;
+    let n = (julian_day - 2451545.0 + 0.0008).round();
+    let mean_solar_time = n - longitude / 360.0;
+    let anomaly = (357.5291 + 0.98560028 * mean_solar_time).rem_euclid(360.0);
+    let m = radians(anomaly);
+    let center = 1.9148 * m.sin() + 0.02 * (2.0 * m).sin() + 0.0003 * (3.0 * m).sin();
+    let ecliptic = radians((anomaly + center + 180.0 + 102.9372).rem_euclid(360.0));
+    let transit = 2451545.0 + mean_solar_time + 0.0053 * m.sin() - 0.0069 * (2.0 * ecliptic).sin();
+    let declination = (ecliptic.sin() * radians(23.4397).sin()).asin();
+    let phi = radians(latitude);
+    let cos_hour_angle =
+        (radians(-0.833).sin() - phi.sin() * declination.sin()) / (phi.cos() * declination.cos());
+    if !(-1.0..=1.0).contains(&cos_hour_angle) {
+        return None;
+    }
+    let hour_angle = degrees(cos_hour_angle.acos());
+    let unix = |julian: f64| ((julian - 2440587.5) * 86400.0).round() as i64;
+    Some((
+        unix(transit - hour_angle / 360.0),
+        unix(transit + hour_angle / 360.0),
+    ))
+}
+
+/// Where the weather widget is, which is where the sun's looked at for Auto. It's looked up once for
+/// each city, and kept.
+fn place() -> Option<(f64, f64)> {
+    let city = crate::widgets::saved_city()?;
+    let saved = state_dir().join("place");
+    if let Ok(text) = fs::read_to_string(&saved)
+        && let Some((name, at)) = text.trim().split_once('\t')
+        && name == city
+        && let Some((latitude, longitude)) = at.split_once(' ')
+        && let (Ok(latitude), Ok(longitude)) = (latitude.parse(), longitude.parse())
+    {
+        return Some((latitude, longitude));
+    }
+    let (latitude, longitude) = crate::widgets::locate(&city)?;
+    if let Err(err) = write_file(&saved, &format!("{city}\t{latitude} {longitude}\n")) {
+        log::warn!("can't remember where the weather widget is: {err}");
+    }
+    Some((latitude, longitude))
+}
+
+/// The accent of KDE's own color scheme, from before a palette was made for apps if one has been.
+fn own_kde_accent() -> Option<[u8; 3]> {
+    let kept = saved_dir().join("kdeglobals");
+    let path = if kept.exists() {
+        kept
+    } else {
+        config_home().join("kdeglobals")
+    };
+    let text = fs::read_to_string(path).ok()?;
+    let general = kde_groups(&text)
+        .into_iter()
+        .find(|(header, _)| header == "[General]")?;
+    let value = general
+        .1
+        .iter()
+        .find(|line| key_of(line) == "AccentColor")?
+        .split_once('=')?
+        .1
+        .to_owned();
+    let mut channels = value
+        .split(',')
+        .map(|channel| channel.trim().parse::<u8>().ok());
+    Some([channels.next()??, channels.next()??, channels.next()??])
+}
+
+/// The parts of a light or dark appearance that aren't colors: what GTK is asked for, and the icon
+/// theme's light or dark twin, if it has one. Returns whether the icon theme changed.
+fn set_appearance(light: bool) -> bool {
+    let scheme = if light { "prefer-light" } else { "prefer-dark" };
+    let gtk_theme = if light { "Adwaita" } else { "Adwaita-dark" };
+    gsettings("color-scheme", scheme);
+    gsettings("gtk-theme", gtk_theme);
+
+    let path = config_home().join("kdeglobals");
+    let globals = fs::read_to_string(&path).unwrap_or_default();
+    let current = kde_groups(&globals)
+        .into_iter()
+        .find(|(header, _)| header == "[Icons]")
+        .and_then(|(_, lines)| {
+            lines
+                .iter()
+                .find(|line| key_of(line) == "Theme")
+                .and_then(|line| line.split_once('=').map(|(_, theme)| theme.to_owned()))
+        });
+    let Some(current) = current else {
+        return false;
+    };
+    let Some(twin) = icon_twin(&current, light, icon_theme_exists) else {
+        return false;
+    };
+    if twin == current {
+        return false;
+    }
+    if can_change(&path) {
+        let mut groups = kde_groups(&globals);
+        merge_kde_keys(&format!("[Icons]\nTheme={twin}\n"), &mut groups);
+        if let Err(err) = write_file(&path, &kde_text(&groups)) {
+            log::warn!("can't change the icon theme: {err}");
+            return false;
+        }
+    }
+    gsettings("icon-theme", &twin);
+    true
+}
+
+/// The light or dark twin of an icon theme, by its name: `-Light` and `-Dark`, or without either
+/// for the light one, as long as it's there.
+fn icon_twin(theme: &str, light: bool, exists: impl Fn(&str) -> bool) -> Option<String> {
+    let lower = theme.to_ascii_lowercase();
+    let base = ["-dark", "-light"]
+        .iter()
+        .find(|suffix| lower.ends_with(**suffix))
+        .map_or(theme, |suffix| &theme[..theme.len() - suffix.len()]);
+    let candidates: Vec<String> = if light {
+        vec![
+            format!("{base}-Light"),
+            format!("{base}-light"),
+            base.to_owned(),
+        ]
+    } else {
+        vec![format!("{base}-Dark"), format!("{base}-dark")]
+    };
+    candidates.into_iter().find(|name| exists(name))
+}
+
+fn icon_theme_exists(name: &str) -> bool {
+    let mut roots = vec![data_home().join("icons"), places::home().join(".icons")];
+    let dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
+    roots.extend(
+        dirs.split(':')
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| PathBuf::from(dir).join("icons")),
+    );
+    roots
+        .iter()
+        .any(|root| root.join(name).join("index.theme").is_file())
+}
+
+/// GNOME's interface settings, which GTK reads and watches, and which is all that GTK 3 apps know of
+/// light and dark.
+fn gsettings(key: &str, value: &str) {
+    let result = std::process::Command::new("gsettings")
+        .args(["set", "org.gnome.desktop.interface", key, value])
+        .output();
+    match result {
+        Ok(output) if !output.status.success() => log::debug!(
+            "gsettings didn't take {key}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Ok(_) => {}
+        Err(err) => log::debug!("can't run gsettings: {err}"),
+    }
 }
 
 /// KDE's accent, on its own, leaving the rest of its colors as they are. There's a tool for this,
@@ -516,22 +789,38 @@ fn luminance(rgb: [u8; 3]) -> f32 {
     0.2126 * linear(rgb[0]) + 0.7152 * linear(rgb[1]) + 0.0722 * linear(rgb[2])
 }
 
-/// Running KDE apps redo their colors when they hear this.
-async fn tell_kde_apps() {
+/// Running KDE apps redo their colors, or their icons, when they hear this.
+async fn tell_kde_apps(icons: bool) {
     let Some(connection) = dbus::session().await else {
         return;
     };
+    // KGlobalSettings' palette change, or its icon change.
+    let kind: i32 = if icons { 4 } else { 0 };
     let sent = connection
         .emit_signal(
             None::<&str>,
             "/KGlobalSettings",
             "org.kde.KGlobalSettings",
             "notifyChange",
-            &(0i32, 0i32),
+            &(kind, 0i32),
         )
         .await;
     if let Err(err) = sent {
         log::warn!("can't tell KDE apps about their colors: {err}");
+    }
+    if icons {
+        let sent = connection
+            .emit_signal(
+                None::<&str>,
+                "/KIconLoader",
+                "org.kde.KIconLoader",
+                "iconChanged",
+                &(0i32,),
+            )
+            .await;
+        if let Err(err) = sent {
+            log::warn!("can't tell KDE apps about their icons: {err}");
+        }
     }
 }
 
@@ -593,9 +882,16 @@ fn save_before_matching(accent: [u8; 3]) -> io::Result<()> {
     Ok(())
 }
 
-fn match_apps(seed: [u8; 3], accent: [u8; 3]) -> io::Result<()> {
-    save_before_matching(accent)?;
-    let palette = Palette::from_seed(seed);
+/// `accent` is KDE's, and `shell_accent` the shell's, which is what's kept to tell, when apps get
+/// their own colors back, whether it changed since.
+fn match_apps(
+    seed: [u8; 3],
+    accent: [u8; 3],
+    light: bool,
+    shell_accent: [u8; 3],
+) -> io::Result<()> {
+    save_before_matching(shell_accent)?;
+    let palette = Palette::from_seed(seed, !light);
 
     // KDE and Qt. Applying a scheme by name does nothing if that's the name already in use, so it goes
     // straight into the settings, which is all that does anyway.
@@ -971,8 +1267,11 @@ mod tests {
 
     #[test]
     fn a_palette_stays_readable_whatever_it_starts_from() {
-        for (_, seed) in PRESETS {
-            let palette = Palette::from_seed(seed);
+        for (dark, (_, seed)) in [true, false]
+            .into_iter()
+            .flat_map(|dark| PRESETS.into_iter().map(move |preset| (dark, preset)))
+        {
+            let palette = Palette::from_seed(seed, dark);
             let contrast = |a: &str, b: &str| {
                 let (a, b) = (
                     luminance(palette.role(a).unwrap()),
@@ -987,8 +1286,69 @@ mod tests {
     }
 
     #[test]
+    fn the_sun_rises_and_sets_when_it_does() {
+        // London at midsummer: 03:43 and 20:21 UTC.
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 6, 21).unwrap();
+        let (sunrise, sunset) = sun_times(day, 51.5074, -0.1278).unwrap();
+        let at = |hour: u32, minute: u32| {
+            day.and_hms_opt(hour, minute, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp()
+        };
+        assert!((sunrise - at(3, 43)).abs() < 5 * 60, "{sunrise}");
+        assert!((sunset - at(20, 21)).abs() < 5 * 60, "{sunset}");
+        // Tromsø in midwinter has no sunrise at all.
+        let winter = chrono::NaiveDate::from_ymd_opt(2026, 12, 21).unwrap();
+        assert_eq!(sun_times(winter, 69.65, 18.96), None);
+    }
+
+    #[test]
+    fn an_icon_theme_has_a_twin_only_if_its_there() {
+        let installed = [
+            "MacOS-Like-Light",
+            "MacOS-Like-Dark",
+            "WhiteSur",
+            "WhiteSur-dark",
+        ];
+        let exists = |name: &str| installed.contains(&name);
+        assert_eq!(
+            icon_twin("MacOS-Like-Dark", true, exists).as_deref(),
+            Some("MacOS-Like-Light")
+        );
+        assert_eq!(
+            icon_twin("MacOS-Like-Light", false, exists).as_deref(),
+            Some("MacOS-Like-Dark")
+        );
+        assert_eq!(
+            icon_twin("WhiteSur", false, exists).as_deref(),
+            Some("WhiteSur-dark")
+        );
+        assert_eq!(
+            icon_twin("WhiteSur-dark", true, exists).as_deref(),
+            Some("WhiteSur")
+        );
+        assert_eq!(icon_twin("breeze", false, exists), None);
+    }
+
+    #[test]
+    fn what_was_applied_reads_the_way_it_was_written_before_too() {
+        assert_eq!(
+            read_state("matching #e0383e 54027c"),
+            (true, false, Some("#e0383e".into()))
+        );
+        assert_eq!(
+            read_state("own #62ba46 0"),
+            (false, false, Some("#62ba46".into()))
+        );
+        let now = applied_state(true, true, [1, 2, 3], [4, 5, 6]);
+        assert_eq!(read_state(&now), (true, true, Some("#010203".into())));
+        assert_eq!(read_state(""), (false, false, None));
+    }
+
+    #[test]
     fn templates_get_filled_in_and_what_isnt_known_stays() {
-        let palette = Palette::from_seed([0, 122, 255]);
+        let palette = Palette::from_seed([0, 122, 255], true);
         let primary = hex(palette.role("primary").unwrap());
         assert_eq!(palette.render("a {{primary}} b"), format!("a {primary} b"));
         assert!(!palette.render("{{primary.rgb}}").contains('#'));
@@ -997,7 +1357,7 @@ mod tests {
 
     #[test]
     fn every_role_in_the_templates_is_known() {
-        let palette = Palette::from_seed([0, 122, 255]);
+        let palette = Palette::from_seed([0, 122, 255], true);
         for template in [
             KDE_TEMPLATE,
             GTK3_TEMPLATE,

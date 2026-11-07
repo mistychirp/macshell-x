@@ -26,6 +26,8 @@ pub struct AppearanceConfig {
     pub accent: String,
     /// Give other apps a palette made from the accent.
     pub match_apps: bool,
+    /// `light`, `dark`, or `auto`, which goes by the sun: what apps look like.
+    pub mode: String,
 }
 
 impl Default for AppearanceConfig {
@@ -33,6 +35,7 @@ impl Default for AppearanceConfig {
         Self {
             accent: crate::appearance::DEFAULT_ACCENT.to_owned(),
             match_apps: false,
+            mode: String::from("dark"),
         }
     }
 }
@@ -159,6 +162,11 @@ pub fn save_notifications_off(off: &[String]) -> io::Result<()> {
 /// Rewrites `[appearance] accent`, the same way.
 pub fn save_accent(accent: &str) -> io::Result<()> {
     save("appearance", "accent", toml_edit::value(accent))
+}
+
+/// Rewrites `[appearance] mode`, the same way.
+pub fn save_appearance_mode(mode: &str) -> io::Result<()> {
+    save("appearance", "mode", toml_edit::value(mode))
 }
 
 /// Rewrites `[appearance] match_apps`, the same way.

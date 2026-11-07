@@ -186,6 +186,7 @@ pub enum Message {
     Redraw,
     /// The notifications of the app with this key can come again.
     NotificationsTurnedOn(String),
+    AppearanceModeChosen(&'static str),
     AccentChosen(String),
     AccentTyped(String),
     MatchAppsToggled(bool),
@@ -486,6 +487,8 @@ struct SettingsApp {
     menubar_switches: Vec<(&'static str, bool)>,
     wallpaper: Option<String>,
     wallpaper_picture: Option<image::Handle>,
+    /// `light`, `dark` or `auto`, as the config file has it.
+    mode: String,
     /// As the config file has it.
     accent: String,
     /// What's being typed as the accent, which may not be a color yet.
@@ -662,6 +665,7 @@ impl SettingsApp {
             wallpaper: config.desktop.wallpaper,
             wallpaper_picture: None,
             accent_text: accent_text(&config.appearance.accent),
+            mode: config.appearance.mode.clone(),
             accent: config.appearance.accent,
             wallpaper_colors: Vec::new(),
             match_apps: config.appearance.match_apps,
@@ -687,7 +691,8 @@ impl SettingsApp {
         let (accent, seed) =
             appearance::resolve(Choice::parse(&self.accent), &self.wallpaper_colors);
         appearance::set_accent(accent);
-        let palette = Palette::from_seed(seed);
+        // Auto is shown dark, which is what most of the day isn't, but light can be seen by choosing it.
+        let palette = Palette::from_seed(seed, self.mode != "light");
         self.palette_preview = PREVIEW_ROLES
             .iter()
             .filter_map(|role| palette.role(role))
@@ -863,6 +868,14 @@ impl SettingsApp {
                 }
                 return Task::future(tell_shell()).discard();
             }
+            Message::AppearanceModeChosen(mode) => {
+                self.mode = mode.to_owned();
+                self.show_accent();
+                if let Err(err) = config::save_appearance_mode(mode) {
+                    log::warn!("can't save the appearance: {err}");
+                }
+                return Task::future(tell_shell()).discard();
+            }
             Message::AccentChosen(accent) => {
                 self.accent_text = accent_text(&accent);
                 return self.choose_accent(accent);
@@ -945,6 +958,7 @@ impl SettingsApp {
                     self.menubar_switches = menubar_switches(&config);
                     self.wallpaper.clone_from(&config.desktop.wallpaper);
                     self.accent_text = accent_text(&config.appearance.accent);
+                    self.mode.clone_from(&config.appearance.mode);
                     self.accent = config.appearance.accent;
                     self.match_apps = config.appearance.match_apps;
                     self.show_accent();
@@ -1194,7 +1208,51 @@ impl SettingsApp {
             ));
         }
 
+        let mode_choice = |label: &'static str, mode: &'static str| {
+            let selected = self.mode == mode;
+            button(text(label).size(TEXT_SIZE))
+                .padding([4, 12])
+                .on_press(Message::AppearanceModeChosen(mode))
+                .style(move |_, status| {
+                    let hovered =
+                        matches!(status, button::Status::Hovered | button::Status::Pressed);
+                    button::Style {
+                        background: Some(Background::Color(if selected {
+                            appearance::accent()
+                        } else {
+                            Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.22 } else { 0.1 })
+                        })),
+                        text_color: Color::WHITE,
+                        border: Border {
+                            radius: 13.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                })
+        };
         column![
+            section(
+                "Appearance",
+                column![
+                    card(vec![setting_row(
+                        "Apps",
+                        row![
+                            mode_choice("Light", "light"),
+                            mode_choice("Dark", "dark"),
+                            mode_choice("Auto", "auto"),
+                        ]
+                        .spacing(2)
+                        .into(),
+                    )]),
+                    caption(
+                        "What other apps look like, and their icons. Auto is light from sunrise to \
+                         sunset where the weather widget is, and from seven to seven without one. \
+                         Apps that keep their own colors get their light twin, from their accent.",
+                    ),
+                ]
+                .spacing(6),
+            ),
             section(
                 "Accent Color",
                 card(vec![

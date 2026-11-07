@@ -1562,6 +1562,32 @@ fn read_weather(city: &str) -> Option<Weather> {
         .flatten()
 }
 
+/// The weather widget's city, as it's saved, if it has one.
+pub fn saved_city() -> Option<String> {
+    let saved: Saved = toml::from_str(&fs::read_to_string(saved_path()).ok()?).ok()?;
+    saved.city.filter(|city| !city.is_empty())
+}
+
+/// Where a city is, as its latitude and longitude, from the same place the weather comes from.
+pub fn locate(city: &str) -> Option<(f64, f64)> {
+    let result = (|| -> Result<Option<(f64, f64)>, ureq::Error> {
+        let places: GeocodingAnswer = ureq::get("https://geocoding-api.open-meteo.com/v1/search")
+            .query("name", city)
+            .query("count", "1")
+            .call()?
+            .body_mut()
+            .read_json()?;
+        Ok(places
+            .results
+            .and_then(|mut results| results.pop())
+            .map(|place| (place.latitude, place.longitude)))
+    })();
+    result
+        .inspect_err(|err| log::warn!("can't find where {city} is: {err}"))
+        .ok()
+        .flatten()
+}
+
 fn saved_path() -> PathBuf {
     env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
