@@ -12,6 +12,7 @@
 #include "opengl/glutils.h"
 
 #include <QElapsedTimer>
+#include <QStringList>
 
 #include <memory>
 #include <optional>
@@ -93,6 +94,9 @@ struct GlassSettings {
     /// dimmed to stay legible.
     float bubbleTint = 0.5;
     float bubbleEdgeGain = 0.85;
+
+    /// How opaque apps' windows are drawn, so that what's behind shows, blurred.
+    float windowOpacity = 1.0;
 };
 
 /// What one glass shape keeps between frames, per render view.
@@ -121,6 +125,10 @@ struct WindowGlass {
     QList<Shape> shapes;
     /// The window's closing. Its glass is fading out with it, and needs repainting all the way.
     bool closing = false;
+    /// It's an app's window, whose glass the effect put there, not the app.
+    bool automatic = false;
+    /// It's drawn less than opaque, so that what's behind shows.
+    bool dim = false;
 };
 
 /// Glass behind the shapes clients ask for with macshell-glass-v1, the way Tahoe draws it: a flat
@@ -160,10 +168,19 @@ public Q_SLOTS:
     Q_SCRIPTABLE void setSetting(const QString &key, double value);
     /// Puts all of them back to their defaults.
     Q_SCRIPTABLE void resetSettings();
+    /// The apps with windows open that can be see-through, by window class.
+    Q_SCRIPTABLE QStringList appWindows() const;
+    /// The apps that are kept opaque, whatever windows' opacity is.
+    Q_SCRIPTABLE QStringList opaqueApps() const;
+    Q_SCRIPTABLE void setAppOpaque(const QString &app, bool opaque);
 
 private:
     void updateWindow(KWin::EffectWindow *w);
     void updateSwitcherGlass(KWin::EffectWindow *w);
+    void updateAppGlass(KWin::EffectWindow *w);
+    /// Follows what changes whether an app's window gets glass, and how much.
+    void watchAppWindow(KWin::EffectWindow *w);
+    bool takesAppGlass(KWin::EffectWindow *w) const;
     void windowMoved(KWin::EffectWindow *w, const KWin::RectF &oldGeometry);
     void placeDialog(KWin::EffectWindow *w);
     void paintGlass(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data);
@@ -178,6 +195,7 @@ private:
     std::unique_ptr<GlassManager> m_manager;
     std::unique_ptr<Arranger> m_arranger;
     GlassSettings m_settings;
+    QStringList m_opaqueApps;
 
     std::unique_ptr<KWin::GLShader> m_glassShader;
     std::unique_ptr<KWin::GLShader> m_downsampleShader;

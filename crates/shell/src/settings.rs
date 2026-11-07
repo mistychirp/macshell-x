@@ -121,6 +121,9 @@ const PREVIEW_ROLES: [&str; 7] = [
     "on_surface",
 ];
 const GREEN_FULL_SCREEN: &str = "GreenFullScreen";
+/// How opaque apps' windows are, with what's behind blurred.
+const WINDOW_OPACITY: &str = "WindowOpacity";
+const WINDOW_OPACITY_RANGE: (f32, f32) = (0.5, 1.0);
 /// Where an import keeps the settings it replaces.
 const BACKUP_NAME: &str = "before-import.toml";
 
@@ -165,6 +168,8 @@ pub enum Message {
     ShowPage(Page),
     /// Something outside asked for this page.
     PageAsked(String),
+    TranslucentAppsRead(Vec<(String, bool)>),
+    AppTranslucentToggled(String, bool),
     /// The notifications of the app with this key can come again.
     NotificationsTurnedOn(String),
     AccentChosen(String),
@@ -212,6 +217,54 @@ trait Glass {
     fn set_setting(&self, key: &str, value: f64) -> zbus::Result<()>;
     #[zbus(name = "resetSettings")]
     fn reset_settings(&self) -> zbus::Result<()>;
+    #[zbus(name = "appWindows")]
+    fn app_windows(&self) -> zbus::Result<Vec<String>>;
+    #[zbus(name = "opaqueApps")]
+    fn opaque_apps(&self) -> zbus::Result<Vec<String>>;
+    #[zbus(name = "setAppOpaque")]
+    fn set_app_opaque(&self, app: &str, opaque: bool) -> zbus::Result<()>;
+}
+
+/// The apps that can be see-through, by window class, and whether they are: those with windows open,
+/// and those kept opaque.
+async fn read_translucent_apps() -> Vec<(String, bool)> {
+    let result = async {
+        let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
+        let proxy = GlassProxy::new(&connection).await?;
+        let open = proxy.app_windows().await?;
+        let opaque = proxy.opaque_apps().await?;
+        let mut apps: Vec<(String, bool)> = open
+            .into_iter()
+            .map(|app| {
+                let translucent = !opaque.contains(&app);
+                (app, translucent)
+            })
+            .collect();
+        for app in opaque {
+            if !apps.iter().any(|(known, _)| *known == app) {
+                apps.push((app, false));
+            }
+        }
+        Ok::<_, zbus::Error>(apps)
+    }
+    .await;
+    result
+        .inspect_err(|err| log::warn!("can't read which apps are see-through: {err}"))
+        .unwrap_or_default()
+}
+
+async fn set_app_opaque(app: String, opaque: bool) {
+    let result = async {
+        let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
+        GlassProxy::new(&connection)
+            .await?
+            .set_app_opaque(&app, opaque)
+            .await
+    }
+    .await;
+    if let Err(err) = result {
+        log::warn!("can't change whether an app is see-through: {err}");
+    }
 }
 
 #[zbus::proxy(
@@ -231,7 +284,7 @@ async fn read_glass() -> Option<HashMap<&'static str, f32>> {
     for key in GLASS_SLIDERS
         .iter()
         .map(|slider| slider.key)
-        .chain([GREEN_FULL_SCREEN])
+        .chain([GREEN_FULL_SCREEN, WINDOW_OPACITY])
     {
         match proxy.setting(key).await {
             Ok(value) => {
@@ -444,6 +497,8 @@ struct SettingsApp {
     palette_preview: Vec<[u8; 3]>,
     /// The apps whose notifications are off, as their keys and names.
     notifications_off: Vec<(String, String)>,
+    /// The apps that can be see-through: their window class, name, and whether they are.
+    translucent_apps: Vec<(String, String, bool)>,
     about: About,
     /// How the last export or import went.
     transfer_status: Option<String>,
@@ -606,6 +661,7 @@ impl SettingsApp {
             match_apps: config.appearance.match_apps,
             palette_preview: Vec::new(),
             notifications_off: notifications_off(),
+            translucent_apps: Vec::new(),
             about: About::read(),
             transfer_status: None,
         };
@@ -669,11 +725,37 @@ impl SettingsApp {
                 if page == Page::Notifications {
                     self.notifications_off = notifications_off();
                 }
+                // Which apps have windows changes all the time.
+                if page == Page::Windows {
+                    return Task::perform(read_translucent_apps(), Message::TranslucentAppsRead);
+                }
             }
             Message::PageAsked(name) => {
                 if let Some(page) = Page::named(&name) {
                     return self.update(Message::ShowPage(page));
                 }
+            }
+            Message::TranslucentAppsRead(apps) => {
+                let mut index = apps::AppIndex::load();
+                self.translucent_apps = apps
+                    .into_iter()
+                    .map(|(app, translucent)| {
+                        let name = index.resolve(&app).name.clone();
+                        (app, name, translucent)
+                    })
+                    .collect();
+                self.translucent_apps
+                    .sort_by_key(|(_, name, _)| name.to_lowercase());
+            }
+            Message::AppTranslucentToggled(app, on) => {
+                if let Some(entry) = self
+                    .translucent_apps
+                    .iter_mut()
+                    .find(|(known, _, _)| *known == app)
+                {
+                    entry.2 = on;
+                }
+                return Task::future(set_app_opaque(app, !on)).discard();
             }
             Message::NotificationsTurnedOn(key) => {
                 let mut off = Config::load().notifications.off;
@@ -1246,7 +1328,41 @@ impl SettingsApp {
         let full_screen = glass
             .get(GREEN_FULL_SCREEN)
             .is_some_and(|value| *value != 0.0);
+        let opacity = glass.get(WINDOW_OPACITY).copied().unwrap_or(1.0);
+        let mut translucency = vec![setting_row(
+            "Opacity",
+            settings_slider(
+                WINDOW_OPACITY_RANGE,
+                opacity,
+                0.01,
+                |value| Message::GlassChanged(WINDOW_OPACITY, value),
+                Message::GlassReleased(WINDOW_OPACITY),
+            ),
+        )];
+        if opacity < 1.0 {
+            translucency.extend(self.translucent_apps.iter().map(|(app, name, on)| {
+                let app = app.clone();
+                setting_row(
+                    name,
+                    settings_toggle(*on, move |on| {
+                        Message::AppTranslucentToggled(app.clone(), on)
+                    }),
+                )
+            }));
+        }
         column![section(
+            "Translucency",
+            column![
+                card(translucency),
+                caption(
+                    "Windows let what's behind them show through, blurred. The apps listed are the \
+                     ones with windows open, and any kept opaque. One that's see-through by itself, \
+                     like a terminal set up that way, keeps its own opacity, and gets the blur too.",
+                ),
+            ]
+            .spacing(6),
+        ),
+        section(
             "Green Button",
             column![
                 card(vec![setting_row(
@@ -1266,6 +1382,7 @@ impl SettingsApp {
             ]
             .spacing(6),
         ),]
+        .spacing(18)
         .into()
     }
 

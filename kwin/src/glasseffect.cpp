@@ -54,6 +54,11 @@ static constexpr QLatin1StringView s_dialogAppId("macshell-alert");
 static constexpr QLatin1StringView s_switcherTitle("macshell-switcher");
 static constexpr int s_switcherRadius = 30;
 
+/// The decoration's corner radius, which app windows' glass follows.
+static constexpr int s_windowRadius = 16;
+/// The least opaque windows can be made, past which they'd be hard to read.
+static constexpr float s_leastWindowOpacity = 0.5f;
+
 /// How long a new surface stays out of sight if its glass doesn't come.
 static constexpr int s_awaitGlassMs = 200;
 
@@ -120,7 +125,10 @@ GlassEffect::GlassEffect()
         }
         updateWindow(w);
         updateSwitcherGlass(w);
+        watchAppWindow(w);
+        updateAppGlass(w);
     });
+
     connect(effects, &EffectsHandler::windowClosed, this, [this](EffectWindow *w) {
         if (auto it = m_windows.find(w); it != m_windows.end()) {
             it->second.closing = true;
@@ -209,6 +217,8 @@ GlassEffect::GlassEffect()
     reconfigure(ReconfigureAll);
     for (EffectWindow *w : effects->stackingOrder()) {
         updateWindow(w);
+        watchAppWindow(w);
+        updateAppGlass(w);
     }
     m_valid = true;
 }
@@ -272,6 +282,13 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.chipRim = group.readEntry("ChipRim", defaults.chipRim);
     m_settings.bubbleTint = group.readEntry("BubbleTint", defaults.bubbleTint);
     m_settings.bubbleEdgeGain = group.readEntry("BubbleEdgeGain", defaults.bubbleEdgeGain);
+    m_settings.windowOpacity = std::clamp(group.readEntry("WindowOpacity", defaults.windowOpacity), s_leastWindowOpacity, 1.0f);
+    m_opaqueApps = group.readEntry("OpaqueApps", QStringList());
+    if (m_valid) {
+        for (EffectWindow *w : effects->stackingOrder()) {
+            updateAppGlass(w);
+        }
+    }
     effects->addRepaintFull();
 }
 
@@ -286,6 +303,8 @@ static const std::map<QString, float GlassSettings::*> s_tunable = {
     {QStringLiteral("Grain"), &GlassSettings::grain},
 };
 static const QString s_greenFullScreen = QStringLiteral("GreenFullScreen");
+/// Not among the glass's own, which resetting them leaves alone.
+static const QString s_windowOpacity = QStringLiteral("WindowOpacity");
 
 static KConfigGroup settingsGroup()
 {
@@ -297,13 +316,16 @@ double GlassEffect::setting(const QString &key) const
     if (key == s_greenFullScreen) {
         return settingsGroup().readEntry(key, 0.0);
     }
+    if (key == s_windowOpacity) {
+        return m_settings.windowOpacity;
+    }
     const auto found = s_tunable.find(key);
     return found == s_tunable.end() ? 0.0 : m_settings.*(found->second);
 }
 
 void GlassEffect::setSetting(const QString &key, double value)
 {
-    if (key != s_greenFullScreen && !s_tunable.contains(key)) {
+    if (key != s_greenFullScreen && key != s_windowOpacity && !s_tunable.contains(key)) {
         return;
     }
     settingsGroup().writeEntry(key, value);
@@ -319,6 +341,115 @@ void GlassEffect::resetSettings()
     }
     m_saveSoon->start();
     reconfigure(ReconfigureAll);
+}
+
+QStringList GlassEffect::appWindows() const
+{
+    QStringList apps;
+    for (EffectWindow *w : effects->stackingOrder()) {
+        const QString app = w->window()->resourceClass();
+        if (takesAppGlass(w) && !app.isEmpty() && !apps.contains(app)) {
+            apps.append(app);
+        }
+    }
+    apps.sort(Qt::CaseInsensitive);
+    return apps;
+}
+
+QStringList GlassEffect::opaqueApps() const
+{
+    return m_opaqueApps;
+}
+
+void GlassEffect::setAppOpaque(const QString &app, bool opaque)
+{
+    QStringList apps = m_opaqueApps;
+    apps.removeAll(app);
+    if (opaque) {
+        apps.append(app);
+    }
+    settingsGroup().writeEntry(QStringLiteral("OpaqueApps"), apps);
+    m_saveSoon->start();
+    reconfigure(ReconfigureAll);
+}
+
+bool GlassEffect::takesAppGlass(EffectWindow *w) const
+{
+    // Only windows with the decoration, whose edges are the window's. One that draws its own has its
+    // shadow inside its surface, which glass would show as a box around it.
+    return !w->isDeleted() && (w->isNormalWindow() || w->isDialog()) && w->hasDecoration() && !w->isFullScreen()
+        && !w->internalWindow() && !(w->surface() && m_manager->usesGlass(w->surface()));
+}
+
+/// Whether a window's own content lets what's behind it show, like a terminal set to be see-through.
+static bool seeThrough(EffectWindow *w)
+{
+    SurfaceInterface *surface = w->surface();
+    if (!surface) {
+        return false;
+    }
+    const RectF whole(QPointF(), surface->size());
+    return !RegionF(whole).subtracted(surface->opaque()).isEmpty();
+}
+
+void GlassEffect::watchAppWindow(EffectWindow *w)
+{
+    if (w->isNormalWindow() || w->isDialog()) {
+        connect(w, &EffectWindow::windowFrameGeometryChanged, this, [this](EffectWindow *w) {
+            updateAppGlass(w);
+        });
+        connect(w, &EffectWindow::windowMaximizedStateChanged, this, [this](EffectWindow *w) {
+            updateAppGlass(w);
+        });
+        connect(w, &EffectWindow::windowFullScreenChanged, this, &GlassEffect::updateAppGlass);
+        if (SurfaceInterface *surface = w->surface()) {
+            connect(surface, &SurfaceInterface::opaqueChanged, this, [this, window = QPointer<EffectWindow>(w)]() {
+                if (window) {
+                    updateAppGlass(window);
+                }
+            });
+        }
+    }
+}
+
+void GlassEffect::updateAppGlass(EffectWindow *w)
+{
+    auto it = m_windows.find(w);
+    const bool ours = it != m_windows.end() && it->second.automatic;
+    if (it != m_windows.end() && !ours) {
+        // The app's own.
+        return;
+    }
+    const bool fits = takesAppGlass(w);
+    // One that's see-through by itself keeps its own opacity, and gets the blur behind.
+    const bool clear = fits && seeThrough(w);
+    const bool dim = fits && !clear && m_settings.windowOpacity < 1.0f && !m_opaqueApps.contains(w->window()->resourceClass());
+    if (!clear && !dim) {
+        if (ours) {
+            effects->makeOpenGLContextCurrent();
+            m_windows.erase(it);
+            w->addRepaintFull();
+        }
+        return;
+    }
+
+    WindowGlass &data = m_windows[w];
+    data.automatic = true;
+    data.dim = dim;
+    // Shapes are surface-local, and this one covers the whole frame, title bar included.
+    const QPointF offset = w->bufferGeometry().topLeft() - w->frameGeometry().topLeft();
+    const QSizeF size = w->frameGeometry().size();
+    const int radius = w->window()->maximizeMode() == MaximizeFull ? 0 : s_windowRadius;
+    data.shapes = {Shape{.rect = QRect((-offset).toPoint(), size.toSize()), .radius = radius, .style = Style::AppWindow}};
+    if (!data.item) {
+        data.item = std::make_unique<BackgroundEffectItem>(w->windowItem());
+        connect(w, &EffectWindow::windowFrameGeometryChanged, this, &GlassEffect::windowMoved, Qt::UniqueConnection);
+    }
+    const int blurReach = m_settings.frostOffset * (1 << m_settings.frostPasses) * 2;
+    data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(blurReach);
+    data.item->setEffectBoundingRect(RectF(QPointF(), size));
+    data.lastBounds = RectF(w->frameGeometry()).roundedOut();
+    w->addRepaintFull();
 }
 
 void GlassEffect::placeDialog(EffectWindow *w)
@@ -374,6 +505,14 @@ void GlassEffect::windowMoved(EffectWindow *w, const RectF &oldGeometry)
 void GlassEffect::updateWindow(EffectWindow *w)
 {
     GlassSurface *glass = w->surface() ? m_manager->glassFor(w->surface()) : nullptr;
+    if (auto it = m_windows.find(w); it != m_windows.end() && it->second.automatic) {
+        if (!glass) {
+            return;
+        }
+        // The app asked for glass of its own after all, which takes over.
+        effects->makeOpenGLContextCurrent();
+        m_windows.erase(it);
+    }
     if (glass && !glass->shapes().isEmpty()) {
         m_awaitingGlass.erase(w);
     }
@@ -556,6 +695,9 @@ void GlassEffect::prePaintWindow(RenderView *view, EffectWindow *w, WindowPrePai
         data.setTranslucent();
         data.setTransformed();
     }
+    if (auto it = m_windows.find(w); it != m_windows.end() && it->second.dim) {
+        data.setTranslucent();
+    }
     effects->prePaintWindow(view, w, data);
 }
 
@@ -613,6 +755,10 @@ void GlassEffect::postPaintScreen()
 void GlassEffect::drawWindow(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, int mask, const Region &deviceRegion, WindowPaintData &data)
 {
     paintGlass(renderTarget, viewport, w, deviceRegion, data);
+    // The glass is behind the window as it is; the window itself lets some of it through.
+    if (auto it = m_windows.find(w); it != m_windows.end() && it->second.dim) {
+        data.multiplyOpacity(m_settings.windowOpacity);
+    }
     effects->drawWindow(renderTarget, viewport, w, mask, deviceRegion, data);
 }
 
@@ -786,7 +932,9 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
             continue;
         }
 
-        const bool frosted = shape.style == Style::Frosted || isDialog(shape.style);
+        // An app's window has its own background to tint what's behind, so this is only the blur.
+        const bool appWindow = shape.style == Style::AppWindow;
+        const bool frosted = shape.style == Style::Frosted || isDialog(shape.style) || appWindow;
         const bool control = shape.style == Style::Control;
         ShapeRender &render = renders[i];
         // Controls sit on a backdrop, which has done the blurring for them.
@@ -921,7 +1069,8 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         const bool chip = shape.style == Style::Chip;
         const bool backdrop = shape.style == Style::Backdrop;
         const float saturation = control ? m_settings.controlSaturation : liquid ? m_settings.liquidSaturation : blurred ? m_settings.frostSaturation : 1.0f;
-        const float tintAlpha = shape.style == Style::WindowInactive ? m_settings.inactiveTint
+        const float tintAlpha = appWindow                          ? 0.0f
+            : shape.style == Style::WindowInactive                 ? m_settings.inactiveTint
             : frosted || shape.style == Style::Card                  ? m_settings.frostTint
             : bubble                                                 ? m_settings.bubbleTint
             : control                                                ? m_settings.controlTint
@@ -969,8 +1118,8 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         m_glassShader->setUniform("tail", QVector3D(shape.tail.x() * data.xScale(), shape.tail.y() * data.xScale(), shape.tail.z() * data.yScale()));
         m_glassShader->setUniform("edgeFade", frosted ? 0.0f : m_settings.liquidEdgeFade);
         m_glassShader->setUniform("edgeGain", bubble ? m_settings.bubbleEdgeGain : frosted ? 1.0f : m_settings.liquidEdgeGain);
-        m_glassShader->setUniform("edgeWhite", frosted ? m_settings.frostEdgeWhite : 0.0f);
-        m_glassShader->setUniform("outerAlpha", frosted ? m_settings.frostOuterEdge : 0.0f);
+        m_glassShader->setUniform("edgeWhite", frosted && !appWindow ? m_settings.frostEdgeWhite : 0.0f);
+        m_glassShader->setUniform("outerAlpha", frosted && !appWindow ? m_settings.frostOuterEdge : 0.0f);
         m_glassShader->setUniform("opacity", opacity * shape.opacity);
 
         glActiveTexture(GL_TEXTURE2);

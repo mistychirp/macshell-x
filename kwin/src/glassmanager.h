@@ -44,6 +44,9 @@ enum class Style {
     /// Frosted, for dialogs, which have a lighter tint when they aren't active.
     Window,
     WindowInactive,
+    /// Blur behind an app's own window, where it's see-through. It isn't one clients ask for: the
+    /// effect puts it there.
+    AppWindow,
 };
 
 /// How a surface wants to come and go.
