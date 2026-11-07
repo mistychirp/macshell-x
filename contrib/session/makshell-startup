@@ -1,0 +1,57 @@
+#!/bin/sh
+# Runs inside KWin for as long as the makshell session lasts: KWin exits when this does. The NixOS
+# module (nix/module.nix) does the same with Nix's paths; keep the two alike.
+
+# Hand KWin's environment (WAYLAND_DISPLAY and friends) to systemd and D-Bus activation, so portals
+# and services started on demand can reach the session.
+dbus-update-activation-environment --systemd --all
+systemctl --user start makshell-session.target
+
+kwin_set() { kwriteconfig6 --file kwinrc "$@"; }
+# The window decoration. Plasma's sessions share kwinrc, and without the plugin fall back to theirs.
+kwin_set --group org.kde.kdecoration2 --key library org.kde.makshell
+# The genie instead of KWin's minimize animations, a quick fade for windows instead of zooming, menus
+# there at once, and Alt+Tab with an icon for each app. These are put back when the session ends.
+kwin_set --group Plugins --key squashEnabled --type bool false
+kwin_set --group Plugins --key magiclampEnabled --type bool false
+kwin_set --group Plugins --key scaleEnabled --type bool false
+kwin_set --group Plugins --key fadeEnabled --type bool true
+kwin_set --group Plugins --key fadingpopupsEnabled --type bool false
+kwin_set --group Effect-fade --key FadeInTime 1
+kwin_set --group Effect-fade --key FadeOutTime 30
+kwin_set --group TabBox --key LayoutName makshell
+kwin_set --group TabBox --key ApplicationsMode 1
+# Switching desktops slides the windows, and the wallpaper stays, as on macOS.
+kwin_set --group Effect-slide --key SlideBackground --type bool false
+dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure
+# Unlocks KWallet with the login password, if kwallet-pam kept it.
+systemctl --user start --no-block plasma-kwallet-pam.service 2>/dev/null
+
+# Asks for passwords when an app needs more rights. It lives in a different place on each distro.
+for agent in /usr/lib/polkit-kde-authentication-agent-1 \
+             /usr/libexec/polkit-kde-authentication-agent-1 \
+             /usr/lib/*/libexec/polkit-kde-authentication-agent-1; do
+    if [ -x "$agent" ]; then
+        "$agent" &
+        break
+    fi
+done
+
+# The shell, restarted if it crashes, for as long as this KWin lives. If KWin itself crashes, its
+# wrapper starts a new one, which runs a new copy of this script; this one has to bow out then.
+kwin_pid=$PPID
+while kill -0 "$kwin_pid" 2>/dev/null; do
+    if @prefix@/bin/makshell; then
+        for key in squashEnabled magiclampEnabled scaleEnabled fadeEnabled fadingpopupsEnabled; do
+            kwin_set --group Plugins --key "$key" --delete
+        done
+        kwin_set --group TabBox --key LayoutName --delete
+        kwin_set --group TabBox --key ApplicationsMode --delete
+        kwin_set --group Effect-fade --key FadeInTime --delete
+        kwin_set --group Effect-fade --key FadeOutTime --delete
+        kwin_set --group Effect-slide --key SlideBackground --delete
+        systemctl --user stop makshell-session.target
+        exit 0
+    fi
+    sleep 1
+done

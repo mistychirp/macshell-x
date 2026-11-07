@@ -1,141 +1,190 @@
 # makshell
 
 A macOS Tahoe-style desktop for [KWin](https://invent.kde.org/plasma/kwin), KDE's compositor,
-running without the rest of Plasma.
+running as its own login session without the rest of Plasma.
 
-The plan has two halves:
+- **Dock**, with magnification, recent apps, minimized windows and a Downloads stack that fans out.
+- **Menu bar**, with the focused app's menus, tray icons, and Wi-Fi, Bluetooth and Sound items.
+- **Control Center**, **Notification Center** with grouped notifications, and **Spotlight**.
+- **Desktop** icons and widgets: calendar, clock, weather and photos.
+- **Liquid glass** behind all of it, rendered by a KWin plugin, and blur behind see-through windows.
+- **Window decorations** with traffic lights, a macOS-style **Alt+Tab** and **lock screen**.
+- **Settings**, with the accent color, Light, Dark and Auto for apps, and colors for other apps
+  generated from the accent or the wallpaper (KDE, GTK, Alacritty and Telegram).
 
-- **Shell** (`crates/shell`): dock, menu bar, control center and widgets. It's built with iced on
-  layer-shell and talks to KWin over Wayland protocols and D-Bus. It runs on stock KWin 6.
-- **KWin plugins** (`kwin`): for things the shell can't do from outside, such as the liquid glass
-  shader, titlebars with traffic lights and minimize animations. So far: liquid glass.
+### Works with KDE's System Settings
+
+Underneath, it's KWin with KDE Frameworks, so KDE's System Settings works as it does in Plasma:
+displays, keyboard layouts, shortcuts, input devices, window behavior and the rest. makshell's own
+Settings app opens KDE's pages for Wi-Fi, Bluetooth, Sound, Displays and Keyboard. The session shares
+KWin's configuration with Plasma, so you can switch between them.
+
+## Requirements
+
+- **KWin 6.7** on Wayland. makshell's KWin plugins use KWin's internal API, which changes between
+  releases: they're built and tested against KWin 6.7.5. Check yours with `kwin_wayland --version`.
+- KDE Frameworks 6 and Qt 6.
+- A GPU with Vulkan or OpenGL.
+- For the menu bar and Control Center: NetworkManager, BlueZ and WirePlumber.
+- Optional: the [macOS cursor theme](https://github.com/ful1e5/apple_cursor), which the session uses
+  if it's installed.
+
+## Installation
+
+### NixOS
+
+The flake has a module that adds a "makshell" login session, built from your system's own packages,
+so the plugins always match the KWin they load into.
+
+```nix
+# flake.nix
+inputs.makshell.url = "github:mistychirp/makshell";
+
+# your configuration
+imports = [ inputs.makshell.nixosModules.default ];
+programs.makshell.enable = true;
+```
+
+Rebuild, log out, and choose **makshell** at the login screen.
+
+### Arch Linux
+
+```sh
+sudo pacman -S --needed base-devel git rust cmake extra-cmake-modules pkgconf \
+    kwin kdecoration qt6-base qt6-declarative qt6-wayland \
+    kconfig kcoreaddons kglobalaccel kwindowsystem \
+    wayland libepoxy libdrm vulkan-headers libxkbcommon \
+    kscreenlocker xdg-desktop-portal-kde polkit-kde-agent kwallet-pam \
+    networkmanager bluez wireplumber
+```
+
+Then [build and install](#build-and-install). Rebuild makshell after KWin updates (see
+[Updating](#updating)).
+
+### Debian and Ubuntu
+
+You need a release with KWin 6.7, so check `kwin_wayland --version` first: Debian 13, for one, has
+an older KWin and won't work. Rust from the distro is often too old, so install it with
+[rustup](https://rustup.rs) (makshell needs Rust 1.88 or newer).
+
+```sh
+sudo apt install build-essential git cmake extra-cmake-modules pkg-config \
+    kwin-dev libkdecorations3-dev qt6-base-dev qt6-base-private-dev \
+    qt6-declarative-dev qt6-wayland-dev qt6-wayland-dev-tools \
+    libkf6config-dev libkf6coreaddons-dev libkf6globalaccel-dev libkf6windowsystem-dev \
+    libwayland-dev libepoxy-dev libdrm-dev libvulkan-dev libxkbcommon-dev \
+    kwin-wayland kscreenlocker xdg-desktop-portal-kde polkit-kde-agent-1 \
+    network-manager bluez wireplumber
+```
+
+Package names shift between releases; if one isn't found, `apt search` for it. Then
+[build and install](#build-and-install).
+
+### Build and install
+
+```sh
+git clone https://github.com/mistychirp/makshell
+cd makshell
+./install.sh build           # as yourself
+sudo ./install.sh install    # into /usr/local
+```
+
+Log out, and choose **makshell** at the login screen. SDDM and GDM find it in `/usr/local`. If yours
+doesn't list it, install into `/usr` instead, with `PREFIX=/usr` for both commands.
+
+To remove it: `sudo ./install.sh uninstall`. Your settings in `~/.config/makshell` stay.
+
+### Updating
+
+```sh
+git pull
+./install.sh build
+sudo ./install.sh install
+```
+
+Do this after every KWin update too: the plugins must be built against the KWin they load into.
+If they don't match, KWin won't load them, and the desktop runs without liquid glass.
+
+## Configuration
+
+Settings (System Settings… in the logo menu, or `makshell-settings`) covers most of it. Everything is kept in
+`~/.config/makshell/config.toml`, which can also be edited by hand:
+
+```toml
+# Desktop entry ID of the app that opens folders and the trash. Defaults to the system's.
+file_manager = "org.kde.dolphin"
+
+[appearance]
+accent = "blue"          # a macOS color, "#rrggbb", or "wallpaper"
+mode = "dark"            # "light", "dark" or "auto", for apps
+match_apps = false       # give other apps colors from the accent
+
+[desktop]
+wallpaper = "~/Pictures/wallpaper.png"
+
+[dock]
+pinned = ["org.kde.dolphin", "firefox", "Alacritty"]   # desktop entry IDs, in order
+icon_size = 48
+magnification = true
+magnified_size = 80
+show_recents = true
+
+[menubar]
+logo = "archlinux-logo"  # icon name or path; defaults to the distro's logo
+show_wifi = true
+show_bluetooth = true
+show_sound = true
+
+[notifications]
+off = ["org.example.noisy"]   # apps whose notifications are turned off
+```
+
+To give apps the generated colors that makshell doesn't know about, put templates in
+`~/.config/makshell/templates`. A template's first line names where the result goes, as in
+`# output: ~/.config/foot/colors.ini`, and `{{primary}}` or `{{primary.rgb}}` stand for colors.
 
 ## Development
 
 ```sh
 nix develop
-cargo run
+cargo run                    # the shell
+cargo run -- settings        # the Settings app
+cargo test
 ```
 
-## Running on KWin
+Without Nix: the [build dependencies](#arch-linux) above, then `cargo run`, and
+`cmake -S kwin -B build/kwin && cmake --build build/kwin` for the plugins.
 
-On NixOS, the flake's module adds a "makshell" login session: KWin with the shell and its glass
-plugin, both built from the system's own packages, so the plugin always matches the KWin it loads
-into. The session shares KWin's configuration (`kwinrc`, `kxkbrc`, shortcuts) with Plasma.
+The layout:
 
-```nix
-# In your flake: inputs.makshell.url = "github:mistychirp/makshell";
-imports = [ inputs.makshell.nixosModules.default ];
-programs.makshell.enable = true;
-```
+- `crates/shell`: the shell and the Settings app, in Rust with [iced](https://iced.rs) on
+  layer-shell. It talks to KWin over Wayland protocols and D-Bus.
+- `kwin`: KWin plugins for what the shell can't do from outside: the glass effect, the genie, the
+  window decoration, the window switcher and the lock screen.
+- `protocols/makshell-glass-v1.xml`: how the shell asks for glass. On a compositor without it, the
+  shell falls back to blur (`ext-background-effect-v1`), or to a plain fill.
 
-Elsewhere, install the desktop entry yourself. KWin only lets the shell follow and manage windows
-if a desktop entry grants it, with
-`X-KDE-Wayland-Interfaces=org_kde_plasma_window_management` and an `Exec` that is the absolute
-path of the shell binary. Install [contrib/makshell.desktop](contrib/makshell.desktop) with
-`@makshell@` replaced by that path, somewhere in `$XDG_DATA_DIRS/applications`.
+To try changes without leaving your session, run KWin nested. It needs
+`wp_single_pixel_buffer_manager_v1` and pointer constraints from its host, which a nested sway has.
 
-Keyboard layouts come from KWin's `org.kde.keyboard` D-Bus interface.
+Notes:
 
-## Configuration
-
-`~/.config/makshell/config.toml`:
-
-```toml
-# Desktop entry id of the app that opens folders and the trash. Defaults to the system's
-# default app for folders (`xdg-mime query default inode/directory`).
-file_manager = "org.kde.dolphin"
-
-[desktop]
-# Wallpaper image (PNG or JPEG), filling the screen. Without one, the shell leaves the background
-# to whatever else draws it; KWin doesn't draw one itself.
-wallpaper = "~/Pictures/wallpaper.png"
-
-[dock]
-# Desktop entry ids (the .desktop file name without the extension), in dock order.
-# The dock rewrites this when you drag icons around or use Keep in Dock.
-pinned = ["org.kde.dolphin", "vivaldi-stable", "Alacritty"]
-# Grow icons toward the pointer, up to this size (icons are 48).
-magnification = true
-magnified_size = 80
-
-[menubar]
-# Icon name or path of the logo that opens the system menu, drawn as a white silhouette.
-# Defaults to the distro's logo (`LOGO` in /etc/os-release).
-logo = "nix-snowflake"
-```
-
-The shell chooses the material behind its surfaces itself, so it needs no compositor rules:
-
-- **Liquid glass** where the compositor offers our `makshell-glass-v1` protocol
-  ([protocols/makshell-glass-v1.xml](protocols/makshell-glass-v1.xml)).
-- **Blur** on stock KWin 6 and other compositors with `ext-background-effect-v1`.
-- **Nothing** elsewhere; the dock then keeps a faint fill and border.
-
-## KWin plugin
-
-`kwin/` is a KWin effect that renders liquid glass for the shell. It serves our
-`makshell-glass-v1` protocol: clear, liquid, frosted, bubble and control glass shapes behind surfaces, transparent
-shapes that only measure, and brightness tracking for the menu bar's text color.
-
-KWin plugins must be built against the exact KWin they load into. The flake exposes the plugin as
-`packages.kwin-makshell`; to build it against your system's KWin, use the nixpkgs your system
-uses:
-
-```sh
-nix build .#kwin-makshell --override-input nixpkgs github:NixOS/nixpkgs/<your system's rev>
-```
-
-KWin finds it through `QT_PLUGIN_PATH` (its `lib/qt-6/plugins`). It's enabled by default once
-found. The glass can be tuned in `kwinrc`; these are the defaults:
-
-```ini
-[Effect-makshell]
-# The blur under frosted and liquid glass: dual Kawase passes and their sample offset.
-BlurPasses=2
-BlurOffset=2
-# The lens of liquid glass and bubbles: how far it bends the background, in logical pixels, at one
-# logical pixel from the edge, and how far in it reaches.
-LensStrength=32
-LensRadius=24
-# Frosted glass (menus, popovers, alerts): saturation, how strong its dark tint is, how much the
-# light line along the edge, which otherwise shows the surroundings, whitens, and the dark line
-# outside it.
-FrostSaturation=1.5
-FrostTint=0.58
-FrostEdgeWhite=0.12
-FrostOuterEdge=0.8
-# Liquid glass (the dock): how much it darkens the background, saturation, and its edge, which
-# fades into the surroundings over this many logical pixels, brightened by the gain.
-LiquidBrightness=0.86
-LiquidSaturation=1.1
-LiquidEdgeFade=2
-LiquidEdgeGain=1.06
-# Control modules (Control Center): how much they brighten the background, saturation, and how much
-# the rim along the edge whitens where it catches the light.
-ControlBrightness=1.15
-ControlSaturation=1.1
-ControlRim=0.55
-# Chips (small buttons, like a notification's close button): how strong the grey tint is, and how
-# much the rim whitens.
-ChipTint=0.6
-ChipRim=0.15
-# Bubbles (the dock's labels): how strong the dark tint is, and how the edge is dimmed.
-BubbleTint=0.5
-BubbleEdgeGain=0.85
-```
-
-To try it without leaving your session, run KWin nested. KWin needs `wp_single_pixel_buffer_manager_v1`
-and pointer constraints from its host, so a nested KWin can't run inside niri, but works inside a
-nested sway.
-
-## Notes
-
-- We depend on iced's component crates (`iced_widget`, `iced_futures`, `iced_renderer`) instead of
-  `iced`, because `iced` hard-depends on winit and layer-shell surfaces don't use it. That means
-  re-enabling by hand what `iced` would turn on: the `wgpu-bare` renderer feature (without it you
-  silently get CPU rendering) and the `image` crate's PNG codec.
-- `iced_layershell` is vendored with a small patch (see [vendor/README.md](vendor/README.md)).
-- `winit-core` / `winit-common` are pinned to `0.31.0-beta.2` in `Cargo.lock`, because
+- The shell depends on iced's component crates (`iced_widget`, `iced_futures`, `iced_renderer`)
+  instead of `iced`, which hard-depends on winit. That means turning on by hand what `iced` would:
+  the `wgpu-bare` renderer (without it, rendering is silently on the CPU) and the PNG codec.
+- `iced_layershell` and `iced_wgpu` are vendored with small patches (see
+  [vendor/README.md](vendor/README.md)).
+- `winit-core` and `winit-common` are pinned to `0.31.0-beta.2` in `Cargo.lock`, because
   `iced_exdevtools` 0.19.1 doesn't compile against beta.3. Don't `cargo update` them until
   iced_layershell ships a fix.
+
+## Credits
+
+- Some of the glass shader, the genie's curve and Control Center's opening follow
+  [MacShell](https://github.com/0-ss/MacShell) ([MIT](LICENSES/MacShell-MIT.txt)).
+- The color templates for other apps come from [Noctalia](https://github.com/noctalia-dev/noctalia)
+  ([MIT](LICENSES/Noctalia-MIT.txt)).
+- [Inter](https://rsms.me/inter/), the typeface, is under the [OFL](assets/fonts/OFL.txt).
+- The KWin plugins are GPL-3.0-or-later, as their source headers say.
+
+makshell isn't affiliated with Apple. macOS is a trademark of Apple Inc.

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Starts the makshell login session: KWin, which runs makshell-startup inside it. The NixOS module
+# (nix/module.nix) does the same with Nix's paths; keep the two alike. install.sh fills in @...@.
+export XDG_SESSION_TYPE=wayland
+# KDE apps and portals behave as they do in Plasma.
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+export KDE_SESSION_VERSION=6
+# KDE's screen locker shows the lock screen of the shell package named here, which is makshell's.
+export PLASMA_DEFAULT_SHELL=org.makshell.desktop
+# KWin finds makshell's plugins, window switcher and lock screen where they're installed.
+export QT_PLUGIN_PATH=@qtplugins@${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}
+export XDG_DATA_DIRS=@prefix@/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}
+# The cursor, before KWin starts, since that's when it reads it. Without the macOS cursor theme
+# (github.com/ful1e5/apple_cursor), this falls back to the default one.
+if [ -d /usr/share/icons/macOS ] || [ -d /usr/local/share/icons/macOS ] || [ -d "$HOME/.local/share/icons/macOS" ] || [ -d "$HOME/.icons/macOS" ]; then
+    export XCURSOR_THEME=macOS XCURSOR_SIZE=24
+    kwriteconfig6 --file kcminputrc --group Mouse --key cursorTheme macOS
+    kwriteconfig6 --file kcminputrc --group Mouse --key cursorSize 24
+fi
+
+exec kwin_wayland_wrapper --xwayland --exit-with-session @prefix@/libexec/makshell-startup

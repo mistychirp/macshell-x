@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=makshell
+Comment=KWin with the makshell desktop
+Exec=@prefix@/bin/makshell-session
+Type=Application
+DesktopNames=KDE
