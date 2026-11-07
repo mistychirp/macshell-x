@@ -1011,7 +1011,8 @@ impl Shell {
                     self.popup.as_ref().map(|popup| &popup.content),
                     Some(PopupContent::NotificationCenter | PopupContent::ControlCenter)
                 );
-                // Pressing outside a Control Center module's detail goes back to the modules.
+                // Pressing outside a Control Center module's detail goes back to the modules, the way
+                // a press beside it does. That one's the detail's own, and only takes the left button.
                 if self.control.detail.is_some()
                     && matches!(
                         self.popup.as_ref().map(|popup| &popup.content),
@@ -1019,8 +1020,11 @@ impl Shell {
                     )
                     && self.surfaces.get(&id) == Some(&Surface::Popup)
                 {
-                    self.control.detail = None;
-                    return Task::none();
+                    let going_back = self.control.morph.is_some_and(|morph| !morph.is_opening());
+                    if going_back {
+                        return Task::none();
+                    }
+                    return self.apply(Message::ControlDetail(None));
                 }
                 // The surfaces of these panels are mostly empty.
                 if matches!(
@@ -1864,10 +1868,7 @@ impl Shell {
             Message::BarPressed(title) => {
                 // Like on macOS, Control Center's own icon goes back from a module's detail first, and
                 // closes it after that.
-                let going_back = self
-                    .control
-                    .morph
-                    .is_some_and(|morph| !morph.is_opening());
+                let going_back = self.control.morph.is_some_and(|morph| !morph.is_opening());
                 if title == menubar::Title::ControlCenter
                     && matches!(
                         self.popup.as_ref().map(|popup| &popup.content),
@@ -2492,6 +2493,7 @@ impl Shell {
             menubar::Title::ControlCenter => {
                 self.control.detail = None;
                 self.control.morph = None;
+                self.control.opened = Some(anim::now());
                 self.control.clear_hover();
                 self.control.volume = audio::volume();
                 let reread = Task::perform(brightness::level(), Message::BrightnessRead);
@@ -3014,6 +3016,7 @@ impl Shell {
                 .is_some_and(|open| open.is_animating() || open.is_closing())
             || self.control.morph.is_some()
             || self.control.hover_is_moving()
+            || control::is_popping(&self.control)
             || self.hud.as_ref().is_some_and(hud::Hud::is_animating)
             || self
                 .spotlight

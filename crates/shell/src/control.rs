@@ -2,6 +2,8 @@
 //! Capsule toggles two cells wide, round buttons one cell wide, Now Playing two by two, and
 //! full-width sliders. [`modules`] places them; the view and the glass shapes both follow it.
 
+use std::time::Instant;
+
 use iced_widget::core::text::Wrapping;
 
 use iced_widget::core::{
@@ -12,7 +14,7 @@ use iced_widget::{
     Space, button, column, container, image, mouse_area, pin, row, scrollable, slider, stack, text,
 };
 
-use crate::anim::{Motion, Spring};
+use crate::anim::{self, Motion, Spring};
 use crate::app::{Element, Message};
 use crate::audio::{self, Output, Volume};
 use crate::bluetooth::{Bluetooth, Device};
@@ -36,6 +38,16 @@ const OTHERS_SPRING: Spring = Spring::new(0.22, 1.0);
 /// What a module does under the pointer, measured from Tahoe's: about 3% brighter, a brighter rim, and
 /// a chevron coming up if pressing it opens something.
 const HOVER_SPRING: Spring = Spring::new(0.18, 1.0);
+/// How the modules come in when Control Center opens: each from a little smaller and unseen,
+/// springing up past its size and back, one after another going out from the corner it opens from.
+/// Tahoe only fades them in, which is a lot less fun.
+const POP_SPRING: Spring = Spring::new(0.36, 0.6);
+const POP_FROM: f32 = 0.8;
+/// How long each waits per point it is from that corner, and how long it takes to show.
+const POP_STAGGER: f32 = 0.00028;
+const POP_FADE: f32 = 0.09;
+/// Long enough for the last of them to have settled.
+const POP_TIME: f32 = 0.9;
 const HOVER_FILL: f32 = 0.045;
 const HOVER_RIM: f32 = 0.16;
 const HOVER_CHEVRON: f32 = 11.0;
@@ -103,6 +115,8 @@ pub struct Panel {
     pub networks: Vec<Network>,
     pub devices: Vec<Device>,
     pub outputs: Vec<Output>,
+    /// When it last opened, which the modules come in from.
+    pub opened: Option<Instant>,
 }
 
 /// A module's own glass turning into its detail, or back, measured from Tahoe's: it moves and grows
@@ -383,11 +397,10 @@ pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
     };
     let Some(detail) = panel.detail else {
         return std::iter::once(backdrop)
-            .chain(
-                modules(panel)
-                    .iter()
-                    .map(|(_, rect, radius)| module_shape(rect, *radius)),
-            )
+            .chain(modules(panel).iter().map(|(_, rect, radius)| {
+                let (scale, _) = pop(panel, rect);
+                module_shape(&scaled(rect, scale), *radius * scale)
+            }))
             .collect();
     };
     let Some(morph) = panel.morph else {
@@ -422,6 +435,11 @@ pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
 /// How opaque each of [`material_shapes`] is: the other modules fade while one morphs.
 pub fn material_opacities(panel: &Panel) -> Vec<f32> {
     let (Some(detail), Some(morph)) = (panel.detail, panel.morph) else {
+        if panel.detail.is_none() && is_popping(panel) {
+            return std::iter::once(1.0)
+                .chain(modules(panel).iter().map(|(_, rect, _)| pop(panel, rect).1))
+                .collect();
+        }
         return Vec::new();
     };
     let source = module_of(detail);
@@ -433,6 +451,40 @@ pub fn material_opacities(panel: &Panel) -> Vec<f32> {
     opacities.extend(std::iter::repeat_n(morph.others(), others));
     opacities.push(1.0);
     opacities
+}
+
+/// How big a module is, and how much of it shows, on its way in as Control Center opens.
+fn pop(panel: &Panel, rect: &Rectangle) -> (f32, f32) {
+    let Some(opened) = panel.opened else {
+        return (1.0, 1.0);
+    };
+    let (width, _) = size(panel);
+    let corner = (width as f32 - MARGIN_RIGHT, 0.0);
+    let center = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+    let distance = (center.0 - corner.0).hypot(center.1 - corner.1);
+    let seconds = anim::seconds_since(opened) - distance * POP_STAGGER;
+    if seconds <= 0.0 {
+        return (POP_FROM, 0.0);
+    }
+    let scale = POP_FROM + (1.0 - POP_FROM) * POP_SPRING.progress(seconds);
+    (scale, (seconds / POP_FADE).min(1.0))
+}
+
+/// Whether the modules are still coming in.
+pub fn is_popping(panel: &Panel) -> bool {
+    panel
+        .opened
+        .is_some_and(|opened| anim::seconds_since(opened) < POP_TIME)
+}
+
+fn scaled(rect: &Rectangle, scale: f32) -> Rectangle {
+    let (width, height) = (rect.width * scale, rect.height * scale);
+    Rectangle {
+        x: rect.x + (rect.width - width) / 2.0,
+        y: rect.y + (rect.height - height) / 2.0,
+        width,
+        height,
+    }
 }
 
 /// What's in a module.
@@ -543,9 +595,14 @@ pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
         (None, _) => modules(panel)
             .into_iter()
             .map(|(module, rect, radius)| {
-                pin(mouse_area(bubble(module, rect, radius))
-                    .on_enter(Message::ControlHover(module, true))
-                    .on_exit(Message::ControlHover(module, false)))
+                let (scale, shows) = pop(panel, &rect);
+                pin(mouse_area(
+                    group(bubble(module, rect, radius))
+                        .scale(scale)
+                        .opacity(shows),
+                )
+                .on_enter(Message::ControlHover(module, true))
+                .on_exit(Message::ControlHover(module, false)))
                 .x(rect.x)
                 .y(rect.y)
                 .into()
