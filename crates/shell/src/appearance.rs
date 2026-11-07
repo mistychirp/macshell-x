@@ -10,6 +10,7 @@
 //!
 //! What it changes in other apps' settings is saved first, and put back when it's turned off.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -808,6 +809,23 @@ async fn tell_kde_apps(icons: bool) {
     if let Err(err) = sent {
         log::warn!("can't tell KDE apps about their colors: {err}");
     }
+    // What KConfigWatcher hears, as KWin's window decorations do: which keys changed, by group.
+    let globals = fs::read_to_string(config_home().join("kdeglobals")).unwrap_or_default();
+    let changed = changed_kde_keys(&globals, icons);
+    if !changed.is_empty() {
+        let sent = connection
+            .emit_signal(
+                None::<&str>,
+                "/kdeglobals",
+                "org.kde.kconfig.notify",
+                "ConfigChanged",
+                &(changed,),
+            )
+            .await;
+        if let Err(err) = sent {
+            log::warn!("can't tell KWin about the colors: {err}");
+        }
+    }
     if icons {
         let sent = connection
             .emit_signal(
@@ -822,6 +840,35 @@ async fn tell_kde_apps(icons: bool) {
             log::warn!("can't tell KDE apps about their icons: {err}");
         }
     }
+}
+
+/// The keys in `kdeglobals` that a color change touches, by group, named the way KConfig sends
+/// them: a group inside another one is `Outer\x1dInner`. Or the icon theme, for an icon change.
+fn changed_kde_keys(globals: &str, icons: bool) -> HashMap<String, Vec<Vec<u8>>> {
+    let mut changed = HashMap::new();
+    for (header, lines) in kde_groups(globals) {
+        let wanted = if icons {
+            header == "[Icons]"
+        } else {
+            scheme_owns(&header) || header == "[General]"
+        };
+        if !wanted || lines.is_empty() {
+            continue;
+        }
+        let name = header
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .replace("][", "\x1d");
+        let keys = lines
+            .iter()
+            .filter(|line| line.contains('='))
+            .map(|line| key_of(line).trim().as_bytes().to_vec())
+            .collect::<Vec<_>>();
+        if !keys.is_empty() {
+            changed.insert(name, keys);
+        }
+    }
+    changed
 }
 
 /// Writes a file, unless it's what's already there, making the folder it goes in. Apps read these
@@ -1184,6 +1231,19 @@ fn imports_restored(now: &str, before: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn color_changes_name_their_groups_and_keys() {
+        let globals = "[General]\nAccentColor=1,2,3\n[Colors:Header]\nBackgroundNormal=1,1,1\n\
+                       [Colors:Header][Inactive]\nBackgroundNormal=2,2,2\n[Icons]\nTheme=X\n\
+                       [KDE]\nwidgetStyle=Breeze\n";
+        let colors = super::changed_kde_keys(globals, false);
+        assert_eq!(colors.len(), 3);
+        assert_eq!(colors["Colors:Header\x1dInactive"], vec![b"BackgroundNormal".to_vec()]);
+        assert_eq!(colors["General"], vec![b"AccentColor".to_vec()]);
+        let icons = super::changed_kde_keys(globals, true);
+        assert_eq!(icons.keys().collect::<Vec<_>>(), ["Icons"]);
+    }
+
     use super::*;
 
     #[test]
