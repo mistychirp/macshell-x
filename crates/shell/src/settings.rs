@@ -6,8 +6,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Mutex;
 
 use iced_futures::Subscription;
+use iced_futures::futures::channel::mpsc;
+use iced_futures::futures::{SinkExt as _, Stream, StreamExt as _, future};
 use iced_layershell::actions::IcedXdgWindowSettings;
 use iced_layershell::daemon;
 use iced_layershell::reexport::{IcedId, Task, WithConnection};
@@ -34,6 +37,9 @@ use crate::{apps, dbus, fonts, portal, wallpaper};
 
 pub const APP_ID: &str = "macshell-settings";
 const BUS_NAME: &str = "org.macshell.Settings";
+const BUS_PATH: &str = "/org/macshell/Settings";
+/// What to run the app with for it to open on the notifications page.
+pub const NOTIFICATIONS_PAGE: &str = "notifications";
 
 const WIDTH: f32 = 720.0;
 const HEIGHT: f32 = 560.0;
@@ -123,16 +129,23 @@ pub enum Page {
     Glass,
     Appearance,
     Desktop,
+    Notifications,
     Windows,
     About,
 }
 
 impl Page {
+    /// A page by the name it's asked for from outside.
+    fn named(name: &str) -> Option<Self> {
+        (name == NOTIFICATIONS_PAGE).then_some(Page::Notifications)
+    }
+
     fn title(self) -> &'static str {
         match self {
             Page::Glass => "Glass",
             Page::Appearance => "Appearance",
             Page::Desktop => "Desktop & Dock",
+            Page::Notifications => "Notifications",
             Page::Windows => "Windows",
             Page::About => "About",
         }
@@ -150,6 +163,10 @@ pub enum Message {
     Minimize,
     LightsHovered(bool),
     ShowPage(Page),
+    /// Something outside asked for this page.
+    PageAsked(String),
+    /// The notifications of the app with this key can come again.
+    NotificationsTurnedOn(String),
     AccentChosen(String),
     AccentTyped(String),
     MatchAppsToggled(bool),
@@ -425,16 +442,23 @@ struct SettingsApp {
     match_apps: bool,
     /// A few colors of the palette apps would get.
     palette_preview: Vec<[u8; 3]>,
+    /// The apps whose notifications are off, as their keys and names.
+    notifications_off: Vec<(String, String)>,
     about: About,
     /// How the last export or import went.
     transfer_status: Option<String>,
 }
 
-pub fn run() -> Result<(), iced_layershell::Error> {
-    // One at a time. A second one has nothing to do: the dock and the menu bar bring back the
-    // window of the first, and it can't raise a window itself without a token from them.
+pub fn run(page: Option<&str>) -> Result<(), iced_layershell::Error> {
+    let first_page = page.and_then(Page::named).unwrap_or(Page::Glass);
+    // One at a time. A second one has little to do: the dock and the menu bar bring back the window
+    // of the first, and it can't raise a window itself without a token from them. It only passes on
+    // which page was asked for.
     let Some(name) = claim_name() else {
         log::info!("the Settings app is already running");
+        if let Some(page) = page {
+            ask_for_page(page);
+        }
         return Ok(());
     };
     // Held until the app quits.
@@ -446,7 +470,7 @@ pub fn run() -> Result<(), iced_layershell::Error> {
     let material = connection.as_ref().and_then(Material::new).map(Rc::new);
 
     daemon(
-        move || SettingsApp::new(material.clone()),
+        move || SettingsApp::new(material.clone(), first_page),
         || String::from(APP_ID),
         SettingsApp::update,
         SettingsApp::view,
@@ -472,15 +496,80 @@ pub fn run() -> Result<(), iced_layershell::Error> {
 
 /// Claims our name on the bus, which fails if it's taken.
 fn claim_name() -> Option<zbus::blocking::Connection> {
+    let (requests, incoming) = mpsc::unbounded();
+    if let Ok(mut waiting) = PAGES_ASKED.lock() {
+        *waiting = Some(incoming);
+    }
     zbus::blocking::connection::Builder::session()
         .and_then(|builder| builder.replace_existing_names(false).name(BUS_NAME))
+        .and_then(|builder| builder.serve_at(BUS_PATH, PageRequests { requests }))
         .and_then(|builder| builder.build())
         .inspect_err(|err| log::debug!("can't claim {BUS_NAME}: {err}"))
         .ok()
 }
 
+/// What's asked of the app that's running, which only it can do.
+struct PageRequests {
+    requests: mpsc::UnboundedSender<String>,
+}
+
+#[zbus::interface(name = "org.macshell.Settings")]
+impl PageRequests {
+    #[zbus(name = "ShowPage")]
+    fn show_page(&self, page: String) {
+        let _ = self.requests.unbounded_send(page);
+    }
+}
+
+/// For the subscription to pick up.
+static PAGES_ASKED: Mutex<Option<mpsc::UnboundedReceiver<String>>> = Mutex::new(None);
+
+fn pages_asked() -> impl Stream<Item = Message> {
+    iced_futures::stream::channel(1, |mut output: mpsc::Sender<Message>| async move {
+        let waiting = PAGES_ASKED
+            .lock()
+            .ok()
+            .and_then(|mut waiting| waiting.take());
+        let Some(mut incoming) = waiting else {
+            return future::pending().await;
+        };
+        while let Some(page) = incoming.next().await {
+            let _ = output.send(Message::PageAsked(page)).await;
+        }
+    })
+}
+
+fn ask_for_page(page: &str) {
+    let asked = zbus::blocking::Connection::session().and_then(|connection| {
+        connection.call_method(
+            Some(BUS_NAME),
+            BUS_PATH,
+            Some(BUS_NAME),
+            "ShowPage",
+            &(page,),
+        )
+    });
+    if let Err(err) = asked {
+        log::warn!("can't ask Settings for a page: {err}");
+    }
+}
+
+/// The apps whose notifications are off, from the config file, as their keys and names.
+fn notifications_off() -> Vec<(String, String)> {
+    let mut apps = apps::AppIndex::load();
+    Config::load()
+        .notifications
+        .off
+        .into_iter()
+        .map(|key| {
+            let name = apps.resolve(&key).name.clone();
+            (key, name)
+        })
+        .collect()
+}
+
 impl SettingsApp {
-    fn new(material: Option<Rc<Material>>) -> (Self, Task<Message>) {
+    fn new(material: Option<Rc<Material>>, page: Page) -> (Self, Task<Message>) {
         let config = Config::load();
         let (id, open) = Message::base_window_open(IcedXdgWindowSettings {
             size: Some((WIDTH as u32, HEIGHT as u32)),
@@ -501,7 +590,7 @@ impl SettingsApp {
             id,
             material,
             surface: None,
-            page: Page::Glass,
+            page,
             lights_hovered: false,
             glass: None,
             icon_size: config.dock.icon_size,
@@ -516,6 +605,7 @@ impl SettingsApp {
             wallpaper_colors: Vec::new(),
             match_apps: config.appearance.match_apps,
             palette_preview: Vec::new(),
+            notifications_off: notifications_off(),
             about: About::read(),
             transfer_status: None,
         };
@@ -573,7 +663,27 @@ impl SettingsApp {
             Message::Dragged => return iced_runtime::window::drag(self.id),
             Message::Minimize => return iced_runtime::window::minimize(self.id, true),
             Message::LightsHovered(hovered) => self.lights_hovered = hovered,
-            Message::ShowPage(page) => self.page = page,
+            Message::ShowPage(page) => {
+                self.page = page;
+                // Turning one off happens elsewhere, while this might be open.
+                if page == Page::Notifications {
+                    self.notifications_off = notifications_off();
+                }
+            }
+            Message::PageAsked(name) => {
+                if let Some(page) = Page::named(&name) {
+                    return self.update(Message::ShowPage(page));
+                }
+            }
+            Message::NotificationsTurnedOn(key) => {
+                let mut off = Config::load().notifications.off;
+                off.retain(|app| *app != key);
+                if let Err(err) = config::save_notifications_off(&off) {
+                    log::warn!("can't save which apps' notifications are off: {err}");
+                }
+                self.notifications_off = notifications_off();
+                return Task::future(tell_shell()).discard();
+            }
             Message::OpenSystemPage(page) => {
                 apps::spawn(vec![String::from("kcmshell6"), page.to_owned()]);
             }
@@ -735,13 +845,16 @@ impl SettingsApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        iced_futures::event::listen_with(|event, _, id| match event {
-            Event::Window(window::Event::Opened { .. }) => Some(Message::Opened(id)),
-            Event::Window(window::Event::Closed | window::Event::CloseRequested) => {
-                Some(Message::Closed)
-            }
-            _ => None,
-        })
+        Subscription::batch([
+            iced_futures::event::listen_with(|event, _, id| match event {
+                Event::Window(window::Event::Opened { .. }) => Some(Message::Opened(id)),
+                Event::Window(window::Event::Closed | window::Event::CloseRequested) => {
+                    Some(Message::Closed)
+                }
+                _ => None,
+            }),
+            Subscription::run(pages_asked),
+        ])
     }
 
     fn view(&self, _: IcedId) -> Element<'_> {
@@ -761,6 +874,12 @@ impl SettingsApp {
                     rgb(70, 70, 78)
                 ),
                 sidebar_item(Page::Desktop, self.page, Glyph::Photo, rgb(160, 92, 214)),
+                sidebar_item(
+                    Page::Notifications,
+                    self.page,
+                    Glyph::Bell,
+                    rgb(232, 74, 74)
+                ),
                 sidebar_item(Page::Windows, self.page, Glyph::Window, rgb(112, 112, 122)),
                 Space::new().height(12),
                 text("System").size(CAPTION_SIZE).color(DIM),
@@ -808,6 +927,7 @@ impl SettingsApp {
             Page::Glass => self.glass_page(),
             Page::Appearance => self.appearance_page(),
             Page::Desktop => self.desktop_page(),
+            Page::Notifications => self.notifications_page(),
             Page::Windows => self.windows_page(),
             Page::About => self.about_page(),
         };
@@ -1085,6 +1205,36 @@ impl SettingsApp {
         ]
         .spacing(18)
         .into()
+    }
+
+    fn notifications_page(&self) -> Element<'_> {
+        let explained = "To turn off an app's notifications, open one of them up, and choose \
+                         Turn Off from its … menu. Whatever says it can't wait still comes through.";
+        if self.notifications_off.is_empty() {
+            return column![
+                section("Turned Off", card(vec![info_row("No apps", "")]),),
+                caption(explained),
+            ]
+            .spacing(6)
+            .into();
+        }
+        let rows = self
+            .notifications_off
+            .iter()
+            .map(|(key, name)| {
+                row![
+                    text(name).size(TEXT_SIZE).width(Length::Fill),
+                    capsule_button("Turn On", Message::NotificationsTurnedOn(key.clone()),),
+                ]
+                .padding([0, 12])
+                .height(44)
+                .align_y(Alignment::Center)
+                .into()
+            })
+            .collect();
+        column![section("Turned Off", card(rows)), caption(explained)]
+            .spacing(6)
+            .into()
     }
 
     fn windows_page(&self) -> Element<'_> {

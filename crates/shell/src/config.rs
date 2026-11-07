@@ -12,6 +12,7 @@ pub struct Config {
     pub desktop: DesktopConfig,
     pub dock: DockConfig,
     pub menubar: MenuBarConfig,
+    pub notifications: NotificationsConfig,
     /// Desktop entry id of the app that opens folders and the trash. Defaults to the system's
     /// default app for folders.
     pub file_manager: Option<String>,
@@ -75,6 +76,13 @@ impl Default for DockConfig {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
+pub struct NotificationsConfig {
+    /// The apps whose notifications are turned off, by desktop entry id or name.
+    pub off: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub struct MenuBarConfig {
     /// Icon name or path of the logo that opens the system menu. Defaults to the distro's.
     pub logo: Option<String>,
@@ -116,6 +124,16 @@ pub fn save_icon_size(size: f32) -> io::Result<()> {
 
 pub fn save_magnified_size(size: f32) -> io::Result<()> {
     save("dock", "magnified_size", toml_edit::value(f64::from(size)))
+}
+
+/// Rewrites `[notifications] off`, the same way.
+pub fn save_notifications_off(off: &[String]) -> io::Result<()> {
+    edit(|doc| {
+        if !doc.contains_table("notifications") {
+            doc["notifications"] = toml_edit::table();
+        }
+        doc["notifications"]["off"] = toml_edit::value(off.iter().collect::<toml_edit::Array>());
+    })
 }
 
 /// Rewrites `[appearance] accent`, the same way.

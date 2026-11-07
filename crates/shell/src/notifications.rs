@@ -63,9 +63,14 @@ const MIN_PICTURE: f32 = 96.0;
 /// The largest picture kept from a file.
 const MAX_PICTURE: u32 = 1000;
 /// Where the arrow that opens it goes, from the card's top right corner.
-const ARROW_INSET_X: f32 = 12.0;
-const ARROW_INSET_Y: f32 = 8.0;
+const ARROW_INSET_X: f32 = 5.5;
+const ARROW_INSET_Y: f32 = 5.5;
 const ARROW_SIZE: f32 = 20.0;
+/// How far the … is to the left of the arrow, on a card that's open.
+const MORE_OFFSET: f32 = 19.0;
+/// How far past the card's right edge the …'s menu goes, and how far down from its top it starts.
+const MORE_MENU_OVERHANG: f32 = 9.0;
+const MORE_MENU_TOP: f32 = 28.0;
 const ATTACHMENT_SIZE: f32 = 32.0;
 const ATTACHMENT_RADIUS: f32 = 7.0;
 const ATTACHMENT_GAP: f32 = 10.0;
@@ -115,6 +120,8 @@ pub struct Incoming {
     actions: Vec<(String, String)>,
     timeout: Option<Duration>,
     transient: bool,
+    /// Says it can't wait, which goes through even if its app is muted or turned off.
+    pub critical: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +294,26 @@ impl Notification {
             .collect()
     }
 
+    /// The menu behind its …, of what can be done about what its app sends.
+    pub fn more_menu(&self) -> Vec<menu::Entry> {
+        let key = &self.app_key;
+        vec![
+            menu::Entry::item(&format!("{} Notifications", self.app), Message::Nothing)
+                .enabled(false),
+            menu::Entry::item(
+                "Mute for 1 Hour",
+                Message::NotificationAppMuted(key.clone(), Duration::from_secs(60 * 60)),
+            ),
+            menu::Entry::item(
+                "Mute for Today",
+                Message::NotificationAppMuted(key.clone(), until_tomorrow(Local::now())),
+            ),
+            menu::Entry::item("Turn Off", Message::NotificationAppTurnedOff(key.clone())),
+            menu::Entry::Separator,
+            menu::Entry::item("Notification Settings…", Message::OpenNotificationSettings),
+        ]
+    }
+
     /// How tall its card is, without the close button's overhang.
     pub fn height(&self) -> f32 {
         self.closed_height() + self.expansion.value().max(0.0) * self.open_room()
@@ -343,6 +370,17 @@ impl Notification {
 }
 
 /// How long ago something happened, the way Tahoe puts it.
+/// How long it is until midnight.
+fn until_tomorrow(now: DateTime<Local>) -> Duration {
+    let midnight = now
+        .date_naive()
+        .succ_opt()
+        .and_then(|tomorrow| tomorrow.and_hms_opt(0, 0, 0));
+    midnight
+        .and_then(|midnight| (midnight - now.naive_local()).to_std().ok())
+        .unwrap_or(Duration::from_secs(24 * 60 * 60))
+}
+
 fn time_ago(then: DateTime<Local>, now: DateTime<Local>) -> String {
     let minutes = (now - then).num_minutes();
     let day = then.date_naive();
@@ -504,11 +542,13 @@ fn markup_tag(text: &str) -> Option<(usize, &'static str)> {
 }
 
 /// What a notification says, on a card of [`CARD_WIDTH`] and [`Notification::height`]. `capsule`:
-/// how much its capsule shows, which the text fades out in front of.
+/// how much its capsule shows, which the text fades out in front of. `time_shows`: how much of its
+/// time does.
 fn face<'a>(
     notification: &'a Notification,
     time: Option<String>,
     capsule: f32,
+    time_shows: f32,
     material: Option<material::Kind>,
 ) -> Element<'a> {
     let height = notification.closed_height();
@@ -532,17 +572,11 @@ fn face<'a>(
         Space::new().width(Length::Fill),
     ]
     .push(time.map(|time| {
-        // The arrow takes its place.
-        let shows = if notification.open_picture().is_some() {
-            1.0 - capsule
-        } else {
-            1.0
-        };
         text(time)
             .size(TIME_SIZE)
             .line_height(line_height)
             .color(Color {
-                a: TIME_INK.a * shows,
+                a: TIME_INK.a * time_shows,
                 ..TIME_INK
             })
     }))
@@ -683,11 +717,25 @@ pub fn card<'a>(
     let height = notification.height();
     let hover = capsule;
     let capsule = notification.capsule_shows(hover);
+    // The arrow takes its place.
+    let time_shows = if notification.open_picture().is_some() {
+        1.0 - hover
+    } else {
+        1.0
+    };
     let mut layers: Vec<Element<'a>> = vec![
-        pin(face(notification, time, capsule, material))
+        pin(face(notification, time, capsule, time_shows, material))
             .x(OVERHANG)
             .y(OVERHANG)
             .into(),
+        // Only the card itself takes a press. The room above it and to the left is for its ✕, and
+        // what's next to the card there, like a group's "Show less", has to get its own presses.
+        pin(
+            mouse_area(container(Space::new()).width(CARD_WIDTH).height(height)).on_press(on_press),
+        )
+        .x(OVERHANG)
+        .y(OVERHANG)
+        .into(),
     ];
     if capsule > 0.0
         && let (Some((label, opens_menu)), Some(rect)) =
@@ -734,13 +782,17 @@ pub fn card<'a>(
             .into(),
         );
     }
-    // Opening up: the arrow, and once it's open, what closes it and the row with what can be done.
+    // Opening up: the arrow, and once it's open, the … and the row with what can be done.
     if notification.open_picture().is_some() {
         let opened = notification.is_expanded();
         let arrow = mouse_area(
             container(icons::icon(
-                if opened { Glyph::Close } else { Glyph::Chevron },
-                if opened { 10.0 } else { 12.0 },
+                if opened {
+                    Glyph::ChevronDown
+                } else {
+                    Glyph::Chevron
+                },
+                if opened { 11.0 } else { 12.0 },
                 Color::from_rgba(1.0, 1.0, 1.0, 0.85),
             ))
             .center(ARROW_SIZE),
@@ -752,6 +804,31 @@ pub fn card<'a>(
                 .y(OVERHANG + ARROW_INSET_Y)
                 .into(),
         );
+        if opened {
+            let more = mouse_area(
+                container(icons::icon(
+                    Glyph::Ellipsis,
+                    14.0,
+                    Color::from_rgba(1.0, 1.0, 1.0, 0.85),
+                ))
+                .center(ARROW_SIZE),
+            )
+            .on_press(Message::NotificationMore(
+                id,
+                (
+                    (origin.0 + CARD_WIDTH + MORE_MENU_OVERHANG) as i32 - 1,
+                    (origin.1 + MORE_MENU_TOP) as i32 - 1,
+                    1,
+                    1,
+                ),
+            ));
+            layers.push(
+                pin(group(more).opacity(hover))
+                    .x(OVERHANG + CARD_WIDTH - ARROW_INSET_X - ARROW_SIZE - MORE_OFFSET)
+                    .y(OVERHANG + ARROW_INSET_Y)
+                    .into(),
+            );
+        }
         if opened && let Some((_, opens_menu)) = notification.capsule() {
             let on_row = if opens_menu {
                 Message::NotificationOptions(
@@ -787,44 +864,48 @@ pub fn card<'a>(
             .width(CARD_WIDTH + OVERHANG)
             .height(height + OVERHANG),
     )
-    .on_press(on_press)
     .on_enter(Message::NotificationEntered(id))
     .on_exit(Message::NotificationLeft(id))
     .into()
 }
 
-/// How a closed card goes in Notification Center, measured from Tahoe's: shrinking to about half,
-/// going out of focus and fading, `t` of the way through. A renderer can't blur, so it's drawn
-/// several times around a growing circle, which over this little time reads the same.
+/// How a closed card goes in Notification Center, measured from Tahoe's: shrinking, going out of
+/// focus and fading, `t` of the way through. A renderer can't blur, so it's drawn several times
+/// around a growing circle, which over this little time reads the same.
 pub fn closing_face<'a>(
     notification: &'a Notification,
     time: Option<String>,
     t: f32,
+    scale: f32,
     material: Option<material::Kind>,
 ) -> Element<'a> {
     const COPIES: usize = 8;
     const BLUR: f32 = 7.0;
+    /// How far through it the copies take over from one sharp one. Copies that are still almost on
+    /// top of each other would thicken the text where their edges overlap.
+    const SHARP_UNTIL: f32 = 0.35;
     let shows = 1.0 - t;
-    // What each copy has to be for all of them together to come to that.
-    let each = 1.0 - (1.0 - shows).powf(1.0 / COPIES as f32);
+    let blurred = (t / SHARP_UNTIL).min(1.0);
+    // What each copy has to be for all of them together to come to their share.
+    let each = 1.0 - (1.0 - shows * blurred).powf(1.0 / COPIES as f32);
     let size = Size::new(CARD_WIDTH, notification.height());
-    let layers: Vec<Element<'a>> = (0..COPIES)
-        .map(|copy| {
+    let mut layers: Vec<Element<'a>> = vec![
+        group(face(notification, time.clone(), 0.0, 1.0, material))
+            .opacity(shows * (1.0 - blurred))
+            .into(),
+    ];
+    if blurred > 0.0 {
+        layers.extend((0..COPIES).map(|copy| {
             let angle = copy as f32 / COPIES as f32 * std::f32::consts::TAU;
-            pin(group(face(notification, time.clone(), 0.0, material)).opacity(each))
+            pin(group(face(notification, time.clone(), 0.0, 1.0, material)).opacity(each))
                 .x(angle.cos() * BLUR * t)
                 .y(angle.sin() * BLUR * t)
                 .into()
-        })
-        .collect();
+        }));
+    }
     group(stack(layers).width(size.width).height(size.height))
-        .scale(closing_scale(t))
+        .scale(scale)
         .into()
-}
-
-/// How big a closed card is, `t` of the way through going.
-pub fn closing_scale(t: f32) -> f32 {
-    1.0 - 0.5 * t
 }
 
 /// The round ✕ that dismisses something, on the glass of [`close_shape`].
@@ -921,6 +1002,7 @@ impl Server {
                 .collect(),
             timeout,
             transient: matches!(hint(&hints, &["transient"]), Some(Value::Bool(true))),
+            critical,
         };
         let mut events = self.events.clone();
         if events.send(Event::Notified(incoming)).await.is_err() {
@@ -1105,6 +1187,13 @@ where
 
 #[cfg(test)]
 mod motion_tests {
+    #[test]
+    fn today_ends_at_midnight() {
+        use chrono::TimeZone as _;
+        let evening = Local.with_ymd_and_hms(2026, 11, 6, 23, 0, 0).unwrap();
+        assert_eq!(until_tomorrow(evening), Duration::from_secs(60 * 60));
+    }
+
     use super::*;
     use chrono::TimeZone as _;
 

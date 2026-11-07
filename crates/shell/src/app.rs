@@ -301,6 +301,12 @@ pub enum Message {
     NotificationDismissed(u32),
     /// A card's capsule was pressed, for its menu, and where it is on its surface.
     NotificationOptions(u32, (i32, i32, i32, i32)),
+    /// An open card's … was pressed, and where its menu goes on its surface.
+    NotificationMore(u32, (i32, i32, i32, i32)),
+    /// An app's notifications are to come without banners for this long.
+    NotificationAppMuted(String, Duration),
+    NotificationAppTurnedOff(String),
+    OpenNotificationSettings,
     /// A card's arrow was pressed, which opens it up to show its picture, or closes it.
     NotificationExpand(u32),
     /// Something about notifications is moving, which has no more to it than time passing.
@@ -552,6 +558,9 @@ struct Shell {
     banners_opacities: Vec<f32>,
     /// Groups opened in Notification Center, by app.
     open_groups: HashSet<String>,
+    /// When each app that's muted gets its banners back. It isn't kept for the next session.
+    muted_apps: HashMap<String, Instant>,
+    notifications_off: Vec<String>,
     /// How far Notification Center is scrolled, in rows.
     center_scroll: f32,
     banners: Banners,
@@ -772,6 +781,8 @@ impl Shell {
             center_motion: notification_center::Motions::default(),
             banners_opacities: Vec::new(),
             open_groups: HashSet::new(),
+            muted_apps: HashMap::new(),
+            notifications_off: config.notifications.off.clone(),
             center_scroll: 0.0,
             banners: Banners::default(),
             banners_surface: None,
@@ -2155,7 +2166,45 @@ impl Shell {
             }
             Message::NotificationDismissed(id) => return self.dismiss_notification(id),
             Message::NotificationOptions(id, anchor) => {
-                return self.open_notification_options(id, anchor);
+                let entries = self.find_notification(id).map(Notification::options);
+                return self.open_notification_menu(id, anchor, entries);
+            }
+            Message::NotificationMore(id, anchor) => {
+                let entries = self.find_notification(id).map(Notification::more_menu);
+                return self.open_notification_menu(id, anchor, entries);
+            }
+            Message::NotificationAppMuted(app_key, time) => {
+                self.muted_apps.insert(app_key, Instant::now() + time);
+                return self.close_notification_menu();
+            }
+            Message::NotificationAppTurnedOff(app_key) => {
+                if !self.notifications_off.contains(&app_key) {
+                    self.notifications_off.push(app_key);
+                    if let Err(err) = config::save_notifications_off(&self.notifications_off) {
+                        log::warn!("can't save which apps' notifications are off: {err}");
+                    }
+                }
+                return self.close_notification_menu();
+            }
+            Message::OpenNotificationSettings => {
+                let close = self.close_popup();
+                if let Some(window) = self
+                    .windows
+                    .iter()
+                    .find(|window| window.app_id.as_deref() == Some(crate::settings::APP_ID))
+                {
+                    kwin::focus_window(window.id);
+                }
+                // If it's running already, this only tells it which page.
+                match std::env::current_exe() {
+                    Ok(exe) => apps::spawn(vec![
+                        exe.to_string_lossy().into_owned(),
+                        String::from("settings"),
+                        String::from(crate::settings::NOTIFICATIONS_PAGE),
+                    ]),
+                    Err(err) => log::warn!("can't find the Settings app: {err}"),
+                }
+                return close;
             }
             Message::NotificationFrame => return self.sync_banners(),
             Message::NotificationExpand(id) => {
@@ -2239,6 +2288,7 @@ impl Shell {
                 self.open_groups.insert(app_key);
             }
             Message::NotificationGroupClosed(app_key) => {
+                self.center_motion.fold(&self.notifications, &app_key);
                 self.open_groups.remove(&app_key);
             }
             Message::NotificationsCleared => {
@@ -2853,7 +2903,19 @@ impl Shell {
         match event {
             notifications::Event::Notified(incoming) => {
                 let replaces = incoming.replaces;
+                let critical = incoming.critical;
                 let notification = Notification::new(incoming, &mut self.apps);
+                self.muted_apps.retain(|_, until| *until > now);
+                let muted = !critical && self.muted_apps.contains_key(&notification.app_key);
+                let off = !critical && self.notifications_off.contains(&notification.app_key);
+                // With nowhere to show it, it's over, and its app hears that.
+                if off || (muted && notification.transient) {
+                    return Task::future(notifications::report_closed(
+                        notification.id,
+                        notifications::CLOSED_DISMISSED,
+                    ))
+                    .discard();
+                }
                 let known = replaces
                     && self
                         .notifications
@@ -2871,6 +2933,7 @@ impl Shell {
                 );
                 if !self.banners.replace(&notification, now)
                     && (!center_open || notification.transient)
+                    && !muted
                 {
                     self.banners.show(notification, now);
                 }
@@ -3010,13 +3073,26 @@ impl Shell {
         self.notification_hovered.or(self.notification_pinned)
     }
 
-    /// Opens the menu of what can be done with a notification, from its capsule.
-    fn open_notification_options(
+    /// Closes a menu opened from a card, leaving Notification Center there, if that's what it's on.
+    fn close_notification_menu(&mut self) -> Task<Message> {
+        if matches!(
+            self.popup.as_ref().map(|popup| &popup.content),
+            Some(PopupContent::NotificationCenter)
+        ) {
+            self.close_submenus(0)
+        } else {
+            self.close_popup()
+        }
+    }
+
+    /// Opens a menu from a card, which stays as it is for as long as that's open.
+    fn open_notification_menu(
         &mut self,
         id: u32,
         anchor: (i32, i32, i32, i32),
+        entries: Option<Vec<menu::Entry>>,
     ) -> Task<Message> {
-        let Some(entries) = self.find_notification(id).map(Notification::options) else {
+        let Some(entries) = entries else {
             return Task::none();
         };
         let size = menu::size(&entries);
@@ -3588,6 +3664,7 @@ impl Shell {
     fn reload_config(&mut self) -> Task<Message> {
         let config = Config::load();
         self.always_glassy_widgets = config.desktop.always_glassy_widgets;
+        self.notifications_off.clone_from(&config.notifications.off);
         let mut tasks = vec![Task::perform(
             appearance::refresh(),
             Message::AppearanceApplied,

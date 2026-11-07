@@ -54,7 +54,7 @@ fn main() -> Result<(), iced_layershell::Error> {
     fonts::load();
     appearance::init();
     if std::env::args().nth(1).as_deref() == Some("settings") {
-        return settings::run();
+        return settings::run(std::env::args().nth(2).as_deref());
     }
     app::run()
 }

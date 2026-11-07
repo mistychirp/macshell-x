@@ -18,7 +18,7 @@ use crate::anim::{self, Motion, Spring};
 use crate::app::{Element, Message};
 use crate::notifications::{
     CARD_WIDTH, CHIP_INK, CLOSE_SIZE, HoverFade, Notification, OVERHANG, RADIUS, card, chip_shape,
-    close_button, close_shape, closing_face, closing_scale, panel_style,
+    close_button, close_shape, closing_face, panel_style,
 };
 use crate::{dock, fonts, material, menu, menubar};
 
@@ -54,6 +54,12 @@ const PIXELS_PER_ROW: f32 = 25.0;
 /// How long a closed card takes to go, measured from Tahoe's, and how far it rises as it does.
 const CLOSING_TIME: Duration = Duration::from_millis(110);
 const CLOSING_RISE: f32 = 40.0;
+/// How small it gets by then.
+const CLOSING_SCALE: f32 = 0.5;
+/// How long the rest of a group takes to go under its first card when it closes. It's what opening
+/// one takes, run backwards, with nothing to go by but how Tahoe opens one and closes a single card.
+const FOLD_TIME: Duration = ARRIVAL_TIME;
+const FOLD_SCALE: f32 = 0.9;
 /// How long a row that's new here takes to show, when a group opens.
 const ARRIVAL_TIME: Duration = Duration::from_millis(180);
 
@@ -65,6 +71,9 @@ const ROW_SPRING: Spring = Spring::new(0.285, 0.92);
 pub struct Motions {
     rows: HashMap<String, RowMotion>,
     closing: Vec<Closing>,
+    /// The rest of a group on its way under its first card, which are drawn under everything.
+    folding: Vec<Closing>,
+    folding_headers: Vec<FoldingHeader>,
     going: bool,
 }
 
@@ -72,22 +81,72 @@ struct RowMotion {
     y: Motion,
     /// When it arrived, unless it was there from the start.
     arrived: Option<Instant>,
+    /// How far the edges of the rest of its group are out from under it, from 0 to 1.
+    peeks: Motion,
 }
 
 struct Closing {
     notification: Notification,
     time: String,
     y: f32,
+    to: f32,
     started: Instant,
+    takes: Duration,
+    scale: f32,
 }
 
 impl Closing {
     fn t(&self) -> f32 {
-        (anim::seconds_since(self.started) / CLOSING_TIME.as_secs_f32()).min(1.0)
+        (anim::seconds_since(self.started) / self.takes.as_secs_f32()).min(1.0)
     }
 
     fn y(&self, t: f32) -> f32 {
-        self.y - CLOSING_RISE * t
+        self.y + (self.to - self.y) * t
+    }
+
+    fn scale(&self, t: f32) -> f32 {
+        1.0 - (1.0 - self.scale) * t
+    }
+
+    /// Its glass, `t` of the way through going.
+    fn shape(&self, t: f32) -> material::Shape {
+        let scale = self.scale(t);
+        let whole = self.notification.height();
+        let (width, height) = (CARD_WIDTH * scale, whole * scale);
+        card_shape(
+            CARD_X + (CARD_WIDTH - width) / 2.0,
+            self.y(t) + (whole - height) / 2.0,
+            width,
+            height,
+            RADIUS * scale,
+        )
+    }
+
+    fn layer<'a>(&'a self, t: f32, material: Option<material::Kind>) -> Element<'a> {
+        pin(closing_face(
+            &self.notification,
+            Some(self.time.clone()),
+            t,
+            self.scale(t),
+            material,
+        ))
+        .x(CARD_X)
+        .y(self.y(t))
+        .into()
+    }
+}
+
+/// The controls of a group that's closing, fading where they are.
+struct FoldingHeader {
+    app_key: String,
+    app: String,
+    y: f32,
+    started: Instant,
+}
+
+impl FoldingHeader {
+    fn t(&self) -> f32 {
+        (anim::seconds_since(self.started) / FOLD_TIME.as_secs_f32()).min(1.0)
     }
 }
 
@@ -101,12 +160,22 @@ impl Motions {
         height: f32,
     ) {
         let from_start = !std::mem::replace(&mut self.going, true);
-        let targets: Vec<(String, f32)> = placed(notifications, open, first, height)
+        let targets: Vec<(String, f32, bool)> = placed(notifications, open, first, height)
             .into_iter()
-            .map(|(row, y)| (row.key(), y))
+            .map(|(row, y)| {
+                let peeks = matches!(
+                    row,
+                    Row::Card {
+                        closed_group: true,
+                        ..
+                    }
+                );
+                (row.key(), y, peeks)
+            })
             .collect();
         let mut above: Option<f32> = None;
-        for (key, target) in &targets {
+        for (key, target, peeks) in &targets {
+            let peeks = if *peeks { 1.0 } else { 0.0 };
             let row = self.rows.entry(key.clone()).or_insert_with(|| {
                 // A new one comes out from under the one above it.
                 let start = if from_start {
@@ -117,9 +186,11 @@ impl Motions {
                 RowMotion {
                     y: Motion::at(start, ROW_SPRING, 0.25),
                     arrived: (!from_start).then(anim::now),
+                    peeks: Motion::at(peeks, ROW_SPRING, 0.01),
                 }
             });
             row.y.go_to(*target);
+            row.peeks.go_to(peeks);
             if row
                 .arrived
                 .is_some_and(|arrived| anim::seconds_since(arrived) >= ARRIVAL_TIME.as_secs_f32())
@@ -129,8 +200,10 @@ impl Motions {
             above = Some(row.y.value());
         }
         self.rows
-            .retain(|key, _| targets.iter().any(|(target, _)| target == key));
+            .retain(|key, _| targets.iter().any(|(target, _, _)| target == key));
         self.closing.retain(|closing| closing.t() < 1.0);
+        self.folding.retain(|closing| closing.t() < 1.0);
+        self.folding_headers.retain(|header| header.t() < 1.0);
     }
 
     /// A card was closed: it goes from where it is.
@@ -140,21 +213,68 @@ impl Motions {
                 notification: notification.clone(),
                 time: notification.time_label(),
                 y: row.y.value(),
+                to: row.y.value() - CLOSING_RISE,
+                started: anim::now(),
+                takes: CLOSING_TIME,
+                scale: CLOSING_SCALE,
+            });
+        }
+    }
+
+    /// An open group is closing: all but its first card go under that one, to where it's headed,
+    /// which is where its header is now.
+    pub fn fold(&mut self, notifications: &[Notification], app_key: &str) {
+        let header_key = format!("header {app_key}");
+        let Some(header) = self.rows.get(&header_key) else {
+            return;
+        };
+        let (header_y, to) = (header.y.value(), header.y.target());
+        let group: Vec<&Notification> = notifications
+            .iter()
+            .filter(|notification| notification.app_key == app_key)
+            .collect();
+        if let Some(first) = group.first() {
+            self.folding_headers.push(FoldingHeader {
+                app_key: app_key.to_owned(),
+                app: first.app.clone(),
+                y: header_y,
                 started: anim::now(),
             });
+        }
+        for notification in group.into_iter().skip(1) {
+            if let Some(row) = self.rows.get(&card_key(notification.id)) {
+                self.folding.push(Closing {
+                    notification: notification.clone(),
+                    time: notification.time_label(),
+                    y: row.y.value(),
+                    to,
+                    started: anim::now(),
+                    takes: FOLD_TIME,
+                    scale: FOLD_SCALE,
+                });
+            }
         }
     }
 
     pub fn is_animating(&self) -> bool {
         !self.closing.is_empty()
+            || !self.folding.is_empty()
+            || !self.folding_headers.is_empty()
             || self
                 .rows
                 .values()
-                .any(|row| row.arrived.is_some() || row.y.is_moving())
+                .any(|row| row.arrived.is_some() || row.y.is_moving() || row.peeks.is_moving())
     }
 
     fn y(&self, key: &str, target: f32) -> f32 {
         self.rows.get(key).map_or(target, |row| row.y.value())
+    }
+
+    /// How far the edges of the rest of a card's group are out from under it.
+    fn peeks(&self, key: &str) -> f32 {
+        self.rows
+            .get(key)
+            .map_or(0.0, |row| row.peeks.value().clamp(0.0, 1.0))
     }
 
     fn shows(&self, key: &str) -> f32 {
@@ -169,6 +289,34 @@ impl Motions {
 
 fn card_key(id: u32) -> String {
     format!("card {id}")
+}
+
+fn card_shape(x: f32, y: f32, width: f32, height: f32, radius: f32) -> material::Shape {
+    material::Shape {
+        rect: (x as i32, y as i32, width as i32, height as i32),
+        radius: radius as i32,
+        style: material::Style::Card,
+    }
+}
+
+/// Where the edge of the group's next card is, for how far out it is: from behind the card above.
+fn peek_y(index: usize, card_bottom: f32, peeks: f32) -> f32 {
+    card_bottom + 1.0 + index as f32 * PEEK_HEIGHT
+        - (1.0 - peeks) * (index + 1) as f32 * PEEK_HEIGHT
+}
+
+/// The glass of a group's "Show less" and ✕.
+fn header_shapes(y: f32) -> [material::Shape; 2] {
+    let close_x = CARD_X + CARD_WIDTH - CLOSE_SIZE;
+    [
+        chip_shape(
+            close_x - CONTROL_GAP - SHOW_LESS_WIDTH,
+            y,
+            SHOW_LESS_WIDTH,
+            SHOW_LESS_HEIGHT,
+        ),
+        close_shape(close_x, y + (SHOW_LESS_HEIGHT - CLOSE_SIZE) / 2.0),
+    ]
 }
 
 /// The height of Notification Center's surface on a screen this tall: down to the dock. Any taller
@@ -292,11 +440,7 @@ pub fn material_shapes(
     motion: &Motions,
     fade: &HoverFade,
 ) -> (Vec<material::Shape>, Vec<f32>) {
-    let shape = |x: f32, y: f32, width: f32, height: f32, radius: f32| material::Shape {
-        rect: (x as i32, y as i32, width as i32, height as i32),
-        radius: radius as i32,
-        style: material::Style::Card,
-    };
+    let shape = card_shape;
     let mut shapes = Vec::new();
     let mut opacities = Vec::new();
     if notifications.is_empty() {
@@ -306,6 +450,18 @@ pub fn material_shapes(
             style: material::Style::Backdrop([190, 30, 100, 110]),
         });
         opacities.push(1.0);
+    }
+    for closing in &motion.folding {
+        let t = closing.t();
+        shapes.push(closing.shape(t));
+        opacities.push(1.0 - t);
+    }
+    for header in &motion.folding_headers {
+        let t = header.t();
+        for chip in header_shapes(header.y) {
+            shapes.push(chip);
+            opacities.push(1.0 - t);
+        }
     }
     for (row, y) in placed(notifications, open, first, height) {
         let key = row.key();
@@ -320,26 +476,31 @@ pub fn material_shapes(
                 add(close_shape(CARD_X + CARD_WIDTH - CLOSE_SIZE, y), shows);
             }
             Row::Header { .. } => {
-                let close_x = CARD_X + CARD_WIDTH - CLOSE_SIZE;
-                add(
-                    chip_shape(
-                        close_x - CONTROL_GAP - SHOW_LESS_WIDTH,
-                        y,
-                        SHOW_LESS_WIDTH,
-                        SHOW_LESS_HEIGHT,
-                    ),
-                    shows,
-                );
-                add(
-                    close_shape(close_x, y + (SHOW_LESS_HEIGHT - CLOSE_SIZE) / 2.0),
-                    shows,
-                );
+                for chip in header_shapes(y) {
+                    add(chip, shows);
+                }
             }
             Row::Card {
                 notification,
                 closed_group,
             } => {
                 let card_height = notification.height();
+                // Under the card, which they come out from.
+                let peeks = motion.peeks(&key);
+                if peeks > 0.0 {
+                    for (index, inset) in PEEKS.into_iter().enumerate() {
+                        add(
+                            shape(
+                                CARD_X + inset,
+                                peek_y(index, y + card_height, peeks),
+                                CARD_WIDTH - 2.0 * inset,
+                                PEEK_HEIGHT - 1.0,
+                                (PEEK_HEIGHT - 1.0) / 2.0,
+                            ),
+                            shows * peeks,
+                        );
+                    }
+                }
                 add(shape(CARD_X, y, CARD_WIDTH, card_height, RADIUS), shows);
                 // On top of the card's, so after it.
                 let capsule = notification.capsule_shows(fade.amount(notification.id));
@@ -355,34 +516,12 @@ pub fn material_shapes(
                 if hovered == Some(notification.id) {
                     add(close_shape(CARD_X - OVERHANG, y - OVERHANG), shows);
                 }
-                if closed_group {
-                    for (index, inset) in PEEKS.into_iter().enumerate() {
-                        add(
-                            shape(
-                                CARD_X + inset,
-                                y + card_height + 1.0 + index as f32 * PEEK_HEIGHT,
-                                CARD_WIDTH - 2.0 * inset,
-                                PEEK_HEIGHT - 1.0,
-                                (PEEK_HEIGHT - 1.0) / 2.0,
-                            ),
-                            shows,
-                        );
-                    }
-                }
             }
         }
     }
     for closing in &motion.closing {
         let t = closing.t();
-        let scale = closing_scale(t);
-        let (width, height) = (CARD_WIDTH * scale, closing.notification.height() * scale);
-        shapes.push(shape(
-            CARD_X + (CARD_WIDTH - width) / 2.0,
-            closing.y(t) + (closing.notification.height() - height) / 2.0,
-            width,
-            height,
-            RADIUS * scale,
-        ));
+        shapes.push(closing.shape(t));
         opacities.push(1.0 - t);
     }
     (shapes, opacities)
@@ -407,6 +546,25 @@ pub fn view<'a>(
             pin(title(message, TITLE_SIZE))
                 .x(x - SHADOW_REACH)
                 .y(EMPTY_TOP - SHADOW_REACH)
+                .into(),
+        );
+    }
+
+    for closing in &motion.folding {
+        layers.push(closing.layer(closing.t(), material));
+    }
+    for folding in &motion.folding_headers {
+        let shows = 1.0 - folding.t();
+        layers.push(
+            pin(group(header(&folding.app_key, material)).opacity(shows))
+                .x(CARD_X)
+                .y(folding.y)
+                .into(),
+        );
+        layers.push(
+            pin(group(title(&folding.app, TITLE_SIZE)).opacity(shows))
+                .x(CARD_X - SHADOW_REACH)
+                .y(folding.y - SHADOW_REACH)
                 .into(),
         );
     }
@@ -460,6 +618,25 @@ pub fn view<'a>(
                         Message::NotificationDismissed(id),
                     )
                 };
+                let peeks = motion.peeks(&key);
+                if peeks > 0.0 {
+                    for (index, inset) in PEEKS.into_iter().enumerate() {
+                        layers.push(
+                            pin(group(
+                                container(Space::new())
+                                    .width(CARD_WIDTH - 2.0 * inset)
+                                    .height(PEEK_HEIGHT - 1.0)
+                                    .style(move |_| {
+                                        panel_style(material, (PEEK_HEIGHT - 1.0) / 2.0)
+                                    }),
+                            )
+                            .opacity(shows * peeks))
+                            .x(CARD_X + inset)
+                            .y(peek_y(index, y + notification.height(), peeks))
+                            .into(),
+                        );
+                    }
+                }
                 layers.push(
                     pin(group(card(
                         notification,
@@ -476,35 +653,11 @@ pub fn view<'a>(
                     .y(y - OVERHANG)
                     .into(),
                 );
-                if closed_group {
-                    for (index, inset) in PEEKS.into_iter().enumerate() {
-                        layers.push(
-                            pin(container(Space::new())
-                                .width(CARD_WIDTH - 2.0 * inset)
-                                .height(PEEK_HEIGHT - 1.0)
-                                .style(move |_| panel_style(material, (PEEK_HEIGHT - 1.0) / 2.0)))
-                            .x(CARD_X + inset)
-                            .y(y + notification.height() + 1.0 + index as f32 * PEEK_HEIGHT)
-                            .into(),
-                        );
-                    }
-                }
             }
         }
     }
     for closing in &motion.closing {
-        let t = closing.t();
-        layers.push(
-            pin(closing_face(
-                &closing.notification,
-                Some(closing.time.clone()),
-                t,
-                material,
-            ))
-            .x(CARD_X)
-            .y(closing.y(t))
-            .into(),
-        );
+        layers.push(closing.layer(closing.t(), material));
     }
 
     // Scrolling anywhere works; presses on the empty part fall through and close the panel.
@@ -667,6 +820,16 @@ fn header<'a>(app_key: &str, material: Option<material::Kind>) -> Element<'a> {
 #[cfg(test)]
 mod motion_tests {
     use super::*;
+
+    #[test]
+    fn the_edges_of_a_group_come_out_from_behind_what_they_peek_from() {
+        // All the way in, each is behind the card, or the edge above it.
+        assert!(peek_y(0, 100.0, 0.0) < 100.0);
+        assert!(peek_y(1, 100.0, 0.0) < 100.0);
+        // All the way out, they're where they stay, in order.
+        assert_eq!(peek_y(0, 100.0, 1.0), 101.0);
+        assert_eq!(peek_y(1, 100.0, 1.0), 101.0 + PEEK_HEIGHT);
+    }
 
     #[test]
     fn nothing_moves_when_nothing_is_there() {

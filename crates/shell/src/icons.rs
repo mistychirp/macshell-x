@@ -66,6 +66,9 @@ pub enum Glyph {
     Drop,
     /// A circle half filled in, for the appearance settings.
     Appearance,
+    /// Three dots, for more of what can be done.
+    Ellipsis,
+    Bell,
     /// A magnifying glass.
     Search,
     /// What the Downloads tile shows while its fan is open.
@@ -251,6 +254,17 @@ impl Glyph {
             Glyph::Drop => {
                 r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000">
                 <path d="M12 2.5c3.6 4.6 7 8.3 7 12.2a7 7 0 0 1-14 0c0-3.9 3.4-7.6 7-12.2z"/>
+                </svg>"##
+            }
+            Glyph::Ellipsis => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000">
+                <circle cx="5" cy="12" r="2.1"/><circle cx="12" cy="12" r="2.1"/><circle cx="19" cy="12" r="2.1"/>
+                </svg>"##
+            }
+            Glyph::Bell => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000">
+                <path d="M12 2.5a1.6 1.6 0 0 1 1.6 1.6v.5c3 .7 4.9 3.3 4.9 6.4 0 3.2.6 4.7 1.9 6 .5.6.1 1.5-.7 1.5H4.3c-.8 0-1.2-.9-.7-1.5 1.3-1.3 1.9-2.8 1.9-6 0-3.1 1.9-5.7 4.9-6.4v-.5A1.6 1.6 0 0 1 12 2.5z"/>
+                <path d="M9.4 20h5.2a2.6 2.6 0 0 1-5.2 0z"/>
                 </svg>"##
             }
             Glyph::Appearance => {
