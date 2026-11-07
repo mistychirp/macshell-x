@@ -48,6 +48,10 @@ pub enum Title {
     Input,
     /// A wired connection, shown when there's no Wi-Fi.
     Ethernet,
+    /// Status items, which open what Control Center's modules for them open to.
+    Wifi,
+    Bluetooth,
+    Sound,
     /// A magnifying glass, which opens Spotlight.
     Spotlight,
     /// The Control Center's switches.
@@ -193,6 +197,10 @@ pub struct Bar<'a> {
     pub input: Option<&'a str>,
     /// The machine is on a cable, with no Wi-Fi.
     pub ethernet: bool,
+    /// What the status items show, for those that are shown.
+    pub wifi: Option<Glyph>,
+    pub bluetooth: Option<Glyph>,
+    pub sound: Option<Glyph>,
     pub tray: &'a [tray::Icon],
     /// The names of the focused app's menus.
     pub app_menus: &'a [String],
@@ -226,6 +234,16 @@ impl Bar<'_> {
         titles.push((Title::ControlCenter, rect(x, CONTROL_CENTER_WIDTH)));
         x -= STATUS_WIDTH;
         titles.push((Title::Spotlight, rect(x, STATUS_WIDTH)));
+        for (title, shown) in [
+            (Title::Wifi, self.wifi),
+            (Title::Bluetooth, self.bluetooth),
+            (Title::Sound, self.sound),
+        ] {
+            if shown.is_some() {
+                x -= STATUS_WIDTH;
+                titles.push((title, rect(x, STATUS_WIDTH)));
+            }
+        }
         if self.input.is_some() {
             x -= STATUS_WIDTH;
             titles.push((Title::Input, rect(x, STATUS_WIDTH)));
@@ -396,6 +414,9 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
                 .into(),
             Title::Input => input_badge(bar.input.unwrap_or_default(), ink),
             Title::Ethernet => icons::icon(Glyph::Ethernet, 17.0, ink),
+            Title::Wifi => icons::icon(bar.wifi.unwrap_or(Glyph::Wifi), 16.0, ink),
+            Title::Bluetooth => icons::icon(bar.bluetooth.unwrap_or(Glyph::Bluetooth), 16.0, ink),
+            Title::Sound => icons::icon(bar.sound.unwrap_or(Glyph::SpeakerHigh), 16.0, ink),
             Title::ControlCenter => icons::icon(Glyph::ControlCenter, 17.0, ink),
             Title::Spotlight => icons::icon(Glyph::Search, 15.0, ink),
             Title::Clock => text(bar.clock).into(),

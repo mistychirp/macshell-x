@@ -81,11 +81,31 @@ pub struct NotificationsConfig {
     pub off: Vec<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct MenuBarConfig {
     /// Icon name or path of the logo that opens the system menu. Defaults to the distro's.
     pub logo: Option<String>,
+    /// Status items, each opening what Control Center's module for it opens to.
+    pub show_wifi: bool,
+    pub show_bluetooth: bool,
+    pub show_sound: bool,
+}
+
+impl Default for MenuBarConfig {
+    fn default() -> Self {
+        Self {
+            logo: None,
+            show_wifi: true,
+            show_bluetooth: true,
+            show_sound: true,
+        }
+    }
+}
+
+/// Rewrites one of `[menubar]`'s switches, the same way as the others.
+pub fn save_menubar_switch(key: &str, on: bool) -> io::Result<()> {
+    save("menubar", key, toml_edit::value(on))
 }
 
 /// Rewrites `[dock] pinned` in the config file, keeping the rest of it (comments included).

@@ -28,6 +28,7 @@ use crate::anim;
 use crate::apps::{self, App, AppIndex};
 use crate::banners::{self, Banners};
 use crate::config::{self, Config};
+use crate::icons::Glyph;
 use crate::kwin::{self, KeyboardLayouts, WindowInfo};
 use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
@@ -138,6 +139,15 @@ pub enum Message {
     /// A Bluetooth device was chosen; carries its path, and whether to connect.
     BluetoothConnect(zbus::zvariant::OwnedObjectPath, bool),
     ControlStatus(control::Status),
+    /// Time to look at what the bar's status items show.
+    BarStatusRefresh,
+    BarStatus(
+        Option<network::Wifi>,
+        Option<bluetooth::Bluetooth>,
+        Option<audio::Volume>,
+    ),
+    /// What a status item's menu shows has been read, so it opens at its size.
+    StatusMenuReady(menubar::Title, control::Status),
     Tick,
     /// A dock icon was pressed; carries the app's id. It becomes a click or a drag.
     DockPressed(String),
@@ -395,6 +405,8 @@ enum PopupContent {
     ControlCenter,
     /// Shows [`Shell::notifications`].
     NotificationCenter,
+    /// A status item's menu: what Control Center's module for it opens to.
+    Status(control::Detail),
 }
 
 struct Shell {
@@ -558,6 +570,10 @@ struct Shell {
     banners_opacities: Vec<f32>,
     /// Groups opened in Notification Center, by app.
     open_groups: HashSet<String>,
+    /// Which status items the bar shows.
+    show_wifi: bool,
+    show_bluetooth: bool,
+    show_sound: bool,
     /// When each app that's muted gets its banners back. It isn't kept for the next session.
     muted_apps: HashMap<String, Instant>,
     notifications_off: Vec<String>,
@@ -781,6 +797,9 @@ impl Shell {
             center_motion: notification_center::Motions::default(),
             banners_opacities: Vec::new(),
             open_groups: HashSet::new(),
+            show_wifi: config.menubar.show_wifi,
+            show_bluetooth: config.menubar.show_bluetooth,
+            show_sound: config.menubar.show_sound,
             muted_apps: HashMap::new(),
             notifications_off: config.notifications.off.clone(),
             center_scroll: 0.0,
@@ -1109,6 +1128,27 @@ impl Shell {
             }
             Message::ControlRefresh => {
                 return Task::perform(control::status(), Message::ControlStatus);
+            }
+            Message::BarStatusRefresh => {
+                return Task::perform(control::bar_status(), |(wifi, bluetooth, volume)| {
+                    Message::BarStatus(wifi, bluetooth, volume)
+                });
+            }
+            Message::BarStatus(wifi, bluetooth, volume) => {
+                self.control.wifi = wifi;
+                self.control.bluetooth = bluetooth;
+                self.control.volume = volume;
+            }
+            Message::StatusMenuReady(title, status) => {
+                let detail = match title {
+                    menubar::Title::Wifi => control::Detail::Wifi,
+                    menubar::Title::Bluetooth => control::Detail::Bluetooth,
+                    _ => control::Detail::Sound,
+                };
+                let shown = self.apply(Message::ControlStatus(status));
+                let size = control::status_size(&self.control, detail);
+                let open = self.open_bar_popup(title, size, PopupContent::Status(detail));
+                return Task::batch([shown, open]);
             }
             Message::ControlFrame => {
                 if let Some(morph) = self.control.morph
@@ -2486,6 +2526,19 @@ impl Shell {
             }
             menubar::Title::Spotlight => return self.toggle_spotlight(),
             menubar::Title::Ethernet => menubar::ethernet_menu(),
+            // Read first, so that it opens at the size of what it lists.
+            menubar::Title::Wifi | menubar::Title::Bluetooth | menubar::Title::Sound => {
+                if self.popup.is_some() {
+                    return self.close_popup();
+                }
+                let read = Task::perform(control::status(), move |status| {
+                    Message::StatusMenuReady(title, status)
+                });
+                if title == menubar::Title::Wifi {
+                    return Task::batch([read, Task::future(network::scan()).discard()]);
+                }
+                return read;
+            }
             menubar::Title::Input => match &self.keyboard_layouts {
                 Some(layouts) => menubar::input_menu(layouts),
                 None => return Task::none(),
@@ -2772,9 +2825,9 @@ impl Shell {
             Some(Surface::Popup) => match &mut self.popup {
                 Some(popup) if popup.id == id => {
                     let shapes = match popup.content {
-                        PopupContent::Menu(_) | PopupContent::ViewOptions => {
-                            menu::material_shapes(popup.size, popup.tail)
-                        }
+                        PopupContent::Menu(_)
+                        | PopupContent::ViewOptions
+                        | PopupContent::Status(_) => menu::material_shapes(popup.size, popup.tail),
                         PopupContent::ControlCenter => control::material_shapes(&self.control),
                         PopupContent::NotificationCenter => {
                             notification_center::material_shapes(
@@ -2792,9 +2845,9 @@ impl Shell {
                     let appear = match popup.content {
                         PopupContent::ControlCenter => Some(material::Appear::Fade),
                         PopupContent::NotificationCenter => Some(material::Appear::Slide),
-                        PopupContent::Menu(_) | PopupContent::ViewOptions => {
-                            Some(material::Appear::Pop)
-                        }
+                        PopupContent::Menu(_)
+                        | PopupContent::ViewOptions
+                        | PopupContent::Status(_) => Some(material::Appear::Pop),
                     };
                     if let Some(appear) = appear {
                         material.set_appear(&target, appear);
@@ -2904,6 +2957,41 @@ impl Shell {
             backdrop: self.bar_backdrop,
             input: self.input_label.as_deref(),
             ethernet: self.ethernet,
+            wifi: self
+                .show_wifi
+                .then(|| self.control.wifi.as_ref())
+                .flatten()
+                .map(|wifi| {
+                    if wifi.enabled && wifi.network.is_some() {
+                        Glyph::Wifi
+                    } else {
+                        Glyph::WifiOff
+                    }
+                }),
+            bluetooth: self
+                .show_bluetooth
+                .then(|| self.control.bluetooth.as_ref())
+                .flatten()
+                .map(|bluetooth| {
+                    if bluetooth.powered {
+                        Glyph::Bluetooth
+                    } else {
+                        Glyph::BluetoothOff
+                    }
+                }),
+            sound: self
+                .show_sound
+                .then_some(self.control.volume)
+                .flatten()
+                .map(|volume| {
+                    if volume.muted || volume.level <= 0.0 {
+                        Glyph::SpeakerMuted
+                    } else if volume.level < 0.5 {
+                        Glyph::SpeakerLow
+                    } else {
+                        Glyph::SpeakerHigh
+                    }
+                }),
             tray: &self.tray,
             app_menus: &self.app_menu_titles,
         }
@@ -3684,6 +3772,9 @@ impl Shell {
         let config = Config::load();
         self.always_glassy_widgets = config.desktop.always_glassy_widgets;
         self.notifications_off.clone_from(&config.notifications.off);
+        self.show_wifi = config.menubar.show_wifi;
+        self.show_bluetooth = config.menubar.show_bluetooth;
+        self.show_sound = config.menubar.show_sound;
         let mut tasks = vec![Task::perform(
             appearance::refresh(),
             Message::AppearanceApplied,
@@ -4489,6 +4580,9 @@ impl Shell {
                         desktop::view_options(self.desktop.metrics())
                     }
                     Some(PopupContent::ControlCenter) => control::view(&self.control, material),
+                    Some(PopupContent::Status(detail)) => {
+                        control::status_view(*detail, &self.control, material)
+                    }
                     Some(PopupContent::NotificationCenter) => notification_center::view(
                         &self.notifications,
                         &self.open_groups,
@@ -4547,10 +4641,12 @@ impl Shell {
         // What the Control Center shows can change under it, like a track ending.
         let control_open = matches!(
             self.popup.as_ref().map(|popup| &popup.content),
-            Some(PopupContent::ControlCenter)
+            Some(PopupContent::ControlCenter | PopupContent::Status(_))
         );
         let control_refresh = if control_open {
             time::every(Duration::from_secs(2)).map(|_| Message::ControlRefresh)
+        } else if self.show_wifi || self.show_bluetooth || self.show_sound {
+            time::every(Duration::from_secs(3)).map(|_| Message::BarStatusRefresh)
         } else {
             Subscription::none()
         };

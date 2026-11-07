@@ -604,7 +604,7 @@ pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
         (Some(detail), None) => {
             // A press beside it goes back to the modules; the detail keeps its own presses.
             return mouse_area(
-                container(pin(detail_view(detail, panel, material)).x(BLUR_LEFT))
+                container(pin(detail_view(detail, panel, material, true)).x(BLUR_LEFT))
                     .width(Length::Fill)
                     .height(Length::Fill),
             )
@@ -634,7 +634,7 @@ pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
                 .collect();
             // The detail first, since a stack takes its size from its first layer.
             let mut inside: Vec<Element<'_>> = vec![
-                group(detail_view(detail, panel, material))
+                group(detail_view(detail, panel, material, true))
                     .opacity(detail_shows)
                     .into(),
             ];
@@ -1055,15 +1055,50 @@ fn detail_rows(panel: &Panel, detail: Detail) -> usize {
 }
 
 fn detail_height(panel: &Panel) -> f32 {
-    let rows = panel.detail.map_or(1, |detail| detail_rows(panel, detail));
+    panel.detail.map_or_else(
+        || detail_height_for(panel, Detail::Wifi),
+        |detail| detail_height_for(panel, detail),
+    )
+}
+
+fn detail_height_for(panel: &Panel, detail: Detail) -> f32 {
+    let rows = detail_rows(panel, detail);
     let full = DETAIL_HEADER + 2.0 * DETAIL_SEPARATOR + rows as f32 * DETAIL_ROW + DETAIL_FOOTER;
     full.min(bubbles_height(panel))
+}
+
+/// How big a module's detail is as a status item's menu.
+pub fn status_size(panel: &Panel, detail: Detail) -> (u32, u32) {
+    (WIDTH as u32, detail_height_for(panel, detail).ceil() as u32)
+}
+
+/// A module's detail as a status item's menu, which is the same but for pressing it going back.
+pub fn status_view<'a>(
+    detail: Detail,
+    panel: &'a Panel,
+    material: Option<material::Kind>,
+) -> Element<'a> {
+    detail_view(detail, panel, material, false)
+}
+
+/// What a status item in the bar shows: Wi-Fi's, Bluetooth's and the speaker's state.
+pub async fn bar_status() -> (Option<Wifi>, Option<Bluetooth>, Option<Volume>) {
+    let volume = tokio::task::spawn_blocking(audio::volume)
+        .await
+        .ok()
+        .flatten();
+    (
+        crate::network::wifi().await,
+        bluetooth::bluetooth().await,
+        volume,
+    )
 }
 
 fn detail_view<'a>(
     detail: Detail,
     panel: &'a Panel,
     material: Option<material::Kind>,
+    in_control_center: bool,
 ) -> Element<'a> {
     let (settings_label, settings_page) = detail.settings();
     let header = container(
@@ -1095,7 +1130,7 @@ fn detail_view<'a>(
     );
 
     // Pressing the panel itself goes back, as on macOS; what's on it keeps its own presses.
-    mouse_area(
+    let panel_view = mouse_area(
         container(column![
             header,
             detail_separator(),
@@ -1106,7 +1141,7 @@ fn detail_view<'a>(
                 .padding([4.0, DETAIL_INSET]),
         ])
         .width(WIDTH)
-        .height(detail_height(panel))
+        .height(detail_height_for(panel, detail))
         .style(move |_| {
             let mut style = container::Style {
                 background: Some(Background::Color(Color::from_rgba(
@@ -1121,9 +1156,12 @@ fn detail_view<'a>(
             style.text_color = Some(Color::WHITE);
             style
         }),
-    )
-    .on_press(Message::ControlDetail(None))
-    .into()
+    );
+    if in_control_center {
+        panel_view.on_press(Message::ControlDetail(None)).into()
+    } else {
+        panel_view.into()
+    }
 }
 
 /// The switch at the top of a detail panel, for what can be turned off.

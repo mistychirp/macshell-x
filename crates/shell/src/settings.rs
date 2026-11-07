@@ -174,6 +174,8 @@ pub enum Message {
     /// Something outside asked for this page.
     PageAsked(String),
     BackgroundsOnlyToggled(bool),
+    /// One of the menu bar's status items, by its key in the config file, was shown or hidden.
+    MenuBarSwitchToggled(&'static str, bool),
     ExceptionsRead(Vec<String>),
     /// An app's to be left as it is, or not.
     ExceptionChanged(String, bool),
@@ -480,6 +482,8 @@ struct SettingsApp {
     magnification: bool,
     magnified_size: f32,
     always_glassy: bool,
+    /// The menu bar's status items that are shown, by their keys in the config file.
+    menubar_switches: Vec<(&'static str, bool)>,
     wallpaper: Option<String>,
     wallpaper_picture: Option<image::Handle>,
     /// As the config file has it.
@@ -654,6 +658,7 @@ impl SettingsApp {
             magnification: config.dock.magnification,
             magnified_size: config.dock.magnified_size,
             always_glassy: config.desktop.always_glassy_widgets,
+            menubar_switches: menubar_switches(&config),
             wallpaper: config.desktop.wallpaper,
             wallpaper_picture: None,
             accent_text: accent_text(&config.appearance.accent),
@@ -738,6 +743,19 @@ impl SettingsApp {
                 if let Some(page) = Page::named(&name) {
                     return self.update(Message::ShowPage(page));
                 }
+            }
+            Message::MenuBarSwitchToggled(key, on) => {
+                if let Some(entry) = self
+                    .menubar_switches
+                    .iter_mut()
+                    .find(|(known, _)| *known == key)
+                {
+                    entry.1 = on;
+                }
+                if let Err(err) = config::save_menubar_switch(key, on) {
+                    log::warn!("can't save what the menu bar shows: {err}");
+                }
+                return Task::future(tell_shell()).discard();
             }
             Message::BackgroundsOnlyToggled(on) => {
                 let value = if on { 1.0 } else { 0.0 };
@@ -924,6 +942,7 @@ impl SettingsApp {
                     self.magnification = config.dock.magnification;
                     self.magnified_size = config.dock.magnified_size;
                     self.always_glassy = config.desktop.always_glassy_widgets;
+                    self.menubar_switches = menubar_switches(&config);
                     self.wallpaper.clone_from(&config.desktop.wallpaper);
                     self.accent_text = accent_text(&config.appearance.accent);
                     self.accent = config.appearance.accent;
@@ -1292,6 +1311,23 @@ impl SettingsApp {
             ),
             section("Dock", card(dock)),
             section(
+                "Menu Bar",
+                card(
+                    self.menubar_switches
+                        .iter()
+                        .map(|(key, on)| {
+                            let key = *key;
+                            setting_row(
+                                menubar_switch_label(key),
+                                settings_toggle(*on, move |on| {
+                                    Message::MenuBarSwitchToggled(key, on)
+                                }),
+                            )
+                        })
+                        .collect(),
+                ),
+            ),
+            section(
                 "Widgets",
                 column![
                     card(vec![setting_row(
@@ -1613,6 +1649,23 @@ fn redraw_soon() -> Task<Message> {
             Message::Redraw
         })
     }))
+}
+
+/// The menu bar's status items, by their keys in the config file, and whether each is shown.
+fn menubar_switches(config: &Config) -> Vec<(&'static str, bool)> {
+    vec![
+        ("show_wifi", config.menubar.show_wifi),
+        ("show_bluetooth", config.menubar.show_bluetooth),
+        ("show_sound", config.menubar.show_sound),
+    ]
+}
+
+fn menubar_switch_label(key: &str) -> &'static str {
+    match key {
+        "show_wifi" => "Wi-Fi",
+        "show_bluetooth" => "Bluetooth",
+        _ => "Sound",
+    }
 }
 
 /// What the field for a typed-in accent shows for what's in the config file.
