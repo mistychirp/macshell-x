@@ -40,6 +40,9 @@ let
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key fadingpopupsEnabled --type bool false
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeInTime 1
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeOutTime 30
+    # Switching desktops slides the windows, and the wallpaper stays, as on macOS. There's one
+    # wallpaper for all of them, which would otherwise slide into a copy of itself past a black gap.
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-slide --key SlideBackground --type bool false
     ${pkgs.dbus}/bin/dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure
     # Unlocks KWallet with the login password, which PAM kept for this.
     systemctl --user start --no-block plasma-kwallet-pam.service
@@ -61,6 +64,7 @@ let
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group TabBox --key ApplicationsMode --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeInTime --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeOutTime --delete
+        ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-slide --key SlideBackground --delete
         systemctl --user stop macshell-session.target
         exit 0
       fi

@@ -158,6 +158,21 @@ GlassEffect::GlassEffect()
         }
     });
 
+    // KWin's slide between desktops lifts every dock above all windows while it lasts, so that panels
+    // stay over a full-screen window. The desktop's icons and widgets are a dock to KWin too, and
+    // belong under windows. Lifting happens as the switch starts, so this goes right after.
+    const auto keepDesktopDown = [this] {
+        QTimer::singleShot(0, this, [] {
+            for (EffectWindow *w : effects->stackingOrder()) {
+                if (w->isDock() && w->window()->layer() == BelowLayer) {
+                    effects->setElevatedWindow(w, false);
+                }
+            }
+        });
+    };
+    connect(effects, &EffectsHandler::desktopChanged, this, keepDesktopDown);
+    connect(effects, &EffectsHandler::desktopChanging, this, keepDesktopDown);
+
     m_saveSoon = new QTimer(this);
     m_saveSoon->setSingleShot(true);
     m_saveSoon->setInterval(500);
