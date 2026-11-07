@@ -97,6 +97,25 @@ struct GlassSettings {
 
     /// How opaque apps' windows are drawn, so that what's behind shows, blurred.
     float windowOpacity = 1.0;
+    /// Whether that's only their background, rather than all of them. 1 or 0.
+    float windowBackgroundsOnly = 1.0;
+};
+
+/// An app's window drawn with only its background see-through. It's drawn by itself first, which is
+/// where its background colors are found, and then from that.
+struct KeyedWindow {
+    ~KeyedWindow();
+    std::unique_ptr<KWin::GLTexture> texture;
+    std::unique_ptr<KWin::GLFramebuffer> framebuffer;
+    /// The window has changed since it was last drawn by itself.
+    bool dirty = true;
+    /// Its background colors, as they're stored in the texture.
+    QList<QVector3D> keys;
+    /// It's see-through by itself, like a terminal set up that way, and keeps its own opacity.
+    bool clearByItself = false;
+    /// When they were last looked for, since they're looked for again now and then.
+    QElapsedTimer looked;
+    QMetaObject::Connection damaged;
 };
 
 /// What one glass shape keeps between frames, per render view.
@@ -129,6 +148,8 @@ struct WindowGlass {
     bool automatic = false;
     /// It's drawn less than opaque, so that what's behind shows.
     bool dim = false;
+    /// Only its background is, which takes drawing it by itself first.
+    std::unique_ptr<KeyedWindow> keyed;
 };
 
 /// Glass behind the shapes clients ask for with macshell-glass-v1, the way Tahoe draws it: a flat
@@ -181,6 +202,9 @@ private:
     void watchAppWindow(KWin::EffectWindow *w);
     bool takesAppGlass(KWin::EffectWindow *w) const;
     bool isException(KWin::EffectWindow *w) const;
+    /// Draws a window with only its background see-through, or returns false if it can't yet.
+    bool drawKeyed(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data, KeyedWindow &keyed);
+    void findBackgrounds(KeyedWindow &keyed, const KWin::Rect &frame);
     void windowMoved(KWin::EffectWindow *w, const KWin::RectF &oldGeometry);
     void placeDialog(KWin::EffectWindow *w);
     void paintGlass(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data);
@@ -200,6 +224,10 @@ private:
     std::unique_ptr<KWin::GLShader> m_glassShader;
     std::unique_ptr<KWin::GLShader> m_downsampleShader;
     std::unique_ptr<KWin::GLShader> m_upsampleShader;
+    std::unique_ptr<KWin::GLShader> m_keyedShader;
+    /// A window's background colors are found in a small copy of it.
+    std::unique_ptr<KWin::GLTexture> m_keySampleTexture;
+    std::unique_ptr<KWin::GLFramebuffer> m_keySampleFramebuffer;
 
     /// Brightness probes downsample into this.
     std::unique_ptr<KWin::GLTexture> m_probeTexture;

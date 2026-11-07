@@ -2,6 +2,7 @@
 <qresource prefix="/effects/macshell/">
   <file>shaders/downsample.frag</file>
   <file>shaders/glass.frag</file>
+  <file>shaders/keyed.frag</file>
   <file>shaders/upsample.frag</file>
   <file>shaders/vertex.vert</file>
 </qresource>

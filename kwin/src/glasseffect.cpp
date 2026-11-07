@@ -10,6 +10,8 @@
 #include "glassmanager.h"
 
 #include "core/output.h"
+#include "core/pixelgrid.h"
+#include "scene/itemgeometry.h"
 #include "core/rendertarget.h"
 #include "core/renderviewport.h"
 #include "effect/effecthandler.h"
@@ -37,6 +39,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <unordered_map>
 #include <numbers>
 
 Q_LOGGING_CATEGORY(MACSHELL_GLASS, "macshell_glass", QtWarningMsg)
@@ -56,6 +59,20 @@ static constexpr int s_switcherRadius = 30;
 
 /// The decoration's corner radius, which app windows' glass follows.
 static constexpr int s_windowRadius = 16;
+/// About what a window that draws its own title bar has, like a GTK app's.
+static constexpr int s_clientDecoratedRadius = 12;
+/// How much of a window can be see-through by itself, as its rounded corners are, before it counts
+/// as being see-through.
+static constexpr double s_cornersShare = 0.02;
+/// How big a copy of a window its background colors are found in.
+static constexpr QSize s_keySampleSize(64, 64);
+/// How much of a window a color has to cover to be its background, and how many it can have.
+static constexpr double s_keyShare = 0.06;
+static constexpr int s_maxKeys = 4;
+/// How much of a window has to be see-through for it to be see-through by itself.
+static constexpr double s_clearShare = 0.3;
+/// How often a window that keeps changing has its background colors looked for again.
+static constexpr int s_keyLookMs = 1000;
 /// The least opaque windows can be made, past which they'd be hard to read.
 static constexpr float s_leastWindowOpacity = 0.5f;
 
@@ -107,7 +124,9 @@ GlassEffect::GlassEffect()
     m_upsampleShader = ShaderManager::instance()->generateShaderFromFile(ShaderTrait::MapTexture,
                                                                          QStringLiteral(":/effects/macshell/shaders/vertex.vert"),
                                                                          QStringLiteral(":/effects/macshell/shaders/upsample.frag"));
-    if (!m_glassShader || !m_downsampleShader || !m_upsampleShader) {
+    m_keyedShader = ShaderManager::instance()->generateShaderFromFile(ShaderTrait::MapTexture, QString(),
+                                                                      QStringLiteral(":/effects/macshell/shaders/keyed.frag"));
+    if (!m_glassShader || !m_downsampleShader || !m_upsampleShader || !m_keyedShader) {
         qCWarning(MACSHELL_GLASS) << "failed to load the glass shaders";
         return;
     }
@@ -301,6 +320,7 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
     m_settings.bubbleTint = group.readEntry("BubbleTint", defaults.bubbleTint);
     m_settings.bubbleEdgeGain = group.readEntry("BubbleEdgeGain", defaults.bubbleEdgeGain);
     m_settings.windowOpacity = std::clamp(group.readEntry("WindowOpacity", defaults.windowOpacity), s_leastWindowOpacity, 1.0f);
+    m_settings.windowBackgroundsOnly = group.readEntry("WindowBackgroundsOnly", defaults.windowBackgroundsOnly);
     m_exceptions = group.readEntry(s_exceptionsKey, QStringList());
     if (m_valid) {
         for (EffectWindow *w : effects->stackingOrder()) {
@@ -323,6 +343,7 @@ static const std::map<QString, float GlassSettings::*> s_tunable = {
 static const QString s_greenFullScreen = QStringLiteral("GreenFullScreen");
 /// Not among the glass's own, which resetting them leaves alone.
 static const QString s_windowOpacity = QStringLiteral("WindowOpacity");
+static const QString s_windowBackgroundsOnly = QStringLiteral("WindowBackgroundsOnly");
 
 static KConfigGroup settingsGroup()
 {
@@ -337,13 +358,16 @@ double GlassEffect::setting(const QString &key) const
     if (key == s_windowOpacity) {
         return m_settings.windowOpacity;
     }
+    if (key == s_windowBackgroundsOnly) {
+        return m_settings.windowBackgroundsOnly;
+    }
     const auto found = s_tunable.find(key);
     return found == s_tunable.end() ? 0.0 : m_settings.*(found->second);
 }
 
 void GlassEffect::setSetting(const QString &key, double value)
 {
-    if (key != s_greenFullScreen && key != s_windowOpacity && !s_tunable.contains(key)) {
+    if (key != s_greenFullScreen && key != s_windowOpacity && key != s_windowBackgroundsOnly && !s_tunable.contains(key)) {
         return;
     }
     settingsGroup().writeEntry(key, value);
@@ -390,9 +414,9 @@ bool GlassEffect::isException(EffectWindow *w) const
 
 bool GlassEffect::takesAppGlass(EffectWindow *w) const
 {
-    // Only windows with the decoration, whose edges are the window's. One that draws its own has its
-    // shadow inside its surface, which glass would show as a box around it.
-    return !w->isDeleted() && (w->isNormalWindow() || w->isDialog()) && w->hasDecoration() && !w->isFullScreen()
+    // A window that draws its own title bar has its shadow in its surface too, but its frame is where
+    // it says its edges are, without the shadow, and that's what the glass covers.
+    return !w->isDeleted() && (w->isNormalWindow() || w->isDialog()) && !w->isFullScreen()
         && !w->internalWindow() && !(w->surface() && m_manager->usesGlass(w->surface()));
 }
 
@@ -403,8 +427,17 @@ static bool seeThrough(EffectWindow *w)
     if (!surface) {
         return false;
     }
-    const RectF whole(QPointF(), surface->size());
-    return !RegionF(whole).subtracted(surface->opaque()).isEmpty();
+    // Only within the window's frame: one that draws its own title bar has its shadow in its surface,
+    // which is see-through, and so are its rounded corners, which are too small to count.
+    const RectF frame = RectF(w->frameGeometry()).translated(-w->bufferGeometry().topLeft()) & RectF(QPointF(), surface->size());
+    if (frame.isEmpty()) {
+        return false;
+    }
+    double clear = 0;
+    for (const Rect &rect : RegionF(frame).subtracted(surface->opaque()).rounded().rects()) {
+        clear += double(rect.width()) * rect.height();
+    }
+    return clear > s_cornersShare * frame.width() * frame.height();
 }
 
 void GlassEffect::watchAppWindow(EffectWindow *w)
@@ -436,9 +469,12 @@ void GlassEffect::updateAppGlass(EffectWindow *w)
         return;
     }
     const bool fits = takesAppGlass(w) && !isException(w);
-    // One that's see-through by itself keeps its own opacity, and gets the blur behind.
-    const bool clear = fits && seeThrough(w);
-    const bool dim = fits && !clear && m_settings.windowOpacity < 1.0f;
+    // With windows see-through, each is drawn by itself first, which shows whether it's see-through by
+    // itself as well, and keeps its own opacity if it is. Otherwise, there's only what an app says
+    // about its window to go by, which not all of them do, and a window that is gets the blur.
+    const bool translucentWindows = m_settings.windowOpacity < 1.0f;
+    const bool clear = fits && !translucentWindows && seeThrough(w);
+    const bool dim = fits && translucentWindows;
     if (!clear && !dim) {
         if (ours) {
             effects->makeOpenGLContextCurrent();
@@ -451,10 +487,24 @@ void GlassEffect::updateAppGlass(EffectWindow *w)
     WindowGlass &data = m_windows[w];
     data.automatic = true;
     data.dim = dim;
+    if (dim) {
+        if (!data.keyed) {
+            data.keyed = std::make_unique<KeyedWindow>();
+            KeyedWindow *keyed = data.keyed.get();
+            keyed->damaged = connect(w, &EffectWindow::windowDamaged, this, [keyed] {
+                keyed->dirty = true;
+            });
+        }
+    } else if (data.keyed) {
+        effects->makeOpenGLContextCurrent();
+        data.keyed.reset();
+    }
     // Shapes are surface-local, and this one covers the whole frame, title bar included.
     const QPointF offset = w->bufferGeometry().topLeft() - w->frameGeometry().topLeft();
     const QSizeF size = w->frameGeometry().size();
-    const int radius = w->window()->maximizeMode() == MaximizeFull ? 0 : s_windowRadius;
+    const int radius = w->window()->maximizeMode() == MaximizeFull ? 0
+        : w->hasDecoration()                                      ? s_windowRadius
+                                                                  : s_clientDecoratedRadius;
     data.shapes = {Shape{.rect = QRect((-offset).toPoint(), size.toSize()), .radius = radius, .style = Style::AppWindow}};
     if (!data.item) {
         data.item = std::make_unique<BackgroundEffectItem>(w->windowItem());
@@ -772,9 +822,195 @@ void GlassEffect::drawWindow(const RenderTarget &renderTarget, const RenderViewp
     paintGlass(renderTarget, viewport, w, deviceRegion, data);
     // The glass is behind the window as it is; the window itself lets some of it through.
     if (auto it = m_windows.find(w); it != m_windows.end() && it->second.dim) {
+        if (it->second.keyed && &renderTarget == m_screenTarget
+            && drawKeyed(renderTarget, viewport, w, deviceRegion, data, *it->second.keyed)) {
+            return;
+        }
         data.multiplyOpacity(m_settings.windowOpacity);
     }
     effects->drawWindow(renderTarget, viewport, w, mask, deviceRegion, data);
+}
+
+KeyedWindow::~KeyedWindow()
+{
+    QObject::disconnect(damaged);
+}
+
+bool GlassEffect::drawKeyed(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, const Region &deviceRegion, const WindowPaintData &data, KeyedWindow &keyed)
+{
+    // Drawn by itself the way KWin's offscreen effects do it, shadow and all, at its screen's scale.
+    const qreal textureScale = w->screen()->scale();
+    const RectF expanded = snapToPixels(w->expandedGeometry(), textureScale);
+    const QSize textureSize = (expanded.size() * textureScale).toSize();
+    if (textureSize.isEmpty()) {
+        return false;
+    }
+    bool resized = false;
+    if (!keyed.texture || keyed.texture->size() != textureSize) {
+        keyed.framebuffer.reset();
+        keyed.texture = GLTexture::allocate(GL_RGBA8, textureSize);
+        if (!keyed.texture) {
+            return false;
+        }
+        keyed.texture->setFilter(GL_LINEAR);
+        keyed.texture->setWrapMode(GL_CLAMP_TO_EDGE);
+        keyed.framebuffer = std::make_unique<GLFramebuffer>(keyed.texture.get());
+        keyed.dirty = true;
+        resized = true;
+    }
+    const RectF frameInTexture = RectF(w->frameGeometry()).translated(-expanded.topLeft());
+    if (keyed.dirty) {
+        RenderTarget target(keyed.framebuffer.get());
+        RenderViewport targetViewport(expanded, textureScale, target, QPoint());
+        GLFramebuffer::pushFramebuffer(keyed.framebuffer.get());
+        glClearColor(0.0, 0.0, 0.0, 0.0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        WindowPaintData plain;
+        plain.setOpacity(1.0);
+        effects->drawWindow(target, targetViewport, w, PAINT_WINDOW_TRANSFORMED | PAINT_WINDOW_TRANSLUCENT, Region::infinite(), plain);
+        GLFramebuffer::popFramebuffer();
+        keyed.dirty = false;
+        if (resized || !keyed.looked.isValid() || keyed.looked.elapsed() >= s_keyLookMs) {
+            const Rect frameDevice = RectF(frameInTexture.x() * textureScale, frameInTexture.y() * textureScale,
+                                           frameInTexture.width() * textureScale, frameInTexture.height() * textureScale)
+                                         .rounded();
+            findBackgrounds(keyed, frameDevice);
+        }
+    }
+    const double scale = viewport.scale();
+    const RectF expandedOnScreen = snapToPixels(w->expandedGeometry(), scale);
+    const RectF frameOnScreen = snapToPixels(w->frameGeometry(), scale);
+    RectF visible = expandedOnScreen;
+    visible.moveTopLeft(expandedOnScreen.topLeft() - frameOnScreen.topLeft());
+    WindowQuad quad;
+    quad[0] = WindowVertex(visible.topLeft(), QPointF(0, 0));
+    quad[1] = WindowVertex(visible.topRight(), QPointF(1, 0));
+    quad[2] = WindowVertex(visible.bottomRight(), QPointF(1, 1));
+    quad[3] = WindowVertex(visible.bottomLeft(), QPointF(0, 1));
+
+    RenderGeometry geometry;
+    geometry.appendWindowQuad(quad, scale);
+    const QMatrix4x4 textureMatrix = keyed.texture->matrix(NormalizedCoordinates);
+    geometry.postProcessTextureCoordinates(textureMatrix);
+
+    GLVertexBuffer *vbo = GLVertexBuffer::streamingBuffer();
+    vbo->reset();
+    vbo->setAttribLayout(std::span(GLVertexBuffer::GLVertex2DLayout), sizeof(GLVertex2D));
+    const auto map = vbo->map<GLVertex2D>(geometry.size());
+    if (!map) {
+        return false;
+    }
+    geometry.copy(*map);
+    vbo->unmap();
+    vbo->bindArrays();
+
+    ShaderBinder binder(m_keyedShader.get());
+    GLShader *shader = m_keyedShader.get();
+    const qreal rgb = data.brightness() * data.opacity();
+    const qreal alpha = data.opacity();
+    QMatrix4x4 mvp = viewport.projectionMatrix();
+    mvp.translate(std::round(w->x() * scale), std::round(w->y() * scale));
+    const auto toXYZ = renderTarget.colorDescription()->containerColorimetry().toXYZ();
+    shader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, mvp * data.toMatrix(scale));
+    shader->setUniform(GLShader::Vec4Uniform::ModulationConstant, QVector4D(rgb, rgb, rgb, alpha));
+    shader->setUniform(GLShader::FloatUniform::Saturation, data.saturation());
+    shader->setUniform(GLShader::Vec3Uniform::PrimaryBrightness, QVector3D(toXYZ(1, 0), toXYZ(1, 1), toXYZ(1, 2)));
+    shader->setColorspaceUniforms(ColorDescription::sRGB, renderTarget.colorDescription(), RenderingIntent::Perceptual);
+
+    // Where the window is in the texture, in the coordinates it's sampled with.
+    const QPointF first = textureMatrix.map(QPointF(frameInTexture.left() / expanded.width(), frameInTexture.top() / expanded.height()));
+    const QPointF second = textureMatrix.map(QPointF(frameInTexture.right() / expanded.width(), frameInTexture.bottom() / expanded.height()));
+    shader->setUniform("frame", QVector4D(std::min(first.x(), second.x()), std::min(first.y(), second.y()),
+                                          std::max(first.x(), second.x()), std::max(first.y(), second.y())));
+    static constexpr const char *keyUniforms[s_maxKeys] = {"keys[0]", "keys[1]", "keys[2]", "keys[3]"};
+    for (int i = 0; i < s_maxKeys; ++i) {
+        shader->setUniform(keyUniforms[i], i < keyed.keys.size() ? keyed.keys[i] : QVector3D());
+    }
+    shader->setUniform("keyCount", int(std::min<qsizetype>(keyed.keys.size(), s_maxKeys)));
+    const int mode = keyed.clearByItself                                                 ? 0
+        : m_settings.windowBackgroundsOnly > 0.5f && !keyed.keys.isEmpty() ? 1
+                                                                           : 2;
+    shader->setUniform("mode", mode);
+    shader->setUniform("backgroundOpacity", m_settings.windowOpacity);
+
+    const bool clipping = deviceRegion != Region::infinite();
+    const Region clipRegion = clipping ? viewport.transform().map(deviceRegion, renderTarget.transformedSize()) : Region::infinite();
+    if (clipping) {
+        glEnable(GL_SCISSOR_TEST);
+    }
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    keyed.texture->bind();
+    vbo->draw(clipRegion, GL_TRIANGLES, 0, geometry.count(), clipping);
+    keyed.texture->unbind();
+    glDisable(GL_BLEND);
+    if (clipping) {
+        glDisable(GL_SCISSOR_TEST);
+    }
+    vbo->unbindArrays();
+    return true;
+}
+
+void GlassEffect::findBackgrounds(KeyedWindow &keyed, const Rect &frame)
+{
+    keyed.looked.start();
+    if (!m_keySampleTexture) {
+        m_keySampleTexture = GLTexture::allocate(GL_RGBA8, s_keySampleSize);
+        if (!m_keySampleTexture) {
+            return;
+        }
+        m_keySampleFramebuffer = std::make_unique<GLFramebuffer>(m_keySampleTexture.get());
+    }
+    // Nearest, so that each sample is a pixel of the window as it is, not text blended into what's
+    // around it.
+    GLFramebuffer::pushFramebuffer(keyed.framebuffer.get());
+    m_keySampleFramebuffer->blitFromFramebuffer(frame & Rect(QPoint(), keyed.texture->size()), Rect(QPoint(), s_keySampleSize), GL_NEAREST);
+    GLFramebuffer::popFramebuffer();
+    const QImage image = m_keySampleTexture->toImage().convertToFormat(QImage::Format_RGBA8888);
+
+    // The colors that cover the most of it, a few steps apart, and how much of it is see-through.
+    struct Bin {
+        int count = 0;
+        double red = 0, green = 0, blue = 0;
+    };
+    std::unordered_map<int, Bin> bins;
+    int counted = 0;
+    int clear = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        const uchar *line = image.constScanLine(y);
+        for (int x = 0; x < image.width(); ++x) {
+            const uchar *pixel = line + x * 4;
+            // What's partly see-through is the window's own background, if it's see-through by itself,
+            // or its rounded corners, or a little of its shadow.
+            if (pixel[3] < 250) {
+                clear++;
+                continue;
+            }
+            Bin &bin = bins[(pixel[0] >> 3) << 10 | (pixel[1] >> 3) << 5 | (pixel[2] >> 3)];
+            bin.count++;
+            bin.red += pixel[0];
+            bin.green += pixel[1];
+            bin.blue += pixel[2];
+            counted++;
+        }
+    }
+    keyed.clearByItself = clear > s_clearShare * (clear + counted);
+    std::vector<Bin> found;
+    for (const auto &[key, bin] : bins) {
+        if (bin.count >= counted * s_keyShare) {
+            found.push_back(bin);
+        }
+    }
+    std::sort(found.begin(), found.end(), [](const Bin &a, const Bin &b) {
+        return a.count > b.count;
+    });
+    keyed.keys.clear();
+    for (const Bin &bin : found) {
+        if (keyed.keys.size() == s_maxKeys) {
+            break;
+        }
+        keyed.keys.append(QVector3D(bin.red / bin.count, bin.green / bin.count, bin.blue / bin.count) / 255.0f);
+    }
 }
 
 bool GlassEffect::ensureTextures(ShapeRender &render, const QSize &size, GLenum format, int levels)

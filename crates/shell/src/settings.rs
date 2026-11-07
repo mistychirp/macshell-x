@@ -125,6 +125,8 @@ const GREEN_FULL_SCREEN: &str = "GreenFullScreen";
 /// How opaque apps' windows are, with what's behind blurred.
 const WINDOW_OPACITY: &str = "WindowOpacity";
 const WINDOW_OPACITY_RANGE: (f32, f32) = (0.5, 1.0);
+/// Whether that's only their background, with text and pictures as they are. 1 or 0.
+const WINDOW_BACKGROUNDS_ONLY: &str = "WindowBackgroundsOnly";
 /// How many apps the list to add an exception from shows at once; searching finds the rest.
 const MAX_APPS_TO_PICK: usize = 8;
 /// Where an import keeps the settings it replaces.
@@ -171,6 +173,7 @@ pub enum Message {
     ShowPage(Page),
     /// Something outside asked for this page.
     PageAsked(String),
+    BackgroundsOnlyToggled(bool),
     ExceptionsRead(Vec<String>),
     /// An app's to be left as it is, or not.
     ExceptionChanged(String, bool),
@@ -274,11 +277,11 @@ async fn read_glass() -> Option<HashMap<&'static str, f32>> {
     let connection = dbus::session().await?;
     let proxy = GlassProxy::new(&connection).await.ok()?;
     let mut values = HashMap::new();
-    for key in GLASS_SLIDERS
-        .iter()
-        .map(|slider| slider.key)
-        .chain([GREEN_FULL_SCREEN, WINDOW_OPACITY])
-    {
+    for key in GLASS_SLIDERS.iter().map(|slider| slider.key).chain([
+        GREEN_FULL_SCREEN,
+        WINDOW_OPACITY,
+        WINDOW_BACKGROUNDS_ONLY,
+    ]) {
         match proxy.setting(key).await {
             Ok(value) => {
                 values.insert(key, value as f32);
@@ -735,6 +738,13 @@ impl SettingsApp {
                 if let Some(page) = Page::named(&name) {
                     return self.update(Message::ShowPage(page));
                 }
+            }
+            Message::BackgroundsOnlyToggled(on) => {
+                let value = if on { 1.0 } else { 0.0 };
+                if let Some(glass) = &mut self.glass {
+                    glass.insert(WINDOW_BACKGROUNDS_ONLY, value);
+                }
+                return Task::future(write_glass(WINDOW_BACKGROUNDS_ONLY, value)).discard();
             }
             Message::ExceptionsRead(ids) => {
                 let index = self.app_index.get_or_insert_with(apps::AppIndex::load);
@@ -1340,6 +1350,9 @@ impl SettingsApp {
             .get(GREEN_FULL_SCREEN)
             .is_some_and(|value| *value != 0.0);
         let opacity = glass.get(WINDOW_OPACITY).copied().unwrap_or(1.0);
+        let backgrounds_only = glass
+            .get(WINDOW_BACKGROUNDS_ONLY)
+            .is_none_or(|value| *value != 0.0);
         let mut exceptions: Vec<Element<'_>> = if self.exceptions.is_empty() {
             vec![info_row("No apps", "")]
         } else {
@@ -1428,20 +1441,28 @@ impl SettingsApp {
             section(
                 "Translucency",
                 column![
-                    card(vec![setting_row(
-                        "Opacity",
-                        settings_slider(
-                            WINDOW_OPACITY_RANGE,
-                            opacity,
-                            0.01,
-                            |value| Message::GlassChanged(WINDOW_OPACITY, value),
-                            Message::GlassReleased(WINDOW_OPACITY),
+                    card(vec![
+                        setting_row(
+                            "Opacity",
+                            settings_slider(
+                                WINDOW_OPACITY_RANGE,
+                                opacity,
+                                0.01,
+                                |value| Message::GlassChanged(WINDOW_OPACITY, value),
+                                Message::GlassReleased(WINDOW_OPACITY),
+                            ),
                         ),
-                    )]),
+                        setting_row(
+                            "Backgrounds Only",
+                            settings_toggle(backgrounds_only, Message::BackgroundsOnlyToggled),
+                        ),
+                    ]),
                     caption(
-                        "Windows let what's behind them show through, blurred. One that's \
-                         see-through by itself, like a terminal set up that way, keeps its own \
-                         opacity, and gets the blur too.",
+                        "Windows let what's behind them show through, blurred: with Backgrounds \
+                         Only, where they're the color of their background, so text and pictures \
+                         stay solid, and otherwise all of them. One that's see-through by itself, \
+                         like a terminal set up that way, keeps its own opacity, and gets the blur \
+                         too.",
                     ),
                 ]
                 .spacing(6),
