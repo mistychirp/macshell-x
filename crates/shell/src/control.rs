@@ -48,6 +48,11 @@ const POP_STAGGER: f32 = 0.00028;
 const POP_FADE: f32 = 0.09;
 /// Long enough for the last of them to have settled.
 const POP_TIME: f32 = 0.9;
+/// After this long, a module that's within half a point of its size is at it, for good. Glass only
+/// comes in whole points, and its text is only sharp unscaled, so getting there an imperceptible bit
+/// at a time would show as a jump at the end instead.
+const POP_SETTLING: f32 = 0.3;
+const POP_CLOSE_ENOUGH: f32 = 0.5;
 const HOVER_FILL: f32 = 0.045;
 const HOVER_RIM: f32 = 0.16;
 const HOVER_CHEVRON: f32 = 11.0;
@@ -385,12 +390,14 @@ pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
             BLUR_BOTTOM as u32,
         ]),
     };
+    // Each edge to the nearest point, so that a rectangle on its way to its size doesn't come up a point
+    // short and then jump.
     let module_shape = |rect: &Rectangle, radius: f32| material::Shape {
         rect: (
-            rect.x as i32,
-            rect.y as i32,
-            rect.width as i32,
-            rect.height as i32,
+            rect.x.round() as i32,
+            rect.y.round() as i32,
+            ((rect.x + rect.width).round() - rect.x.round()) as i32,
+            ((rect.y + rect.height).round() - rect.y.round()) as i32,
         ),
         radius: radius as i32,
         style: material::Style::Control,
@@ -466,8 +473,15 @@ fn pop(panel: &Panel, rect: &Rectangle) -> (f32, f32) {
     if seconds <= 0.0 {
         return (POP_FROM, 0.0);
     }
+    let shows = (seconds / POP_FADE).min(1.0);
     let scale = POP_FROM + (1.0 - POP_FROM) * POP_SPRING.progress(seconds);
-    (scale, (seconds / POP_FADE).min(1.0))
+    let off_by = (scale - 1.0).abs() * rect.width.max(rect.height) / 2.0;
+    if anim::seconds_since(opened) >= POP_TIME
+        || (seconds >= POP_SETTLING && off_by < POP_CLOSE_ENOUGH)
+    {
+        return (1.0, shows);
+    }
+    (scale, shows)
 }
 
 /// Whether the modules are still coming in.
