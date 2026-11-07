@@ -1,9 +1,9 @@
 {
     "KPlugin": {
         "Category": "Appearance",
-        "Description": "Liquid glass behind macshell's dock, menus and panels (macshell-glass-v1)",
+        "Description": "Liquid glass behind makshell's dock, menus and panels (makshell-glass-v1)",
         "EnabledByDefault": true,
         "License": "GPL",
-        "Name": "macshell Glass"
+        "Name": "makshell Glass"
     }
 }

@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -18,12 +18,12 @@
 using namespace KWin;
 using namespace std::chrono_literals;
 
-namespace Macshell
+namespace Makshell
 {
 
 KWIN_EFFECT_FACTORY_SUPPORTED(GenieEffect, "genie.json", return GenieEffect::supported();)
 
-static const QString s_path = QStringLiteral("/org/macshell/Genie");
+static const QString s_path = QStringLiteral("/org/makshell/Genie");
 static constexpr auto s_duration = 450ms;
 /// How small the squares of the grid are, in logical pixels: smaller is a smoother curve.
 static constexpr int s_gridSize = 24;

@@ -1,4 +1,4 @@
-//! The Settings app: a window of its own, in a process of its own (`macshell settings`), so that it
+//! The Settings app: a window of its own, in a process of its own (`makshell settings`), so that it
 //! comes and goes like any other app. The glass settings go to our KWin plugin over D-Bus, which
 //! applies them right away. The rest go to the config file, and the shell is told to read it again.
 
@@ -36,9 +36,9 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::settings_file::SettingsFile;
 use crate::{apps, dbus, fonts, portal, wallpaper};
 
-pub const APP_ID: &str = "macshell-settings";
-const BUS_NAME: &str = "org.macshell.Settings";
-const BUS_PATH: &str = "/org/macshell/Settings";
+pub const APP_ID: &str = "makshell-settings";
+const BUS_NAME: &str = "org.makshell.Settings";
+const BUS_PATH: &str = "/org/makshell/Settings";
 /// What to run the app with for it to open on the notifications page.
 pub const NOTIFICATIONS_PAGE: &str = "notifications";
 
@@ -221,9 +221,9 @@ pub enum Message {
 }
 
 #[zbus::proxy(
-    interface = "org.macshell.Glass",
+    interface = "org.makshell.Glass",
     default_service = "org.kde.KWin",
-    default_path = "/org/macshell/Glass"
+    default_path = "/org/makshell/Glass"
 )]
 trait Glass {
     #[zbus(name = "setting")]
@@ -267,9 +267,9 @@ async fn set_exception(app: String, excepted: bool) -> Vec<String> {
 }
 
 #[zbus::proxy(
-    interface = "org.macshell.Windows",
-    default_service = "org.macshell.Shell",
-    default_path = "/org/macshell/Windows"
+    interface = "org.makshell.Windows",
+    default_service = "org.makshell.Shell",
+    default_path = "/org/makshell/Windows"
 )]
 trait Shell {
     #[zbus(name = "ConfigChanged")]
@@ -383,7 +383,7 @@ async fn import_settings(path: PathBuf) -> Result<String, String> {
     write_glass(GREEN_FULL_SCREEN, if full_screen { 1.0 } else { 0.0 }).await;
     tell_shell().await;
     Ok(format!(
-        "Imported {}. To undo it, import {BACKUP_NAME} from macshell's config folder.",
+        "Imported {}. To undo it, import {BACKUP_NAME} from makshell's config folder.",
         file_name(&path)
     ))
 }
@@ -576,7 +576,7 @@ struct PageRequests {
     requests: mpsc::UnboundedSender<String>,
 }
 
-#[zbus::interface(name = "org.macshell.Settings")]
+#[zbus::interface(name = "org.makshell.Settings")]
 impl PageRequests {
     #[zbus(name = "ShowPage")]
     fn show_page(&self, page: String) {
@@ -929,7 +929,7 @@ impl SettingsApp {
             }
             Message::ExportSettings => {
                 return Task::perform(
-                    portal::choose_settings_destination("macshell-settings.toml"),
+                    portal::choose_settings_destination("makshell-settings.toml"),
                     Message::ExportTo,
                 );
             }
@@ -1109,9 +1109,7 @@ impl SettingsApp {
 
     fn glass_page(&self) -> Element<'_> {
         let Some(glass) = &self.glass else {
-            return caption(
-                "Needs macshell's KWin plugin, which isn't running.",
-            );
+            return caption("Needs makshell's KWin plugin, which isn't running.");
         };
         let rows = GLASS_SLIDERS
             .iter()
@@ -1414,9 +1412,7 @@ impl SettingsApp {
 
     fn windows_page(&self) -> Element<'_> {
         let Some(glass) = &self.glass else {
-            return caption(
-                "Needs macshell's KWin plugin, which isn't running.",
-            );
+            return caption("Needs makshell's KWin plugin, which isn't running.");
         };
         let full_screen = glass
             .get(GREEN_FULL_SCREEN)
@@ -1564,7 +1560,7 @@ impl SettingsApp {
                 info_row("Processor", &about.processor),
                 info_row("Memory", &about.memory),
             ]),
-            card(vec![info_row("macshell", env!("CARGO_PKG_VERSION"))]),
+            card(vec![info_row("makshell", env!("CARGO_PKG_VERSION"))]),
             section(
                 "Settings File",
                 column![

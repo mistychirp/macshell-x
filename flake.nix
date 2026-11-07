@@ -1,5 +1,5 @@
 {
-  description = "macshell-x: a macOS Tahoe-style desktop for KWin";
+  description = "makshell: a macOS Tahoe-style desktop for KWin";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -13,12 +13,12 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      # A "macshell" login session: programs.macshell.enable = true;
+      # A "makshell" login session: programs.makshell.enable = true;
       nixosModules.default = ./nix/module.nix;
 
       packages = forAllSystems (pkgs: {
-        macshell = pkgs.callPackage ./nix/macshell.nix { };
-        kwin-macshell = pkgs.kdePackages.callPackage ./kwin/package.nix { };
+        makshell = pkgs.callPackage ./nix/makshell.nix { };
+        kwin-makshell = pkgs.kdePackages.callPackage ./kwin/package.nix { };
       });
 
       devShells = forAllSystems (

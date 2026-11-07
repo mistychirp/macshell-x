@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -15,7 +15,7 @@
 #include <numbers>
 #include <algorithm>
 
-namespace Macshell
+namespace Makshell
 {
 
 static constexpr int s_version = 11;
@@ -27,7 +27,7 @@ static constexpr uint32_t s_brightnessStep = 20;
 
 GlassManager::GlassManager(KWin::Display *display, QObject *parent)
     : QObject(parent)
-    , QtWaylandServer::macshell_glass_manager_v1(*display, s_version)
+    , QtWaylandServer::makshell_glass_manager_v1(*display, s_version)
 {
 }
 
@@ -41,12 +41,12 @@ bool GlassManager::usesGlass(KWin::SurfaceInterface *surface) const
     return resourceMap().contains(surface->client()->client());
 }
 
-void GlassManager::macshell_glass_manager_v1_destroy(Resource *resource)
+void GlassManager::makshell_glass_manager_v1_destroy(Resource *resource)
 {
     wl_resource_destroy(resource->handle);
 }
 
-void GlassManager::macshell_glass_manager_v1_get_glass(Resource *resource, uint32_t id, struct ::wl_resource *surface)
+void GlassManager::makshell_glass_manager_v1_get_glass(Resource *resource, uint32_t id, struct ::wl_resource *surface)
 {
     KWin::SurfaceInterface *surf = KWin::SurfaceInterface::get(surface);
     if (m_surfaces.contains(surf)) {
@@ -57,7 +57,7 @@ void GlassManager::macshell_glass_manager_v1_get_glass(Resource *resource, uint3
 }
 
 GlassSurface::GlassSurface(GlassManager *manager, KWin::SurfaceInterface *surface, wl_client *client, uint32_t id, int version)
-    : QtWaylandServer::macshell_glass_v1(client, id, version)
+    : QtWaylandServer::makshell_glass_v1(client, id, version)
     , m_manager(manager)
     , m_surface(surface)
 {
@@ -124,26 +124,26 @@ void GlassSurface::reportBrightness(float luminance)
     send_brightness(value);
 }
 
-void GlassSurface::macshell_glass_v1_destroy_resource(Resource *resource)
+void GlassSurface::makshell_glass_v1_destroy_resource(Resource *resource)
 {
     Q_UNUSED(resource)
     delete this;
 }
 
-void GlassSurface::macshell_glass_v1_destroy(Resource *resource)
+void GlassSurface::makshell_glass_v1_destroy(Resource *resource)
 {
     detach();
     wl_resource_destroy(resource->handle);
 }
 
-void GlassSurface::macshell_glass_v1_clear(Resource *resource)
+void GlassSurface::makshell_glass_v1_clear(Resource *resource)
 {
     Q_UNUSED(resource)
     m_pending.clear();
     m_dirty = true;
 }
 
-void GlassSurface::macshell_glass_v1_add_rounded_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style)
+void GlassSurface::makshell_glass_v1_add_rounded_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style)
 {
     if (width <= 0 || height <= 0) {
         wl_resource_post_error(resource->handle, error_invalid_shape, "glass shapes need a positive width and height");
@@ -177,9 +177,9 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect(Resource *resource, int32_
     m_dirty = true;
 }
 
-void GlassSurface::macshell_glass_v1_add_rounded_rect_with_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height)
+void GlassSurface::makshell_glass_v1_add_rounded_rect_with_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height)
 {
-    macshell_glass_v1_add_rounded_rect(resource, x, y, width, height, radius, style);
+    makshell_glass_v1_add_rounded_rect(resource, x, y, width, height, radius, style);
     if (!m_pending.isEmpty() && tail_height < uint32_t(height)) {
         m_pending.last().tail = QVector3D(tail_center, tail_width, tail_height);
         // The radius is clamped against what's left above the tail.
@@ -188,19 +188,19 @@ void GlassSurface::macshell_glass_v1_add_rounded_rect_with_tail(Resource *resour
     }
 }
 
-void GlassSurface::macshell_glass_v1_add_rounded_rect_with_top_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height)
+void GlassSurface::makshell_glass_v1_add_rounded_rect_with_top_tail(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, int32_t tail_center, uint32_t tail_width, uint32_t tail_height)
 {
-    macshell_glass_v1_add_rounded_rect_with_tail(resource, x, y, width, height, radius, style, tail_center, tail_width, tail_height);
+    makshell_glass_v1_add_rounded_rect_with_tail(resource, x, y, width, height, radius, style, tail_center, tail_width, tail_height);
     if (!m_pending.isEmpty() && tail_height < uint32_t(height)) {
         // Negative means on top.
         m_pending.last().tail.setZ(-float(tail_height));
     }
 }
 
-void GlassSurface::macshell_glass_v1_add_rotated_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, uint32_t box_width, uint32_t box_height, int32_t millidegrees)
+void GlassSurface::makshell_glass_v1_add_rotated_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, uint32_t box_width, uint32_t box_height, int32_t millidegrees)
 {
     const qsizetype before = m_pending.size();
-    macshell_glass_v1_add_rounded_rect(resource, x, y, width, height, radius, style);
+    makshell_glass_v1_add_rounded_rect(resource, x, y, width, height, radius, style);
     if (m_pending.size() > before) {
         Shape &shape = m_pending.last();
         shape.box = QSizeF(box_width, box_height);
@@ -210,10 +210,10 @@ void GlassSurface::macshell_glass_v1_add_rotated_rect(Resource *resource, int32_
     }
 }
 
-void GlassSurface::macshell_glass_v1_add_box(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t style, wl_fixed_t box_x, wl_fixed_t box_y, wl_fixed_t box_width, wl_fixed_t box_height, wl_fixed_t box_radius)
+void GlassSurface::makshell_glass_v1_add_box(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t style, wl_fixed_t box_x, wl_fixed_t box_y, wl_fixed_t box_width, wl_fixed_t box_height, wl_fixed_t box_radius)
 {
     const qsizetype before = m_pending.size();
-    macshell_glass_v1_add_rounded_rect(resource, x, y, width, height, 0, style);
+    makshell_glass_v1_add_rounded_rect(resource, x, y, width, height, 0, style);
     if (m_pending.size() > before) {
         Shape &shape = m_pending.last();
         shape.box = QSizeF(wl_fixed_to_double(box_width), wl_fixed_to_double(box_height));
@@ -222,7 +222,7 @@ void GlassSurface::macshell_glass_v1_add_box(Resource *resource, int32_t x, int3
     }
 }
 
-void GlassSurface::macshell_glass_v1_add_droplet(Resource *resource, wl_fixed_t x, wl_fixed_t y, wl_fixed_t radius, wl_fixed_t blend)
+void GlassSurface::makshell_glass_v1_add_droplet(Resource *resource, wl_fixed_t x, wl_fixed_t y, wl_fixed_t radius, wl_fixed_t blend)
 {
     Q_UNUSED(resource)
     if (m_pending.isEmpty() || m_pending.last().droplets.size() >= 4) {
@@ -235,7 +235,7 @@ void GlassSurface::macshell_glass_v1_add_droplet(Resource *resource, wl_fixed_t 
                                     wl_fixed_to_double(blend)));
 }
 
-void GlassSurface::macshell_glass_v1_set_last_opacity(Resource *resource, wl_fixed_t opacity)
+void GlassSurface::makshell_glass_v1_set_last_opacity(Resource *resource, wl_fixed_t opacity)
 {
     Q_UNUSED(resource)
     if (!m_pending.isEmpty()) {
@@ -243,13 +243,13 @@ void GlassSurface::macshell_glass_v1_set_last_opacity(Resource *resource, wl_fix
     }
 }
 
-void GlassSurface::macshell_glass_v1_set_appear(Resource *resource, uint32_t kind, int32_t x, int32_t y)
+void GlassSurface::makshell_glass_v1_set_appear(Resource *resource, uint32_t kind, int32_t x, int32_t y)
 {
     Q_UNUSED(resource)
     m_appear = Appear{.kind = int(kind), .origin = QPointF(x, y)};
 }
 
-void GlassSurface::macshell_glass_v1_add_backdrop(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t fade_left, uint32_t fade_top, uint32_t fade_right, uint32_t fade_bottom)
+void GlassSurface::makshell_glass_v1_add_backdrop(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t fade_left, uint32_t fade_top, uint32_t fade_right, uint32_t fade_bottom)
 {
     if (width <= 0 || height <= 0) {
         wl_resource_post_error(resource->handle, error_invalid_shape, "glass shapes need a positive width and height");
@@ -264,7 +264,7 @@ void GlassSurface::macshell_glass_v1_add_backdrop(Resource *resource, int32_t x,
     m_dirty = true;
 }
 
-void GlassSurface::macshell_glass_v1_track_brightness(Resource *resource)
+void GlassSurface::makshell_glass_v1_track_brightness(Resource *resource)
 {
     Q_UNUSED(resource)
     m_tracking = true;

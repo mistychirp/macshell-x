@@ -50,11 +50,11 @@ pub fn next_frame(at: Instant) -> Instant {
     now
 }
 
-/// How many times slower motion goes, from `MACSHELL_SLOW_MOTION`, to see what it really does.
+/// How many times slower motion goes, from `MAKSHELL_SLOW_MOTION`, to see what it really does.
 fn slow_motion() -> f32 {
     static SLOW_MOTION: OnceLock<f32> = OnceLock::new();
     *SLOW_MOTION.get_or_init(|| {
-        std::env::var("MACSHELL_SLOW_MOTION")
+        std::env::var("MAKSHELL_SLOW_MOTION")
             .ok()
             .and_then(|slow| slow.parse().ok())
             .filter(|slow| *slow >= 1.0)

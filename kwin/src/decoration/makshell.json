@@ -1,9 +1,9 @@
 {
     "KPlugin": {
-        "Description": "Window decoration with macOS-style traffic lights, for macshell",
+        "Description": "Window decoration with macOS-style traffic lights, for makshell",
         "EnabledByDefault": true,
-        "Id": "org.kde.macshell",
-        "Name": "macshell",
+        "Id": "org.kde.makshell",
+        "Name": "makshell",
         "ServiceTypes": [
             "org.kde.kdecoration3"
         ]

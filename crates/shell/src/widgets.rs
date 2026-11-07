@@ -1593,7 +1593,7 @@ fn saved_path() -> PathBuf {
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .unwrap_or_else(|| places::home().join(".local/state"))
-        .join("macshell/widgets.toml")
+        .join("makshell/widgets.toml")
 }
 
 #[cfg(test)]

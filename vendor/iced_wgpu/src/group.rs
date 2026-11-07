@@ -1,4 +1,4 @@
-//! macshell patch: one opacity for whatever's drawn inside [`multiply`], so that a group of widgets
+//! makshell patch: one opacity for whatever's drawn inside [`multiply`], so that a group of widgets
 //! can fade together. Everything the renderer draws is scaled by the current opacity on its way in.
 
 use std::cell::Cell;

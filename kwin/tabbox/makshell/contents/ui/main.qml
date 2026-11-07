@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -21,7 +21,7 @@ KWin.TabBoxSwitcher {
             id: window
 
             // The glass effect goes by this, to put glass behind it.
-            title: "macshell-switcher"
+            title: "makshell-switcher"
             flags: Qt.Popup | Qt.X11BypassWindowManagerHint
             color: "transparent"
             visible: true

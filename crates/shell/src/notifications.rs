@@ -1037,7 +1037,7 @@ impl Server {
 
     #[zbus(out_args("name", "vendor", "version", "spec_version"))]
     fn get_server_information(&self) -> (&'static str, &'static str, &'static str, &'static str) {
-        ("macshell", "macshell-x", env!("CARGO_PKG_VERSION"), "1.2")
+        ("makshell", "makshell", env!("CARGO_PKG_VERSION"), "1.2")
     }
 
     #[zbus(signal)]

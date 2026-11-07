@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<protocol name="macshell_glass_v1">
+<protocol name="makshell_glass_v1">
   <copyright>
-    Copyright © 2026 the macshell-x contributors
+    Copyright © 2026 the makshell contributors
 
     Permission is hereby granted, free of charge, to any person obtaining a
     copy of this software and associated documentation files (the "Software"),
@@ -30,14 +30,14 @@
     each style is compositor policy; clients only describe where the glass
     goes and which style it is.
 
-    The presence of the macshell_glass_manager_v1 global tells clients that
+    The presence of the makshell_glass_manager_v1 global tells clients that
     glass is available.
 
     Since version 2, clients can also learn how bright the background behind
     their glass is, to pick a text color that stays legible over it.
   </description>
 
-  <interface name="macshell_glass_manager_v1" version="11">
+  <interface name="makshell_glass_manager_v1" version="11">
     <description summary="glass factory">
       Creates glass objects for surfaces.
     </description>
@@ -58,12 +58,12 @@
         Creates a glass object for the given surface. If the surface already
         has one, the glass_exists protocol error is raised.
       </description>
-      <arg name="id" type="new_id" interface="macshell_glass_v1"/>
+      <arg name="id" type="new_id" interface="makshell_glass_v1"/>
       <arg name="surface" type="object" interface="wl_surface"/>
     </request>
   </interface>
 
-  <interface name="macshell_glass_v1" version="11">
+  <interface name="makshell_glass_v1" version="11">
     <description summary="glass shapes behind a surface">
       Holds a list of glass shapes rendered behind the surface. The list is
       double-buffered state, applied on the next wl_surface.commit, and starts

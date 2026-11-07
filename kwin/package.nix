@@ -1,4 +1,4 @@
-# The macshell KWin effect, built against nixpkgs' KWin.
+# The makshell KWin effect, built against nixpkgs' KWin.
 {
   lib,
   stdenv,
@@ -21,7 +21,7 @@
 }:
 
 stdenv.mkDerivation {
-  pname = "kwin-macshell";
+  pname = "kwin-makshell";
   version = "0.1.0";
 
   # The plugin reads the protocol XML from the repository root.
@@ -32,7 +32,7 @@ stdenv.mkDerivation {
       ./src
       ./tabbox
       ./lockscreen
-      ../protocols/macshell-glass-v1.xml
+      ../protocols/makshell-glass-v1.xml
       ../assets/fonts/Inter-Regular.ttf
       ../assets/fonts/Inter-SemiBold.ttf
       ../assets/fonts/Inter-Bold.ttf
@@ -65,7 +65,7 @@ stdenv.mkDerivation {
   dontWrapQtApps = true;
 
   meta = {
-    description = "Liquid glass for macshell, as a KWin effect";
+    description = "Liquid glass for makshell, as a KWin effect";
     license = lib.licenses.gpl3Plus;
     platforms = lib.platforms.linux;
   };

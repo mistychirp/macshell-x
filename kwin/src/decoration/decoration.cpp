@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -27,9 +27,9 @@
 #include <cmath>
 #include <vector>
 
-K_PLUGIN_FACTORY_WITH_JSON(MacshellDecorationFactory, "macshell.json", registerPlugin<Macshell::Decoration>();)
+K_PLUGIN_FACTORY_WITH_JSON(MakshellDecorationFactory, "makshell.json", registerPlugin<Makshell::Decoration>();)
 
-namespace Macshell
+namespace Makshell
 {
 
 // Measured from Tahoe's windows, in logical pixels.
@@ -70,7 +70,7 @@ static constexpr float s_shadowFade = 8;
 static QString titleFontFamily()
 {
     static const QString family = [] {
-        const int id = QFontDatabase::addApplicationFont(QStringLiteral(":/macshell/decoration/Inter-SemiBold.ttf"));
+        const int id = QFontDatabase::addApplicationFont(QStringLiteral(":/makshell/decoration/Inter-SemiBold.ttf"));
         const QStringList families = id >= 0 ? QFontDatabase::applicationFontFamilies(id) : QStringList();
         return families.isEmpty() ? QString() : families.first();
     }();
@@ -208,9 +208,9 @@ bool Decoration::init()
         }
         // The shell shows the green light's menu. It's not an error if it isn't there.
         const QRectF zoom = m_zoom->geometry();
-        auto message = QDBusMessage::createMethodCall(QStringLiteral("org.macshell.Shell"),
-                                                      QStringLiteral("/org/macshell/Windows"),
-                                                      QStringLiteral("org.macshell.Windows"),
+        auto message = QDBusMessage::createMethodCall(QStringLiteral("org.makshell.Shell"),
+                                                      QStringLiteral("/org/makshell/Windows"),
+                                                      QStringLiteral("org.makshell.Windows"),
                                                       QStringLiteral("ZoomHovered"));
         message << int(zoom.center().x()) << int(zoom.bottom());
         QDBusConnection::sessionBus().asyncCall(message);
@@ -262,9 +262,9 @@ void Decoration::zoomHoverChanged(bool hovered)
     m_zoomHover.stop();
     if (m_zoomMenuOpen) {
         m_zoomMenuOpen = false;
-        const auto message = QDBusMessage::createMethodCall(QStringLiteral("org.macshell.Shell"),
-                                                            QStringLiteral("/org/macshell/Windows"),
-                                                            QStringLiteral("org.macshell.Windows"),
+        const auto message = QDBusMessage::createMethodCall(QStringLiteral("org.makshell.Shell"),
+                                                            QStringLiteral("/org/makshell/Windows"),
+                                                            QStringLiteral("org.makshell.Windows"),
                                                             QStringLiteral("ZoomLeft"));
         QDBusConnection::sessionBus().asyncCall(message);
     }
@@ -397,14 +397,14 @@ Button::Button(KDecoration3::DecorationButtonType type, Decoration *decoration, 
         // app chooses. The check is here since that can change at any time.
         disconnect(this, &KDecoration3::DecorationButton::clicked, nullptr, nullptr);
         connect(this, &KDecoration3::DecorationButton::clicked, decoration, [decoration](Qt::MouseButton button) {
-            const KConfigGroup group = KSharedConfig::openConfig(QStringLiteral("kwinrc"))->group(QStringLiteral("Effect-macshell"));
+            const KConfigGroup group = KSharedConfig::openConfig(QStringLiteral("kwinrc"))->group(QStringLiteral("Effect-makshell"));
             if (group.readEntry("GreenFullScreen", 0.0) == 0.0) {
                 decoration->requestToggleMaximization(button);
                 return;
             }
             const auto message = QDBusMessage::createMethodCall(QStringLiteral("org.kde.KWin"),
-                                                                QStringLiteral("/org/macshell/Arranger"),
-                                                                QStringLiteral("org.macshell.Arranger"),
+                                                                QStringLiteral("/org/makshell/Arranger"),
+                                                                QStringLiteral("org.makshell.Arranger"),
                                                                 QStringLiteral("fullScreenUnderCursor"));
             QDBusConnection::sessionBus().asyncCall(message);
         }, Qt::QueuedConnection);

@@ -46,7 +46,7 @@ pub fn link_for_lock_screen(configured: Option<&str>) {
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")));
-    let Some(dir) = state.map(|state| state.join("macshell")) else {
+    let Some(dir) = state.map(|state| state.join("makshell")) else {
         return;
     };
     let link = dir.join("lock-wallpaper");

@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -42,19 +42,19 @@
 #include <unordered_map>
 #include <numbers>
 
-Q_LOGGING_CATEGORY(MACSHELL_GLASS, "macshell_glass", QtWarningMsg)
+Q_LOGGING_CATEGORY(MAKSHELL_GLASS, "makshell_glass", QtWarningMsg)
 
 using namespace KWin;
 
-namespace Macshell
+namespace Makshell
 {
 
 /// The app ID of the shell's dialogs, which the window manager places and keeps on top.
-static constexpr QLatin1StringView s_dialogAppId("macshell-alert");
+static constexpr QLatin1StringView s_dialogAppId("makshell-alert");
 
 /// The title of the window switcher's window, and its corner radius. It's KWin's own window, so it has
 /// no surface to ask for glass with, and this is how it's told apart.
-static constexpr QLatin1StringView s_switcherTitle("macshell-switcher");
+static constexpr QLatin1StringView s_switcherTitle("makshell-switcher");
 static constexpr int s_switcherRadius = 30;
 
 /// The decoration's corner radius, which app windows' glass follows.
@@ -116,18 +116,18 @@ static float srgbToLinear(float c)
 GlassEffect::GlassEffect()
 {
     m_glassShader = ShaderManager::instance()->generateShaderFromFile(ShaderTrait::MapTexture,
-                                                                      QStringLiteral(":/effects/macshell/shaders/vertex.vert"),
-                                                                      QStringLiteral(":/effects/macshell/shaders/glass.frag"));
+                                                                      QStringLiteral(":/effects/makshell/shaders/vertex.vert"),
+                                                                      QStringLiteral(":/effects/makshell/shaders/glass.frag"));
     m_downsampleShader = ShaderManager::instance()->generateShaderFromFile(ShaderTrait::MapTexture,
-                                                                           QStringLiteral(":/effects/macshell/shaders/vertex.vert"),
-                                                                           QStringLiteral(":/effects/macshell/shaders/downsample.frag"));
+                                                                           QStringLiteral(":/effects/makshell/shaders/vertex.vert"),
+                                                                           QStringLiteral(":/effects/makshell/shaders/downsample.frag"));
     m_upsampleShader = ShaderManager::instance()->generateShaderFromFile(ShaderTrait::MapTexture,
-                                                                         QStringLiteral(":/effects/macshell/shaders/vertex.vert"),
-                                                                         QStringLiteral(":/effects/macshell/shaders/upsample.frag"));
+                                                                         QStringLiteral(":/effects/makshell/shaders/vertex.vert"),
+                                                                         QStringLiteral(":/effects/makshell/shaders/upsample.frag"));
     m_keyedShader = ShaderManager::instance()->generateShaderFromFile(ShaderTrait::MapTexture, QString(),
-                                                                      QStringLiteral(":/effects/macshell/shaders/keyed.frag"));
+                                                                      QStringLiteral(":/effects/makshell/shaders/keyed.frag"));
     if (!m_glassShader || !m_downsampleShader || !m_upsampleShader || !m_keyedShader) {
-        qCWarning(MACSHELL_GLASS) << "failed to load the glass shaders";
+        qCWarning(MAKSHELL_GLASS) << "failed to load the glass shaders";
         return;
     }
 
@@ -198,7 +198,7 @@ GlassEffect::GlassEffect()
     connect(m_saveSoon, &QTimer::timeout, this, [] {
         KSharedConfig::openConfig(QStringLiteral("kwinrc"))->sync();
     });
-    QDBusConnection::sessionBus().registerObject(QStringLiteral("/org/macshell/Glass"), this, QDBusConnection::ExportScriptableSlots);
+    QDBusConnection::sessionBus().registerObject(QStringLiteral("/org/makshell/Glass"), this, QDBusConnection::ExportScriptableSlots);
 
     // Spotlight's shortcut. It's here because global shortcuts belong to whatever registers them, and
     // KWin's are the ones that can be changed along with all the others.
@@ -234,9 +234,9 @@ GlassEffect::GlassEffect()
         KGlobalAccel::self()->setDefaultShortcut(action, {mediaKey.key});
         KGlobalAccel::self()->setShortcut(action, {mediaKey.key});
         connect(action, &QAction::triggered, this, [name] {
-            auto message = QDBusMessage::createMethodCall(QStringLiteral("org.macshell.Shell"),
-                                                          QStringLiteral("/org/macshell/Windows"),
-                                                          QStringLiteral("org.macshell.Windows"),
+            auto message = QDBusMessage::createMethodCall(QStringLiteral("org.makshell.Shell"),
+                                                          QStringLiteral("/org/makshell/Windows"),
+                                                          QStringLiteral("org.makshell.Windows"),
                                                           QStringLiteral("MediaKey"));
             message << name;
             QDBusConnection::sessionBus().asyncCall(message);
@@ -244,13 +244,24 @@ GlassEffect::GlassEffect()
     }
 
     connect(spotlight, &QAction::triggered, this, [] {
-        const auto message = QDBusMessage::createMethodCall(QStringLiteral("org.macshell.Shell"),
-                                                            QStringLiteral("/org/macshell/Windows"),
-                                                            QStringLiteral("org.macshell.Windows"),
+        const auto message = QDBusMessage::createMethodCall(QStringLiteral("org.makshell.Shell"),
+                                                            QStringLiteral("/org/makshell/Windows"),
+                                                            QStringLiteral("org.makshell.Windows"),
                                                             QStringLiteral("ToggleSpotlight"));
         QDBusConnection::sessionBus().asyncCall(message);
     });
 
+    // This was called macshell before, and so were its settings.
+    {
+        const KSharedConfig::Ptr kwinrc = KSharedConfig::openConfig(QStringLiteral("kwinrc"));
+        const KConfigGroup old = kwinrc->group(QStringLiteral("Effect-macshell"));
+        KConfigGroup now = kwinrc->group(QStringLiteral("Effect-makshell"));
+        if (old.exists() && !now.exists()) {
+            old.copyTo(&now);
+            kwinrc->deleteGroup(QStringLiteral("Effect-macshell"));
+            kwinrc->sync();
+        }
+    }
     reconfigure(ReconfigureAll);
     for (EffectWindow *w : effects->stackingOrder()) {
         updateWindow(w);
@@ -262,7 +273,7 @@ GlassEffect::GlassEffect()
 
 GlassEffect::~GlassEffect()
 {
-    QDBusConnection::sessionBus().unregisterObject(QStringLiteral("/org/macshell/Glass"));
+    QDBusConnection::sessionBus().unregisterObject(QStringLiteral("/org/makshell/Glass"));
     effects->makeOpenGLContextCurrent();
     // Letting go of a closed window deletes it and its items, and tells us about it. So the items go
     // first, and the windows once nothing here refers to them.
@@ -286,7 +297,7 @@ bool GlassEffect::supported()
 void GlassEffect::reconfigure(ReconfigureFlags flags)
 {
     Q_UNUSED(flags)
-    const KConfigGroup group = KSharedConfig::openConfig(QStringLiteral("kwinrc"))->group(QStringLiteral("Effect-macshell"));
+    const KConfigGroup group = KSharedConfig::openConfig(QStringLiteral("kwinrc"))->group(QStringLiteral("Effect-makshell"));
     const GlassSettings defaults;
     m_settings.blurPasses = std::clamp(group.readEntry("BlurPasses", defaults.blurPasses), 1, 4);
     m_settings.blurOffset = group.readEntry("BlurOffset", defaults.blurOffset);
@@ -347,7 +358,7 @@ static const QString s_windowBackgroundsOnly = QStringLiteral("WindowBackgrounds
 
 static KConfigGroup settingsGroup()
 {
-    return KSharedConfig::openConfig(QStringLiteral("kwinrc"))->group(QStringLiteral("Effect-macshell"));
+    return KSharedConfig::openConfig(QStringLiteral("kwinrc"))->group(QStringLiteral("Effect-makshell"));
 }
 
 double GlassEffect::setting(const QString &key) const
@@ -1026,7 +1037,7 @@ bool GlassEffect::ensureTextures(ShapeRender &render, const QSize &size, GLenum 
     for (int i = 0; i < levels; ++i) {
         auto texture = GLTexture::allocate(format, QSize(std::max(1, size.width() >> i), std::max(1, size.height() >> i)));
         if (!texture) {
-            qCWarning(MACSHELL_GLASS) << "failed to allocate a glass texture";
+            qCWarning(MAKSHELL_GLASS) << "failed to allocate a glass texture";
             render.textures.clear();
             render.framebuffers.clear();
             return false;
@@ -1035,7 +1046,7 @@ bool GlassEffect::ensureTextures(ShapeRender &render, const QSize &size, GLenum 
         texture->setWrapMode(GL_CLAMP_TO_EDGE);
         auto framebuffer = std::make_unique<GLFramebuffer>(texture.get());
         if (!framebuffer->valid()) {
-            qCWarning(MACSHELL_GLASS) << "failed to create a glass framebuffer";
+            qCWarning(MAKSHELL_GLASS) << "failed to create a glass framebuffer";
             render.textures.clear();
             render.framebuffers.clear();
             return false;
@@ -1308,7 +1319,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
             }
             vbo->unmap();
         } else {
-            qCWarning(MACSHELL_GLASS) << "failed to map the vertex buffer";
+            qCWarning(MAKSHELL_GLASS) << "failed to map the vertex buffer";
             continue;
         }
         vbo->bindArrays();

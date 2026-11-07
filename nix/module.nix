@@ -1,4 +1,4 @@
-# NixOS module: a "macshell" login session, KWin with the macshell shell and its glass plugin.
+# NixOS module: a "makshell" login session, KWin with the makshell shell and its glass plugin.
 #
 # Both are built from the system's own packages, so the plugin always matches the KWin it loads
 # into. The session shares KWin's configuration (kwinrc, kxkbrc, shortcuts) with Plasma.
@@ -10,21 +10,21 @@
 }:
 
 let
-  cfg = config.programs.macshell;
+  cfg = config.programs.makshell;
 
-  macshell = pkgs.callPackage ./macshell.nix { };
-  kwin-macshell = pkgs.kdePackages.callPackage ../kwin/package.nix { };
+  makshell = pkgs.callPackage ./makshell.nix { };
+  kwin-makshell = pkgs.kdePackages.callPackage ../kwin/package.nix { };
   inherit (pkgs.kdePackages) kwin polkit-kde-agent-1;
 
   # Runs inside KWin for as long as the session lasts: KWin exits when this does.
-  startup = pkgs.writeShellScript "macshell-startup" ''
+  startup = pkgs.writeShellScript "makshell-startup" ''
     # Hand KWin's environment (WAYLAND_DISPLAY and friends) to systemd and D-Bus activation,
     # so portals and services started on demand can reach the session.
     ${pkgs.dbus}/bin/dbus-update-activation-environment --systemd --all
-    systemctl --user start macshell-session.target
+    systemctl --user start makshell-session.target
     # The window decoration. This is KWin's shared configuration, but a session without our plugin
     # falls back to its default.
-    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library org.kde.macshell
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library org.kde.makshell
     # Our genie instead of KWin's minimize animations. Plasma's own sessions share this too, and
     # without our plugin there they'd have no animation, so these are put back when this one ends.
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key squashEnabled --type bool false
@@ -34,7 +34,7 @@ let
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key scaleEnabled --type bool false
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key fadeEnabled --type bool true
     # Alt+Tab is one icon for each app, like macOS's, on glass.
-    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group TabBox --key LayoutName macshell
+    ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group TabBox --key LayoutName makshell
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group TabBox --key ApplicationsMode 1
     # Menus are there at once, also measured from Tahoe; ours fade out by themselves.
     ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key fadingpopupsEnabled --type bool false
@@ -54,7 +54,7 @@ let
     # copy has to bow out, or there would be two shells.
     kwin_pid=$PPID
     while kill -0 "$kwin_pid" 2>/dev/null; do
-      if ${macshell}/bin/macshell; then
+      if ${makshell}/bin/makshell; then
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key squashEnabled --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key magiclampEnabled --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Plugins --key scaleEnabled --delete
@@ -65,14 +65,14 @@ let
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeInTime --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeOutTime --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-slide --key SlideBackground --delete
-        systemctl --user stop macshell-session.target
+        systemctl --user stop makshell-session.target
         exit 0
       fi
       sleep 1
     done
   '';
 
-  session-script = pkgs.writeShellScript "macshell-session" ''
+  session-script = pkgs.writeShellScript "makshell-session" ''
     export XDG_SESSION_TYPE=wayland
     # KDE apps and portals behave as they do in Plasma.
     export XDG_CURRENT_DESKTOP=KDE
@@ -80,10 +80,10 @@ let
     export KDE_SESSION_VERSION=6
     # KDE's screen locker shows the lock screen of the shell package named here, which is ours, from
     # the plugin's data. Plasma's own sessions don't have this, and keep theirs.
-    export PLASMA_DEFAULT_SHELL=org.macshell.desktop
-    export QT_PLUGIN_PATH=${kwin-macshell}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}
+    export PLASMA_DEFAULT_SHELL=org.makshell.desktop
+    export QT_PLUGIN_PATH=${kwin-makshell}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}
     # KWin finds the window switcher among its data.
-    export XDG_DATA_DIRS=${kwin-macshell}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}
+    export XDG_DATA_DIRS=${kwin-makshell}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}
     # The cursor, before KWin starts, since that's when it reads it. Apps that draw their own go by
     # the variables.
     export XCURSOR_THEME=macOS XCURSOR_SIZE=24
@@ -94,21 +94,21 @@ let
   '';
 
   session =
-    (pkgs.writeTextDir "share/wayland-sessions/macshell.desktop" ''
+    (pkgs.writeTextDir "share/wayland-sessions/makshell.desktop" ''
       [Desktop Entry]
-      Name=macshell
-      Comment=KWin with the macshell desktop
+      Name=makshell
+      Comment=KWin with the makshell desktop
       Exec=${session-script}
       Type=Application
       DesktopNames=KDE
     '')
     // {
-      providedSessions = [ "macshell" ];
+      providedSessions = [ "makshell" ];
     };
 in
 {
-  options.programs.macshell = {
-    enable = lib.mkEnableOption "the macshell desktop, a login session running KWin with macshell";
+  options.programs.makshell = {
+    enable = lib.mkEnableOption "the makshell desktop, a login session running KWin with makshell";
   };
 
   config = lib.mkIf cfg.enable {
@@ -117,16 +117,16 @@ in
     environment.systemPackages = [
       # Its desktop entry, which KWin reads to let it manage windows, has to be in the
       # system's data dirs.
-      macshell
-      kwin-macshell
+      makshell
+      kwin-makshell
       # tuigreet lists the sessions it finds in the system profile.
       session
       # The session's cursor, from https://github.com/ful1e5/apple_cursor
       pkgs.apple-cursor
     ];
 
-    systemd.user.targets.macshell-session = {
-      description = "macshell session";
+    systemd.user.targets.makshell-session = {
+      description = "makshell session";
       bindsTo = [ "graphical-session.target" ];
       wants = [ "graphical-session-pre.target" ];
       after = [ "graphical-session-pre.target" ];

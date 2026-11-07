@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -17,10 +17,10 @@
 
 using namespace KWin;
 
-namespace Macshell
+namespace Makshell
 {
 
-static const QString s_path = QStringLiteral("/org/macshell/Arranger");
+static const QString s_path = QStringLiteral("/org/makshell/Arranger");
 
 Arranger::Arranger(QObject *parent)
     : QObject(parent)

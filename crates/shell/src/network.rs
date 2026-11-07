@@ -634,12 +634,12 @@ fn serve_secret_agent() -> impl Stream<Item = AgentEvent> {
             let Ok(mut owners) = manager.inner().receive_owner_changed().await else {
                 return;
             };
-            if let Err(err) = manager.register("org.macshell.shell").await {
+            if let Err(err) = manager.register("org.makshell.shell").await {
                 log::warn!("can't register as a secret agent: {err}");
             }
             while let Some(owner) = owners.next().await {
                 if owner.is_some()
-                    && let Err(err) = manager.register("org.macshell.shell").await
+                    && let Err(err) = manager.register("org.makshell.shell").await
                 {
                     log::warn!("can't register as a secret agent: {err}");
                 }

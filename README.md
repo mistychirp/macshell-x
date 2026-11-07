@@ -1,4 +1,4 @@
-# macshell-x
+# makshell
 
 A macOS Tahoe-style desktop for [KWin](https://invent.kde.org/plasma/kwin), KDE's compositor,
 running without the rest of Plasma.
@@ -19,27 +19,27 @@ cargo run
 
 ## Running on KWin
 
-On NixOS, the flake's module adds a "macshell" login session: KWin with the shell and its glass
+On NixOS, the flake's module adds a "makshell" login session: KWin with the shell and its glass
 plugin, both built from the system's own packages, so the plugin always matches the KWin it loads
 into. The session shares KWin's configuration (`kwinrc`, `kxkbrc`, shortcuts) with Plasma.
 
 ```nix
-# In your flake: inputs.macshell.url = "github:mistychirp/macshell-x";
-imports = [ inputs.macshell.nixosModules.default ];
-programs.macshell.enable = true;
+# In your flake: inputs.makshell.url = "github:mistychirp/makshell";
+imports = [ inputs.makshell.nixosModules.default ];
+programs.makshell.enable = true;
 ```
 
 Elsewhere, install the desktop entry yourself. KWin only lets the shell follow and manage windows
 if a desktop entry grants it, with
 `X-KDE-Wayland-Interfaces=org_kde_plasma_window_management` and an `Exec` that is the absolute
-path of the shell binary. Install [contrib/macshell.desktop](contrib/macshell.desktop) with
-`@macshell@` replaced by that path, somewhere in `$XDG_DATA_DIRS/applications`.
+path of the shell binary. Install [contrib/makshell.desktop](contrib/makshell.desktop) with
+`@makshell@` replaced by that path, somewhere in `$XDG_DATA_DIRS/applications`.
 
 Keyboard layouts come from KWin's `org.kde.keyboard` D-Bus interface.
 
 ## Configuration
 
-`~/.config/macshell/config.toml`:
+`~/.config/makshell/config.toml`:
 
 ```toml
 # Desktop entry id of the app that opens folders and the trash. Defaults to the system's
@@ -67,30 +67,30 @@ logo = "nix-snowflake"
 
 The shell chooses the material behind its surfaces itself, so it needs no compositor rules:
 
-- **Liquid glass** where the compositor offers our `macshell-glass-v1` protocol
-  ([protocols/macshell-glass-v1.xml](protocols/macshell-glass-v1.xml)).
+- **Liquid glass** where the compositor offers our `makshell-glass-v1` protocol
+  ([protocols/makshell-glass-v1.xml](protocols/makshell-glass-v1.xml)).
 - **Blur** on stock KWin 6 and other compositors with `ext-background-effect-v1`.
 - **Nothing** elsewhere; the dock then keeps a faint fill and border.
 
 ## KWin plugin
 
 `kwin/` is a KWin effect that renders liquid glass for the shell. It serves our
-`macshell-glass-v1` protocol: clear, liquid, frosted, bubble and control glass shapes behind surfaces, transparent
+`makshell-glass-v1` protocol: clear, liquid, frosted, bubble and control glass shapes behind surfaces, transparent
 shapes that only measure, and brightness tracking for the menu bar's text color.
 
 KWin plugins must be built against the exact KWin they load into. The flake exposes the plugin as
-`packages.kwin-macshell`; to build it against your system's KWin, use the nixpkgs your system
+`packages.kwin-makshell`; to build it against your system's KWin, use the nixpkgs your system
 uses:
 
 ```sh
-nix build .#kwin-macshell --override-input nixpkgs github:NixOS/nixpkgs/<your system's rev>
+nix build .#kwin-makshell --override-input nixpkgs github:NixOS/nixpkgs/<your system's rev>
 ```
 
 KWin finds it through `QT_PLUGIN_PATH` (its `lib/qt-6/plugins`). It's enabled by default once
 found. The glass can be tuned in `kwinrc`; these are the defaults:
 
 ```ini
-[Effect-macshell]
+[Effect-makshell]
 # The blur under frosted and liquid glass: dual Kawase passes and their sample offset.
 BlurPasses=2
 BlurOffset=2

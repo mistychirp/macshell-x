@@ -3,7 +3,7 @@
 //!
 //! KWin only offers window management to clients whose desktop entry asks for it with
 //! `X-KDE-Wayland-Interfaces=org_kde_plasma_window_management` and whose `Exec` matches their
-//! executable; see `contrib/macshell.desktop`.
+//! executable; see `contrib/makshell.desktop`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read as _};
@@ -304,7 +304,7 @@ fn track_windows(tx: mpsc::UnboundedSender<Vec<WindowInfo>>) -> Result<(), Strin
     let _manager: OrgKdePlasmaWindowManagement = globals
         .bind(&queue.handle(), 1..=VERSION, ())
         .map_err(|_| {
-            "KWin doesn't offer window management; is macshell's desktop entry installed?"
+            "KWin doesn't offer window management; is makshell's desktop entry installed?"
                 .to_owned()
         })?;
     let _ = CONNECTION.set(connection);

@@ -1,10 +1,10 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
 
-// macshell's lock screen, like macOS's: the wallpaper, the date and a big clock at the top, and at the
+// makshell's lock screen, like macOS's: the wallpaper, the date and a big clock at the top, and at the
 // bottom who's logged in, with a capsule for their password. KDE's screen locker shows it, and does the
 // unlocking: this only passes it what's typed, by way of `authenticator`, as Plasma's own does.
 
@@ -88,7 +88,7 @@ Item {
         id: wallpaper
         anchors.fill: parent
         anchors.margins: -64
-        source: StandardPaths.writableLocation(StandardPaths.GenericStateLocation) + "/macshell/lock-wallpaper"
+        source: StandardPaths.writableLocation(StandardPaths.GenericStateLocation) + "/makshell/lock-wallpaper"
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         cache: false

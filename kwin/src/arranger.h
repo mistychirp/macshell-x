@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -9,7 +9,7 @@
 #include <QObject>
 #include <QString>
 
-namespace Macshell
+namespace Makshell
 {
 
 /// Arranges windows for the shell, over D-Bus, on KWin's own service. Clients can't move other
@@ -17,7 +17,7 @@ namespace Macshell
 class Arranger : public QObject
 {
     Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "org.macshell.Arranger")
+    Q_CLASSINFO("D-Bus Interface", "org.makshell.Arranger")
 
 public:
     explicit Arranger(QObject *parent = nullptr);

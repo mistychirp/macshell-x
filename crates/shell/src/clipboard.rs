@@ -36,7 +36,7 @@ const MAX_BYTES: usize = 32 * 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// What password managers set on what they copy.
 const SECRET_MIME: &str = "x-kde-passwordManagerHint";
-const OURS_MIME: &str = "application/x-macshell-clipboard";
+const OURS_MIME: &str = "application/x-makshell-clipboard";
 const TEXT_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
 
 /// Something that was copied.

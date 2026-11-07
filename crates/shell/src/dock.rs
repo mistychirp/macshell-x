@@ -333,7 +333,7 @@ fn recents_file() -> Option<PathBuf> {
         .or_else(|| {
             std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
         })?;
-    Some(state.join("macshell/recent-apps"))
+    Some(state.join("makshell/recent-apps"))
 }
 
 /// The recent apps, oldest first, as they were last time.

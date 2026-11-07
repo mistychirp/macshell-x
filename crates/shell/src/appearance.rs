@@ -5,7 +5,7 @@
 //! follows from it: the shell's selections and switches, KDE's accent, and, if asked for, a whole
 //! palette for other apps, generated from it with the same color science. That's a color scheme for
 //! KDE and Qt, a style sheet for GTK, a theme for Alacritty and for Telegram, and whatever templates
-//! are in `~/.config/macshell/templates`, each of which starts with a line naming its output, like
+//! are in `~/.config/makshell/templates`, each of which starts with a line naming its output, like
 //! `# output: ~/.config/foot/colors.ini`, and uses `{{primary}}`, or `{{primary.rgb}}`.
 //!
 //! What it changes in other apps' settings is saved first, and put back when it's turned off.
@@ -55,7 +55,7 @@ const GTK3_TEMPLATE: &str = include_str!("themes/gtk3.css");
 const GTK4_TEMPLATE: &str = include_str!("themes/gtk4.css");
 const ALACRITTY_TEMPLATE: &str = include_str!("themes/alacritty.toml");
 const TELEGRAM_TEMPLATE: &str = include_str!("themes/telegram.tdesktop-theme");
-const GTK_IMPORT: &str = "@import url(\"macshell.css\");";
+const GTK_IMPORT: &str = "@import url(\"makshell.css\");";
 
 static ACCENT: AtomicU32 = AtomicU32::new(bits(DEFAULT_COLOR));
 
@@ -155,7 +155,7 @@ fn data_home() -> PathBuf {
 }
 
 fn state_dir() -> PathBuf {
-    home_dir("XDG_STATE_HOME", ".local/state").join("macshell")
+    home_dir("XDG_STATE_HOME", ".local/state").join("makshell")
 }
 
 /// What's been picked out of this wallpaper before, if anything has since it last changed.
@@ -835,7 +835,7 @@ fn write_file(path: &Path, content: &str) -> io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let mut temporary = target.clone().into_os_string();
-    temporary.push(".macshell-new");
+    temporary.push(".makshell-new");
     let temporary = PathBuf::from(temporary);
     fs::write(&temporary, content)?;
     if let Ok(meta) = fs::metadata(&target) {
@@ -896,7 +896,7 @@ fn match_apps(
     // KDE and Qt. Applying a scheme by name does nothing if that's the name already in use, so it goes
     // straight into the settings, which is all that does anyway.
     let scheme = palette.render(KDE_TEMPLATE);
-    write_file(&data_home().join("color-schemes/Macshell.colors"), &scheme)?;
+    write_file(&data_home().join("color-schemes/Makshell.colors"), &scheme)?;
     let globals_path = config_home().join("kdeglobals");
     if can_change(&globals_path) || !globals_path.exists() {
         let globals = fs::read_to_string(&globals_path).unwrap_or_default();
@@ -913,7 +913,7 @@ fn match_apps(
     for (version, template) in [(3, GTK3_TEMPLATE), (4, GTK4_TEMPLATE)] {
         let css = gtk_css(version);
         write_file(
-            &config_home().join(format!("gtk-{version}.0/macshell.css")),
+            &config_home().join(format!("gtk-{version}.0/makshell.css")),
             &palette.render(template),
         )?;
         if can_change(&css) || !css.exists() {
@@ -927,7 +927,7 @@ fn match_apps(
     // Alacritty takes this up by itself.
     let alacritty = alacritty_config();
     if can_change(&alacritty) {
-        let theme = config_home().join("alacritty/themes/macshell.toml");
+        let theme = config_home().join("alacritty/themes/makshell.toml");
         write_file(&theme, &palette.render(ALACRITTY_TEMPLATE))?;
         let old = fs::read_to_string(&alacritty)?;
         match importing(&old, &theme.to_string_lossy()) {
@@ -941,7 +941,7 @@ fn match_apps(
         || config_home().join("telegram-desktop").exists()
     {
         write_file(
-            &config_home().join("telegram-desktop/themes/macshell.tdesktop-theme"),
+            &config_home().join("telegram-desktop/themes/makshell.tdesktop-theme"),
             &palette.render(TELEGRAM_TEMPLATE),
         )?;
     }
@@ -950,9 +950,9 @@ fn match_apps(
     Ok(())
 }
 
-/// The templates in macshell's config folder, as where they go and what's in them.
+/// The templates in makshell's config folder, as where they go and what's in them.
 fn user_templates() -> Vec<(String, String)> {
-    let Ok(templates) = fs::read_dir(config_home().join("macshell/templates")) else {
+    let Ok(templates) = fs::read_dir(config_home().join("makshell/templates")) else {
         return Vec::new();
     };
     let mut found = Vec::new();
@@ -1377,9 +1377,9 @@ mod tests {
     #[test]
     fn a_scheme_replaces_the_colors_and_leaves_the_rest() {
         let globals = "[General]\nColorScheme=Old\nfixed=Mono\n\n[Colors:View]\nBackgroundNormal=1,2,3\nOnlyOld=1\n\n[KDE]\nSingleClick=true\n";
-        let scheme = "[General]\nColorScheme=Macshell\n\n[Colors:View]\nBackgroundNormal=4,5,6\n\n[KDE]\ncontrast=4\n";
+        let scheme = "[General]\nColorScheme=Makshell\n\n[Colors:View]\nBackgroundNormal=4,5,6\n\n[KDE]\ncontrast=4\n";
         let merged = merge_kde(scheme, globals);
-        assert!(merged.contains("ColorScheme=Macshell"));
+        assert!(merged.contains("ColorScheme=Makshell"));
         assert!(!merged.contains("ColorScheme=Old"));
         assert!(merged.contains("fixed=Mono"));
         assert!(merged.contains("BackgroundNormal=4,5,6"));
@@ -1391,7 +1391,7 @@ mod tests {
     #[test]
     fn turning_it_off_puts_the_colors_back_and_keeps_later_changes() {
         let before = "[General]\nColorScheme=Noctalia\nAccentColor=1,2,3\n\n[Colors:View]\nBackgroundNormal=1,1,1\n";
-        let now = "[General]\nColorScheme=Macshell\nAccentColor=9,9,9\nfixed=Later\n\n[Colors:View]\nBackgroundNormal=9,9,9\n";
+        let now = "[General]\nColorScheme=Makshell\nAccentColor=9,9,9\nfixed=Later\n\n[Colors:View]\nBackgroundNormal=9,9,9\n";
         let restored = kde_colors_restored(now, before);
         assert!(restored.contains("ColorScheme=Noctalia"));
         assert!(restored.contains("AccentColor=1,2,3"));
@@ -1411,14 +1411,14 @@ mod tests {
     #[test]
     fn alacritty_swaps_its_theme_and_keeps_everything_else() {
         let config = "[general]\nimport = [\"~/.config/alacritty/themes/noctalia.toml\", \"~/keys.toml\"]\n\n# Mine\n[window]\nopacity = 0.85\n";
-        let new = importing(config, "/x/themes/macshell.toml").unwrap();
+        let new = importing(config, "/x/themes/makshell.toml").unwrap();
         assert!(new.contains("~/keys.toml"));
-        assert!(new.contains("macshell.toml"));
+        assert!(new.contains("makshell.toml"));
         assert!(!new.contains("noctalia"));
         assert!(new.contains("# Mine"));
         let restored = imports_restored(&new, config).unwrap();
         assert!(restored.contains("noctalia.toml"));
-        assert!(!restored.contains("macshell.toml"));
+        assert!(!restored.contains("makshell.toml"));
         assert!(restored.contains("opacity = 0.85"));
     }
 }

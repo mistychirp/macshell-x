@@ -80,7 +80,7 @@ async fn ask(
         // Different every time, so that this can't be taken for the answer to an earlier question.
         static ASKED: AtomicU32 = AtomicU32::new(0);
         let token = format!(
-            "macshell{}_{}",
+            "makshell{}_{}",
             std::process::id(),
             ASKED.fetch_add(1, Ordering::Relaxed)
         );

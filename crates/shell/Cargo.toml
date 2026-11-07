@@ -1,5 +1,5 @@
 [package]
-name = "macshell"
+name = "makshell"
 version.workspace = true
 edition.workspace = true
 

@@ -16,11 +16,11 @@ pub struct IcedXdgWindowSettings {
     pub size: Option<(u32, u32)>,
     /// Request client-side decorations instead of the default server-side mode.
     pub client_side_decorations: bool,
-    /// macshell patch: the window's app ID, set before it first appears.
+    /// makshell patch: the window's app ID, set before it first appears.
     pub app_id: Option<&'static str>,
-    /// macshell patch: the window's title.
+    /// makshell patch: the window's title.
     pub title: Option<&'static str>,
-    /// macshell patch: whether the window keeps `size`, which rules out resizing it.
+    /// makshell patch: whether the window keeps `size`, which rules out resizing it.
     pub fixed_size: bool,
 }
 

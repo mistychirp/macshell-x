@@ -30,6 +30,7 @@ mod material;
 mod media;
 mod menu;
 mod menubar;
+mod migrate;
 mod network;
 mod notification_center;
 mod notifications;
@@ -48,9 +49,10 @@ mod window_shadow;
 
 fn main() -> Result<(), iced_layershell::Error> {
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,layershellev=error,macshell=info"),
+        env_logger::Env::default().default_filter_or("warn,layershellev=error,makshell=info"),
     )
     .init();
+    migrate::from_old_name();
     fonts::load();
     appearance::init();
     if std::env::args().nth(1).as_deref() == Some("settings") {

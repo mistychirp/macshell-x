@@ -44,12 +44,12 @@ impl SettingsFile {
             version: Option<u32>,
         }
         let versioned: Versioned = toml::from_str(text)
-            .map_err(|_| String::from("This isn't a macshell settings file."))?;
+            .map_err(|_| String::from("This isn't a makshell settings file."))?;
         match versioned.version {
-            None => return Err(String::from("This isn't a macshell settings file.")),
+            None => return Err(String::from("This isn't a makshell settings file.")),
             Some(version) if version > VERSION => {
                 return Err(String::from(
-                    "This file is from a newer macshell than this one.",
+                    "This file is from a newer makshell than this one.",
                 ));
             }
             Some(_) => {}

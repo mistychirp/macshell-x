@@ -2,8 +2,8 @@
 contrast=4
 
 [General]
-ColorScheme=Macshell
-Name=Macshell
+ColorScheme=Makshell
+Name=Makshell
 
 [ColorEffects:Disabled]
 Color={{surface_container_lowest.rgb}}

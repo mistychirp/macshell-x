@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=System Settings
-Comment=Settings for the macshell desktop
-# A launcher, not the macshell binary itself. KWin grants window management by looking for desktop
+Comment=Settings for the makshell desktop
+# A launcher, not the makshell binary itself. KWin grants window management by looking for desktop
 # entries whose Exec is a client's executable, and only reads the first one it finds: naming the
 # binary here too can leave the shell without a window list.
-Exec=@macshell@-settings
+Exec=@makshell@-settings
 Icon=preferences-system
 Categories=Settings;
-StartupWMClass=macshell-settings
+StartupWMClass=makshell-settings

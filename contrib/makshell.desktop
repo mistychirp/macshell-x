@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=macshell
+Name=makshell
 Comment=macOS Tahoe-style desktop shell
 # KWin offers the interfaces below only to the executable named here, so Exec must be the
-# absolute path of the installed macshell binary (packaging fills it in).
-Exec=@macshell@
+# absolute path of the installed makshell binary (packaging fills it in).
+Exec=@makshell@
 NoDisplay=true
 X-KDE-Wayland-Interfaces=org_kde_plasma_window_management
 X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2

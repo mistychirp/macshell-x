@@ -1,4 +1,4 @@
-//! macshell patch: what ordinary windows need that layer surfaces don't. Upstream can open an
+//! makshell patch: what ordinary windows need that layer surfaces don't. Upstream can open an
 //! `xdg_toplevel`, but gives it no app ID or size limits, and can't start an interactive move.
 
 use std::cell::RefCell;

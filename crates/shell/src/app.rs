@@ -4823,7 +4823,7 @@ fn dock_max_icon(config: &config::DockConfig) -> f32 {
 }
 
 fn namespace() -> String {
-    String::from("macshell")
+    String::from("makshell")
 }
 
 /// Surfaces are transparent; each view draws its own background.

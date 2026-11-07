@@ -32,7 +32,7 @@ const SHOW_GAP: f32 = 10.0;
 const SHOW_HEIGHT: f32 = 16.0;
 const BOX_SIZE: f32 = 14.0;
 /// What the KWin plugin recognizes dialogs by.
-pub const APP_ID: &str = "macshell-alert";
+pub const APP_ID: &str = "makshell-alert";
 
 pub struct Alert {
     pub title: String,
@@ -113,7 +113,7 @@ pub fn settings(alert: &Alert) -> IcedXdgWindowSettings {
         size: Some((WIDTH as u32, height(alert).ceil() as u32)),
         client_side_decorations: true,
         app_id: Some(APP_ID),
-        title: Some("macshell"),
+        title: Some("makshell"),
         fixed_size: true,
     }
 }

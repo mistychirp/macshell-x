@@ -12,8 +12,8 @@ use iced_widget::{Space, button, column, container, mouse_area, pin, row, stack,
 use crate::app::{Element, Message};
 use crate::{dbus, fonts, material};
 
-const SERVICE: &str = "org.macshell.Shell";
-const PATH: &str = "/org/macshell/Windows";
+const SERVICE: &str = "org.makshell.Shell";
+const PATH: &str = "/org/makshell/Windows";
 
 const WIDTH: f32 = 239.0;
 const HEIGHT: f32 = 193.0;
@@ -117,7 +117,7 @@ struct Windows {
     events: mpsc::UnboundedSender<Event>,
 }
 
-#[zbus::interface(name = "org.macshell.Windows")]
+#[zbus::interface(name = "org.makshell.Windows")]
 impl Windows {
     #[zbus(name = "ZoomHovered")]
     fn zoom_hovered(&self, x: i32, y: i32) {
@@ -177,9 +177,9 @@ fn serve() -> impl Stream<Item = Event> {
 }
 
 #[zbus::proxy(
-    interface = "org.macshell.Arranger",
+    interface = "org.makshell.Arranger",
     default_service = "org.kde.KWin",
-    default_path = "/org/macshell/Arranger"
+    default_path = "/org/makshell/Arranger"
 )]
 trait Arranger {
     #[zbus(name = "windowUnderCursor")]
@@ -221,9 +221,9 @@ pub async fn arrange(window: String, layout: Layout) {
 }
 
 #[zbus::proxy(
-    interface = "org.macshell.Genie",
+    interface = "org.makshell.Genie",
     default_service = "org.kde.KWin",
-    default_path = "/org/macshell/Genie"
+    default_path = "/org/makshell/Genie"
 )]
 trait Genie {
     #[zbus(name = "setTarget")]

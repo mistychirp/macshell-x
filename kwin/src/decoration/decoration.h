@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -14,7 +14,7 @@
 #include <QTimer>
 #include <QVariant>
 
-namespace Macshell
+namespace Makshell
 {
 
 /// A window's title bar, the way Tahoe draws it: traffic lights on the left, whatever the user's

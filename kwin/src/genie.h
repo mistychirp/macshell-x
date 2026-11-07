@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -15,7 +15,7 @@
 #include <QSet>
 #include <QUuid>
 
-namespace Macshell
+namespace Makshell
 {
 
 /// The genie: a minimized window pours into its place in the dock, and pours back out when it's
@@ -23,7 +23,7 @@ namespace Macshell
 class GenieEffect : public KWin::OffscreenEffect
 {
     Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "org.macshell.Genie")
+    Q_CLASSINFO("D-Bus Interface", "org.makshell.Genie")
 
 public:
     GenieEffect();

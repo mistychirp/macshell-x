@@ -1,4 +1,4 @@
-//! User configuration, read from `$XDG_CONFIG_HOME/macshell/config.toml`.
+//! User configuration, read from `$XDG_CONFIG_HOME/makshell/config.toml`.
 
 use std::path::PathBuf;
 use std::{env, fs, io};
@@ -253,5 +253,5 @@ fn config_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(base.join("macshell/config.toml"))
+    Some(base.join("makshell/config.toml"))
 }

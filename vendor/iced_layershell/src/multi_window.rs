@@ -1001,7 +1001,7 @@ where
                 &mut self.waiting_layer_shell_actions,
             );
 
-            // macshell patch: only the windows the update changed, rather than all of them.
+            // makshell patch: only the windows the update changed, rather than all of them.
             for (iced_id, window) in self.window_manager.iter_mut() {
                 window.state.synchronize(application);
                 if crate::redraw::take_changed(iced_id) {

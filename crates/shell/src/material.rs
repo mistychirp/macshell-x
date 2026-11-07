@@ -1,4 +1,4 @@
-//! The material behind shell surfaces: liquid glass (macshell-glass-v1, from our KWin plugin) when
+//! The material behind shell surfaces: liquid glass (makshell-glass-v1, from our KWin plugin) when
 //! the compositor offers it, otherwise background blur (ext-background-effect-v1).
 //!
 //! The shell shares its Wayland connection with iced_layershell, so the `wl_surface` behind an
@@ -24,8 +24,8 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
 };
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
 
-use crate::glass_protocol::macshell_glass_manager_v1::MacshellGlassManagerV1;
-use crate::glass_protocol::macshell_glass_v1::{self, MacshellGlassV1};
+use crate::glass_protocol::makshell_glass_manager_v1::MakshellGlassManagerV1;
+use crate::glass_protocol::makshell_glass_v1::{self, MakshellGlassV1};
 use crate::shadow_protocol::org_kde_kwin_shadow::OrgKdeKwinShadow;
 use crate::shadow_protocol::org_kde_kwin_shadow_manager::OrgKdeKwinShadowManager;
 use crate::window_shadow;
@@ -155,7 +155,7 @@ pub struct Material {
 }
 
 enum Manager {
-    Glass(MacshellGlassManagerV1),
+    Glass(MakshellGlassManagerV1),
     Blur(ExtBackgroundEffectManagerV1),
 }
 
@@ -167,7 +167,7 @@ pub struct MaterialSurface {
 }
 
 enum Effect {
-    Glass(MacshellGlassV1),
+    Glass(MakshellGlassV1),
     Blur(ExtBackgroundEffectSurfaceV1),
 }
 
@@ -259,15 +259,15 @@ impl Material {
             && glass.version() >= 8
         {
             let (kind, x, y) = match appear {
-                Appear::Fade => (macshell_glass_v1::Appear::Fade, 0, 0),
-                Appear::Quick if glass.version() >= 11 => (macshell_glass_v1::Appear::Quick, 0, 0),
-                Appear::Quick => (macshell_glass_v1::Appear::Fade, 0, 0),
-                Appear::Pop => (macshell_glass_v1::Appear::Pop, 0, 0),
+                Appear::Fade => (makshell_glass_v1::Appear::Fade, 0, 0),
+                Appear::Quick if glass.version() >= 11 => (makshell_glass_v1::Appear::Quick, 0, 0),
+                Appear::Quick => (makshell_glass_v1::Appear::Fade, 0, 0),
+                Appear::Pop => (makshell_glass_v1::Appear::Pop, 0, 0),
                 Appear::Grow(x, y) if glass.version() >= 10 => {
-                    (macshell_glass_v1::Appear::Grow, x, y)
+                    (makshell_glass_v1::Appear::Grow, x, y)
                 }
-                Appear::Grow(..) => (macshell_glass_v1::Appear::Fade, 0, 0),
-                Appear::Slide => (macshell_glass_v1::Appear::Slide, 0, 0),
+                Appear::Grow(..) => (makshell_glass_v1::Appear::Fade, 0, 0),
+                Appear::Slide => (makshell_glass_v1::Appear::Slide, 0, 0),
             };
             glass.set_appear(kind, x, y);
         }
@@ -340,7 +340,7 @@ impl Material {
                                 y,
                                 width,
                                 height,
-                                macshell_glass_v1::Style::Card,
+                                makshell_glass_v1::Style::Card,
                                 fixed(box_x),
                                 fixed(box_y),
                                 fixed(box_width),
@@ -373,7 +373,7 @@ impl Material {
                                 y,
                                 width,
                                 height,
-                                macshell_glass_v1::Style::Control,
+                                makshell_glass_v1::Style::Control,
                                 fixed(box_x),
                                 fixed(box_y),
                                 fixed(box_width),
@@ -401,7 +401,7 @@ impl Material {
                             width,
                             height,
                             shape.radius.max(0) as u32,
-                            macshell_glass_v1::Style::Frosted,
+                            makshell_glass_v1::Style::Frosted,
                             center,
                             width_ as u32,
                             height_ as u32,
@@ -417,7 +417,7 @@ impl Material {
                             width,
                             height,
                             shape.radius.max(0) as u32,
-                            macshell_glass_v1::Style::Frosted,
+                            makshell_glass_v1::Style::Frosted,
                             center,
                             width_ as u32,
                             height_ as u32,
@@ -432,7 +432,7 @@ impl Material {
                                 width,
                                 height,
                                 shape.radius.max(0) as u32,
-                                macshell_glass_v1::Style::Card,
+                                makshell_glass_v1::Style::Card,
                                 box_width as u32,
                                 box_height as u32,
                                 millidegrees,
@@ -444,29 +444,29 @@ impl Material {
                         continue;
                     }
                     let style = match shape.style {
-                        Style::Clear => macshell_glass_v1::Style::Clear,
+                        Style::Clear => makshell_glass_v1::Style::Clear,
                         Style::Frosted
                         | Style::FrostedWithTail(_)
-                        | Style::FrostedWithTopTail(_) => macshell_glass_v1::Style::Frosted,
-                        Style::Liquid if glass.version() >= 2 => macshell_glass_v1::Style::Liquid,
-                        Style::Bubble if glass.version() >= 2 => macshell_glass_v1::Style::Bubble,
-                        Style::Control if glass.version() >= 2 => macshell_glass_v1::Style::Control,
-                        Style::Card if glass.version() >= 3 => macshell_glass_v1::Style::Card,
-                        Style::Chip if glass.version() >= 3 => macshell_glass_v1::Style::Chip,
+                        | Style::FrostedWithTopTail(_) => makshell_glass_v1::Style::Frosted,
+                        Style::Liquid if glass.version() >= 2 => makshell_glass_v1::Style::Liquid,
+                        Style::Bubble if glass.version() >= 2 => makshell_glass_v1::Style::Bubble,
+                        Style::Control if glass.version() >= 2 => makshell_glass_v1::Style::Control,
+                        Style::Card if glass.version() >= 3 => makshell_glass_v1::Style::Card,
+                        Style::Chip if glass.version() >= 3 => makshell_glass_v1::Style::Chip,
                         Style::Window { active: true } if glass.version() >= 6 => {
-                            macshell_glass_v1::Style::Window
+                            makshell_glass_v1::Style::Window
                         }
                         Style::Window { active: false } if glass.version() >= 6 => {
-                            macshell_glass_v1::Style::WindowInactive
+                            makshell_glass_v1::Style::WindowInactive
                         }
                         Style::Liquid
                         | Style::Bubble
                         | Style::Control
                         | Style::Card
                         | Style::Chip
-                        | Style::Window { .. } => macshell_glass_v1::Style::Frosted,
+                        | Style::Window { .. } => makshell_glass_v1::Style::Frosted,
                         Style::Transparent if glass.version() >= 2 => {
-                            macshell_glass_v1::Style::Transparent
+                            makshell_glass_v1::Style::Transparent
                         }
                         Style::Transparent
                         | Style::Backdrop(_)
@@ -618,17 +618,17 @@ delegate_noop!(Globals: OrgKdeKwinShadowManager);
 delegate_noop!(Globals: OrgKdeKwinShadow);
 delegate_noop!(Globals: WlRegion);
 delegate_noop!(Globals: ExtBackgroundEffectSurfaceV1);
-delegate_noop!(Globals: MacshellGlassManagerV1);
-impl Dispatch<MacshellGlassV1, ()> for Globals {
+delegate_noop!(Globals: MakshellGlassManagerV1);
+impl Dispatch<MakshellGlassV1, ()> for Globals {
     fn event(
         state: &mut Self,
-        glass: &MacshellGlassV1,
-        event: macshell_glass_v1::Event,
+        glass: &MakshellGlassV1,
+        event: makshell_glass_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let macshell_glass_v1::Event::Brightness { luminance } = event;
+        let makshell_glass_v1::Event::Brightness { luminance } = event;
         state.brightness.insert(glass.id(), luminance);
     }
 }

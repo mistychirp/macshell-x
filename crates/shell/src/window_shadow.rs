@@ -214,7 +214,7 @@ pub fn anonymous_file(bytes: &[u8]) -> std::io::Result<std::fs::File> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let path = directory.join(format!(
-        "macshell-shadow-{}-{}",
+        "makshell-shadow-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));

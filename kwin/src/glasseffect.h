@@ -1,5 +1,5 @@
 /*
-    SPDX-FileCopyrightText: 2026 the macshell-x contributors
+    SPDX-FileCopyrightText: 2026 the makshell contributors
 
     SPDX-License-Identifier: GPL-3.0-or-later
 */
@@ -26,13 +26,13 @@ class RenderView;
 class SurfaceInterface;
 }
 
-namespace Macshell
+namespace Makshell
 {
 
 class Arranger;
 class GlassManager;
 
-/// Look of the glass, from the `Effect-macshell` group of kwinrc. The defaults are measured from
+/// Look of the glass, from the `Effect-makshell` group of kwinrc. The defaults are measured from
 /// Tahoe's menus and dock.
 struct GlassSettings {
     /// The blur under liquid glass, cards and backdrops: dual Kawase passes and their sample offset.
@@ -152,12 +152,12 @@ struct WindowGlass {
     std::unique_ptr<KeyedWindow> keyed;
 };
 
-/// Glass behind the shapes clients ask for with macshell-glass-v1, the way Tahoe draws it: a flat
+/// Glass behind the shapes clients ask for with makshell-glass-v1, the way Tahoe draws it: a flat
 /// interior seen through a lens, with an edge that shows the surroundings.
 class GlassEffect : public KWin::Effect
 {
     Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "org.macshell.Glass")
+    Q_CLASSINFO("D-Bus Interface", "org.makshell.Glass")
 
 public:
     GlassEffect();

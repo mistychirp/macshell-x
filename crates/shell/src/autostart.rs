@@ -48,7 +48,7 @@ pub fn run_once() {
     let Some(runtime) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {
         return;
     };
-    let marker = runtime.join(format!("macshell-autostarted-{session}"));
+    let marker = runtime.join(format!("makshell-autostarted-{session}"));
     if marker.exists() || fs::write(&marker, b"").is_err() {
         return;
     }
