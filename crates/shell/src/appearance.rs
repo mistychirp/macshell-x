@@ -1238,7 +1238,10 @@ mod tests {
                        [KDE]\nwidgetStyle=Breeze\n";
         let colors = super::changed_kde_keys(globals, false);
         assert_eq!(colors.len(), 3);
-        assert_eq!(colors["Colors:Header\x1dInactive"], vec![b"BackgroundNormal".to_vec()]);
+        assert_eq!(
+            colors["Colors:Header\x1dInactive"],
+            vec![b"BackgroundNormal".to_vec()]
+        );
         assert_eq!(colors["General"], vec![b"AccentColor".to_vec()]);
         let icons = super::changed_kde_keys(globals, true);
         assert_eq!(icons.keys().collect::<Vec<_>>(), ["Icons"]);
