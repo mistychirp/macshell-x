@@ -38,21 +38,26 @@ const OTHERS_SPRING: Spring = Spring::new(0.22, 1.0);
 /// What a module does under the pointer, measured from Tahoe's: about 3% brighter, a brighter rim, and
 /// a chevron coming up if pressing it opens something.
 const HOVER_SPRING: Spring = Spring::new(0.18, 1.0);
-/// How the modules come in when Control Center opens: each from a little smaller and unseen,
-/// springing up past its size and back, one after another going out from the corner it opens from.
-/// Tahoe only fades them in, which is a lot less fun.
-const POP_SPRING: Spring = Spring::new(0.36, 0.6);
-const POP_FROM: f32 = 0.8;
-/// How long each waits per point it is from that corner, and how long it takes to show.
-const POP_STAGGER: f32 = 0.00028;
-const POP_FADE: f32 = 0.09;
-/// Long enough for the last of them to have settled.
-const POP_TIME: f32 = 0.9;
-/// After this long, a module that's within half a point of its size is at it, for good. Glass only
-/// comes in whole points, and its text is only sharp unscaled, so getting there an imperceptible bit
-/// at a time would show as a jump at the end instead.
-const POP_SETTLING: f32 = 0.3;
-const POP_CLOSE_ENOUGH: f32 = 0.5;
+/// How Control Center opens, after MacShell's (github.com/0-ss/MacShell, MIT), itself after ColorOS:
+/// the whole of it fades in and grows out of the corner under its icon, overshooting a little, while
+/// the modules slide up into place one row after another, overshooting more. Tahoe only fades it in.
+const OPEN_TIME: f32 = 0.52;
+const OPEN_OVERSHOOT: f32 = 1.5;
+const OPEN_FROM: f32 = 0.94;
+/// How much faster than it grows it shows.
+const OPEN_FADE: f32 = 2.2;
+const SLIDE_TIME: f32 = 0.46;
+const SLIDE_OVERSHOOT: f32 = 1.8;
+const SLIDE_FROM: f32 = 16.0;
+const SLIDE_FADE: f32 = 1.6;
+/// How much later each row starts, and each column, up to a point.
+const SLIDE_ROW_DELAY: f32 = 0.055;
+const SLIDE_COLUMN_DELAY: f32 = 0.018;
+const SLIDE_MOST_DELAY: f32 = 0.22;
+const POP_TIME: f32 = SLIDE_MOST_DELAY + SLIDE_TIME;
+/// A module this close to where it's going is there. Glass only comes in whole points, and text is
+/// sharpest in place, so the last fraction of a point would only show as a jump.
+const POP_CLOSE_ENOUGH: f32 = 0.25;
 const HOVER_FILL: f32 = 0.045;
 const HOVER_RIM: f32 = 0.16;
 const HOVER_CHEVRON: f32 = 11.0;
@@ -405,8 +410,8 @@ pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
     let Some(detail) = panel.detail else {
         return std::iter::once(backdrop)
             .chain(modules(panel).iter().map(|(_, rect, radius)| {
-                let (scale, _) = pop(panel, rect);
-                module_shape(&scaled(rect, scale), *radius * scale)
+                let pop = pop(panel, rect);
+                module_shape(&pop.rect(rect), *radius * pop.scale)
             }))
             .collect();
     };
@@ -444,7 +449,11 @@ pub fn material_opacities(panel: &Panel) -> Vec<f32> {
     let (Some(detail), Some(morph)) = (panel.detail, panel.morph) else {
         if panel.detail.is_none() && is_popping(panel) {
             return std::iter::once(1.0)
-                .chain(modules(panel).iter().map(|(_, rect, _)| pop(panel, rect).1))
+                .chain(
+                    modules(panel)
+                        .iter()
+                        .map(|(_, rect, _)| pop(panel, rect).shows),
+                )
                 .collect();
         }
         return Vec::new();
@@ -460,28 +469,76 @@ pub fn material_opacities(panel: &Panel) -> Vec<f32> {
     opacities
 }
 
-/// How big a module is, and how much of it shows, on its way in as Control Center opens.
-fn pop(panel: &Panel, rect: &Rectangle) -> (f32, f32) {
-    let Some(opened) = panel.opened else {
-        return (1.0, 1.0);
+/// The easing that goes a little past the end and comes back, as Qt's `OutBack` does.
+fn out_back(t: f32, overshoot: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0) - 1.0;
+    t * t * ((overshoot + 1.0) * t + overshoot) + 1.0
+}
+
+/// Where a module is, and how much of it shows, on its way in as Control Center opens.
+#[derive(Clone, Copy)]
+struct Pop {
+    scale: f32,
+    dx: f32,
+    dy: f32,
+    shows: f32,
+}
+
+impl Pop {
+    const IN_PLACE: Self = Self {
+        scale: 1.0,
+        dx: 0.0,
+        dy: 0.0,
+        shows: 1.0,
     };
+
+    fn rect(self, rect: &Rectangle) -> Rectangle {
+        let (width, height) = (rect.width * self.scale, rect.height * self.scale);
+        Rectangle {
+            x: rect.x + self.dx + (rect.width - width) / 2.0,
+            y: rect.y + self.dy + (rect.height - height) / 2.0,
+            width,
+            height,
+        }
+    }
+}
+
+fn pop(panel: &Panel, rect: &Rectangle) -> Pop {
+    let Some(opened) = panel.opened else {
+        return Pop::IN_PLACE;
+    };
+    let seconds = anim::seconds_since(opened);
+    if seconds >= POP_TIME {
+        return Pop::IN_PLACE;
+    }
+    let open = out_back(seconds / OPEN_TIME, OPEN_OVERSHOOT);
+    // It only grows: past its size, it stays at it.
+    let scale = OPEN_FROM + (1.0 - OPEN_FROM) * open.min(1.0);
+    let row = (rect.y / (CELL + GAP)).round();
+    let column = ((rect.x - BLUR_LEFT) / (CELL + GAP)).round();
+    let delay = (row * SLIDE_ROW_DELAY + column * SLIDE_COLUMN_DELAY).min(SLIDE_MOST_DELAY);
+    let slid = if seconds <= delay {
+        0.0
+    } else {
+        out_back((seconds - delay) / SLIDE_TIME, SLIDE_OVERSHOOT)
+    };
+    let mut slide = (1.0 - slid) * SLIDE_FROM;
+    // Only on its way back from going past, after the most it goes: before that, it's the bounce.
+    let past_peak = 1.0 - 2.0 * SLIDE_OVERSHOOT / (3.0 * (SLIDE_OVERSHOOT + 1.0));
+    if (seconds - delay) / SLIDE_TIME > past_peak && slide.abs() < POP_CLOSE_ENOUGH {
+        slide = 0.0;
+    }
+    // Growing out of the corner moves each module toward it as well.
     let (width, _) = size(panel);
-    let corner = (width as f32 - MARGIN_RIGHT, 0.0);
-    let center = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
-    let distance = (center.0 - corner.0).hypot(center.1 - corner.1);
-    let seconds = anim::seconds_since(opened) - distance * POP_STAGGER;
-    if seconds <= 0.0 {
-        return (POP_FROM, 0.0);
+    let corner_x = width as f32 - MARGIN_RIGHT;
+    let center_x = rect.x + rect.width / 2.0;
+    let center_y = rect.y + rect.height / 2.0;
+    Pop {
+        scale,
+        dx: (corner_x - center_x) * (1.0 - scale),
+        dy: -center_y * (1.0 - scale) + slide * scale,
+        shows: (open * OPEN_FADE).clamp(0.0, 1.0) * (slid * SLIDE_FADE).clamp(0.0, 1.0),
     }
-    let shows = (seconds / POP_FADE).min(1.0);
-    let scale = POP_FROM + (1.0 - POP_FROM) * POP_SPRING.progress(seconds);
-    let off_by = (scale - 1.0).abs() * rect.width.max(rect.height) / 2.0;
-    if anim::seconds_since(opened) >= POP_TIME
-        || (seconds >= POP_SETTLING && off_by < POP_CLOSE_ENOUGH)
-    {
-        return (1.0, shows);
-    }
-    (scale, shows)
 }
 
 /// Whether the modules are still coming in.
@@ -489,16 +546,6 @@ pub fn is_popping(panel: &Panel) -> bool {
     panel
         .opened
         .is_some_and(|opened| anim::seconds_since(opened) < POP_TIME)
-}
-
-fn scaled(rect: &Rectangle, scale: f32) -> Rectangle {
-    let (width, height) = (rect.width * scale, rect.height * scale);
-    Rectangle {
-        x: rect.x + (rect.width - width) / 2.0,
-        y: rect.y + (rect.height - height) / 2.0,
-        width,
-        height,
-    }
 }
 
 /// What's in a module.
@@ -609,16 +656,16 @@ pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
         (None, _) => modules(panel)
             .into_iter()
             .map(|(module, rect, radius)| {
-                let (scale, shows) = pop(panel, &rect);
+                let pop = pop(panel, &rect);
                 pin(mouse_area(
                     group(bubble(module, rect, radius))
-                        .scale(scale)
-                        .opacity(shows),
+                        .scale(pop.scale)
+                        .opacity(pop.shows),
                 )
                 .on_enter(Message::ControlHover(module, true))
                 .on_exit(Message::ControlHover(module, false)))
-                .x(rect.x)
-                .y(rect.y)
+                .x(rect.x + pop.dx)
+                .y(rect.y + pop.dy)
                 .into()
             })
             .collect(),
