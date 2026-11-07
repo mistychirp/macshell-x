@@ -1,0 +1,11 @@
+{
+    "KPackageStructure": "Plasma/Shell",
+    "KPlugin": {
+        "Description": "macshell's lock screen, like macOS's",
+        "Id": "org.macshell.desktop",
+        "License": "GPL-3.0-or-later",
+        "Name": "macshell"
+    },
+    "X-KDE-ParentApp": "org.kde.plasmashell",
+    "X-Plasma-APIVersion": "2"
+}

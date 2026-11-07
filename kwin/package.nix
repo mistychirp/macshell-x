@@ -31,8 +31,11 @@ stdenv.mkDerivation {
       ./CMakeLists.txt
       ./src
       ./tabbox
+      ./lockscreen
       ../protocols/macshell-glass-v1.xml
+      ../assets/fonts/Inter-Regular.ttf
       ../assets/fonts/Inter-SemiBold.ttf
+      ../assets/fonts/Inter-Bold.ttf
     ];
   };
   sourceRoot = "source/kwin";

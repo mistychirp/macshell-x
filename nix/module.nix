@@ -78,6 +78,9 @@ let
     export XDG_CURRENT_DESKTOP=KDE
     export XDG_SESSION_DESKTOP=KDE
     export KDE_SESSION_VERSION=6
+    # KDE's screen locker shows the lock screen of the shell package named here, which is ours, from
+    # the plugin's data. Plasma's own sessions don't have this, and keep theirs.
+    export PLASMA_DEFAULT_SHELL=org.macshell.desktop
     export QT_PLUGIN_PATH=${kwin-macshell}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}
     # KWin finds the window switcher among its data.
     export XDG_DATA_DIRS=${kwin-macshell}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}

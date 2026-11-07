@@ -712,7 +712,10 @@ impl Shell {
                 .wallpaper
                 .as_deref()
                 .and_then(wallpaper::load),
-            wallpaper_path: config.desktop.wallpaper.clone(),
+            wallpaper_path: {
+                wallpaper::link_for_lock_screen(config.desktop.wallpaper.as_deref());
+                config.desktop.wallpaper.clone()
+            },
             always_glassy_widgets: config.desktop.always_glassy_widgets,
             apps,
             pinned: config.dock.pinned,
@@ -1579,6 +1582,7 @@ impl Shell {
                     log::warn!("can't save the wallpaper: {err}");
                 }
                 self.wallpaper_path = Some(path.to_string_lossy().into_owned());
+                wallpaper::link_for_lock_screen(self.wallpaper_path.as_deref());
                 return self.show_wallpaper(image::Handle::from_path(path));
             }
             Message::QuitGraceOver(app_id) => {
@@ -3781,6 +3785,7 @@ impl Shell {
         )];
         if config.desktop.wallpaper != self.wallpaper_path {
             self.wallpaper_path.clone_from(&config.desktop.wallpaper);
+            wallpaper::link_for_lock_screen(config.desktop.wallpaper.as_deref());
             if let Some(handle) = config
                 .desktop
                 .wallpaper

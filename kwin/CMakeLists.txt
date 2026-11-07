@@ -78,3 +78,7 @@ target_link_libraries(macshell-decoration PRIVATE
 
 # What Alt+Tab shows, which KWin looks for among its data by name.
 install(DIRECTORY tabbox/macshell DESTINATION ${KDE_INSTALL_DATADIR}/kwin-wayland/tabbox)
+# The lock screen, which KDE's screen locker shows from a Plasma shell package, with the shell's fonts.
+install(DIRECTORY lockscreen/org.macshell.desktop DESTINATION ${KDE_INSTALL_DATADIR}/plasma/shells)
+install(FILES ../assets/fonts/Inter-Regular.ttf ../assets/fonts/Inter-SemiBold.ttf ../assets/fonts/Inter-Bold.ttf
+        DESTINATION ${KDE_INSTALL_DATADIR}/plasma/shells/org.macshell.desktop/contents/fonts)
