@@ -1110,7 +1110,7 @@ impl SettingsApp {
     fn glass_page(&self) -> Element<'_> {
         let Some(glass) = &self.glass else {
             return caption(
-                "These settings need macshell's KWin plugin, which doesn't seem to be running.",
+                "Needs macshell's KWin plugin, which isn't running.",
             );
         };
         let rows = GLASS_SLIDERS
@@ -1131,10 +1131,7 @@ impl SettingsApp {
             })
             .collect();
         column![
-            caption(
-                "Everything made of glass is one material: a slab whose edge curves down, \
-                 bending what's behind it. Changes show right away, on this window's sidebar too.",
-            ),
+            caption("Changes show right away.",),
             card(rows),
             row![
                 Space::new().width(Length::Fill),
@@ -1245,11 +1242,7 @@ impl SettingsApp {
                         .spacing(2)
                         .into(),
                     )]),
-                    caption(
-                        "What other apps look like, and their icons. Auto is light from sunrise to \
-                         sunset where the weather widget is, and from seven to seven without one. \
-                         Apps that keep their own colors get their light twin, from their accent.",
-                    ),
+                    caption("Auto switches at sunrise and sunset.",),
                 ]
                 .spacing(6),
             ),
@@ -1265,18 +1258,7 @@ impl SettingsApp {
                 "Apps",
                 column![
                     card(apps_rows),
-                    caption(
-                        "Gives KDE and Qt apps, GTK apps, Alacritty and Telegram a palette made \
-                         from the accent color. What it replaces comes back when it's turned off. \
-                         GTK apps pick it up the next time they start. Telegram needs \
-                         macshell.tdesktop-theme, in its themes folder in your config, chosen \
-                         once in its chat settings, and again when the color changes.",
-                    ),
-                    caption(
-                        "For anything else, put templates in macshell/templates in your config: \
-                         the first line says where the result goes, as in \"output: ~/file\", and \
-                         {{primary}} or {{primary.rgb}} stand for colors.",
-                    ),
+                    caption("Gives other apps colors that match the accent.",),
                 ]
                 .spacing(6),
             ),
@@ -1392,10 +1374,7 @@ impl SettingsApp {
                         "Always Glassy",
                         settings_toggle(self.always_glassy, Message::AlwaysGlassyToggled),
                     )]),
-                    caption(
-                        "Without this, widgets turn to glass while a window is active, and come \
-                         back in color when the desktop is.",
-                    ),
+                    caption("Otherwise, widgets show in color when the desktop is active.",),
                 ]
                 .spacing(6),
             ),
@@ -1405,8 +1384,7 @@ impl SettingsApp {
     }
 
     fn notifications_page(&self) -> Element<'_> {
-        let explained = "To turn off an app's notifications, open one of them up, and choose \
-                         Turn Off from its … menu. Whatever says it can't wait still comes through.";
+        let explained = "Turn an app off from the … menu on its notifications.";
         if self.notifications_off.is_empty() {
             return column![
                 section("Turned Off", card(vec![info_row("No apps", "")]),),
@@ -1437,7 +1415,7 @@ impl SettingsApp {
     fn windows_page(&self) -> Element<'_> {
         let Some(glass) = &self.glass else {
             return caption(
-                "These settings need macshell's KWin plugin, which doesn't seem to be running.",
+                "Needs macshell's KWin plugin, which isn't running.",
             );
         };
         let full_screen = glass
@@ -1528,9 +1506,8 @@ impl SettingsApp {
             );
             exceptions_section = exceptions_section.push(card(picks));
         }
-        let exceptions_section = exceptions_section.push(caption(
-            "These have no blur behind them, and are never made see-through.",
-        ));
+        let exceptions_section =
+            exceptions_section.push(caption("These apps stay opaque, with no blur."));
         column![
             section(
                 "Translucency",
@@ -1551,13 +1528,7 @@ impl SettingsApp {
                             settings_toggle(backgrounds_only, Message::BackgroundsOnlyToggled),
                         ),
                     ]),
-                    caption(
-                        "Windows let what's behind them show through, blurred: with Backgrounds \
-                         Only, where they're the color of their background, so text and pictures \
-                         stay solid, and otherwise all of them. One that's see-through by itself, \
-                         like a terminal set up that way, keeps its own opacity, and gets the blur \
-                         too.",
-                    ),
+                    caption("Lets what's behind windows show through, blurred.",),
                 ]
                 .spacing(6),
             ),
@@ -1574,11 +1545,7 @@ impl SettingsApp {
                         .spacing(2)
                         .into(),
                     )]),
-                    caption(
-                        "A full-screen window has no title bar to leave it with yet: its window \
-                         menu (Alt+F3) has the way out, under More. Resting on the button still \
-                         shows its menu.",
-                    ),
+                    caption("Leave full screen from the window menu (Alt+F3).",),
                 ]
                 .spacing(6),
             ),
@@ -1615,10 +1582,11 @@ impl SettingsApp {
                         .align_y(Alignment::Center)
                         .into(),
                     ]),
-                    caption(self.transfer_status.as_deref().unwrap_or(
-                        "Importing replaces your current settings, and keeps them in a file so \
-                             you can go back. Where widgets and icons sit isn't included.",
-                    ),),
+                    caption(
+                        self.transfer_status
+                            .as_deref()
+                            .unwrap_or("Your current settings are kept in a backup.",),
+                    ),
                 ]
                 .spacing(6),
             ),
